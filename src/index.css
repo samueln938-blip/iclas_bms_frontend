@@ -1,0 +1,30 @@
+/* src/index.css */
+
+/* Basic reset */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+/* Body base styles */
+body {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  background-color: #f3f4f6;
+  color: #111827;
+}
+
+/* Root should fill the whole viewport, no max-width */
+#root {
+  width: 100%;
+  height: 100%;
+}
