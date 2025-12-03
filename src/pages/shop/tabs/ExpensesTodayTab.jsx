@@ -43,6 +43,32 @@ function extractList(data) {
   return null;
 }
 
+// ✅ Normalize base URL (avoid double slashes)
+function normalizeBaseUrl(url) {
+  const s = String(url || "").trim();
+  if (!s) return "";
+  return s.endsWith("/") ? s.slice(0, -1) : s;
+}
+
+// ✅ Default API base from Vite env (DigitalOcean: VITE_API_BASE)
+// Falls back to localhost only for local dev.
+const DEFAULT_API_BASE = (() => {
+  const env =
+    (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_API_BASE) || "";
+  return normalizeBaseUrl(env) || "http://127.0.0.1:8000";
+})();
+
+// ✅ Safer "same day" check using LOCAL date (not UTC)
+// Prevents missing/extra expenses around midnight due to timezone conversion.
+function toLocalYMD(v) {
+  const d = v instanceof Date ? v : new Date(v);
+  if (!Number.isFinite(d.getTime())) return "";
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 function sameDayAnyField(row, todayStr) {
   const v =
     row?.expense_date ??
@@ -54,17 +80,18 @@ function sameDayAnyField(row, todayStr) {
     null;
 
   if (!v) return false;
+
   if (typeof v === "string") {
     // handle "YYYY-MM-DD" or ISO "YYYY-MM-DDTHH:mm:ss"
     return v.slice(0, 10) === todayStr;
   }
-  const t = new Date(v).toISOString().slice(0, 10);
-  return t === todayStr;
+
+  return toLocalYMD(v) === todayStr;
 }
 
 export default function ExpensesTodayTab({
-  // ✅ Add these two props from parent if your API is protected
-  API_BASE = "http://127.0.0.1:8000",
+  // ✅ Parent can pass API_BASE; if not, we use VITE_API_BASE automatically
+  API_BASE = DEFAULT_API_BASE,
   authHeadersNoJson,
 
   shopId,
@@ -92,14 +119,15 @@ export default function ExpensesTodayTab({
     description: "",
   });
 
+  const API = useMemo(() => normalizeBaseUrl(API_BASE), [API_BASE]);
+
   const normalized = useMemo(() => {
     const arr = Array.isArray(expenses) ? expenses : [];
     return arr
       .map((e) => {
         const id = e?.id ?? e?._id ?? uid();
 
-        const category =
-          e?.category ?? e?.expense_category ?? e?.expenseCategory ?? "";
+        const category = e?.category ?? e?.expense_category ?? e?.expenseCategory ?? "";
 
         const method =
           e?.payment_method ??
@@ -137,7 +165,6 @@ export default function ExpensesTodayTab({
   const apiHeaders = useMemo(() => {
     // authHeadersNoJson usually already contains Authorization header
     const h = { ...(authHeadersNoJson || {}) };
-    // Only set content-type when sending JSON body (we'll do it per request)
     return h;
   }, [authHeadersNoJson]);
 
@@ -185,7 +212,6 @@ export default function ExpensesTodayTab({
           arr[idx] = { ...arr[idx], ...saved };
           return arr;
         }
-        // Put newest first
         return [saved, ...arr];
       });
     },
@@ -213,25 +239,20 @@ export default function ExpensesTodayTab({
 
   const loadTodayFromApi = useCallback(async () => {
     if (!shopId || !todayStr) return;
+    if (!API) return;
 
     setLoadingRemote(true);
     try {
-      // Try a few common patterns without breaking if your backend uses a different query
       const candidates = [
-        `${API_BASE}/expenses/?shop_id=${shopId}&expense_date=${encodeURIComponent(
+        `${API}/expenses/?shop_id=${shopId}&expense_date=${encodeURIComponent(todayStr)}`,
+        `${API}/expenses/?shop_id=${shopId}&date=${encodeURIComponent(todayStr)}`,
+        `${API}/expenses/?shop_id=${shopId}&date_from=${encodeURIComponent(todayStr)}&date_to=${encodeURIComponent(
           todayStr
         )}`,
-        `${API_BASE}/expenses/?shop_id=${shopId}&date=${encodeURIComponent(todayStr)}`,
-        `${API_BASE}/expenses/?shop_id=${shopId}&date_from=${encodeURIComponent(
-          todayStr
-        )}&date_to=${encodeURIComponent(todayStr)}`,
-        `${API_BASE}/expenses/today?shop_id=${shopId}&date=${encodeURIComponent(
-          todayStr
-        )}`,
-        `${API_BASE}/expenses/today?shop_id=${shopId}`,
-        // ✅ last resort: load by shop, then filter in UI by date
-        `${API_BASE}/expenses/?shop_id=${shopId}`,
-        `${API_BASE}/expenses/`,
+        `${API}/expenses/today?shop_id=${shopId}&date=${encodeURIComponent(todayStr)}`,
+        `${API}/expenses/today?shop_id=${shopId}`,
+        `${API}/expenses/?shop_id=${shopId}`,
+        `${API}/expenses/`,
       ];
 
       let data = null;
@@ -245,9 +266,7 @@ export default function ExpensesTodayTab({
             data = list;
             break;
           }
-          // Some APIs might return a single object when filtered
           if (got && typeof got === "object" && !Array.isArray(got)) {
-            // If it looks like an expense object with id, treat as one-item list
             if (got?.id || got?._id) {
               data = [got];
               break;
@@ -263,16 +282,12 @@ export default function ExpensesTodayTab({
         return;
       }
 
-      // ✅ Ensure we only show today's expenses (prevents "ghost" rows)
-      const todayOnly = (Array.isArray(data) ? data : []).filter((row) =>
-        sameDayAnyField(row, todayStr)
-      );
-
+      const todayOnly = (Array.isArray(data) ? data : []).filter((row) => sameDayAnyField(row, todayStr));
       setExpenses?.(todayOnly);
     } finally {
       setLoadingRemote(false);
     }
-  }, [API_BASE, apiFetchJson, setExpenses, shopId, todayStr]);
+  }, [API, apiFetchJson, setExpenses, shopId, todayStr]);
 
   useEffect(() => {
     loadTodayFromApi();
@@ -312,13 +327,11 @@ export default function ExpensesTodayTab({
 
     const payment_method = normalizeMethodForApi(payment_type);
 
-    // ✅ Canonical payload for your backend totals logic:
-    // models.Expense.shop_id, models.Expense.expense_date, models.Expense.payment_method, models.Expense.amount
     const payload = {
       shop_id: Number(shopId),
-      expense_date: todayStr, // "YYYY-MM-DD"
+      expense_date: todayStr,
       category,
-      payment_method, // "cash" | "card" | "momo"
+      payment_method,
       amount,
       description,
     };
@@ -327,8 +340,7 @@ export default function ExpensesTodayTab({
       const now = Date.now();
 
       if (editingId && isNumericId(editingId)) {
-        // Update existing (best guess: PUT /expenses/{id})
-        const url = `${API_BASE}/expenses/${editingId}`;
+        const url = `${API}/expenses/${editingId}`;
         const saved = await apiFetchJson(url, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -336,16 +348,12 @@ export default function ExpensesTodayTab({
         });
 
         if (saved) mergeIntoState(saved);
-
-        // ✅ Always reload to guarantee UI==DB (removes duplicates/ghosts)
         await loadTodayFromApi();
 
         setMessage?.("Expense updated.");
       } else {
-        // Create new (best guess: POST /expenses/)
         const tempId = editingId || uid();
 
-        // Optimistic row
         setExpenses?.((prev) => [
           {
             id: tempId,
@@ -357,15 +365,13 @@ export default function ExpensesTodayTab({
           ...(Array.isArray(prev) ? prev : []),
         ]);
 
-        const saved = await apiFetchJson(`${API_BASE}/expenses/`, {
+        const saved = await apiFetchJson(`${API}/expenses/`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
 
         if (saved) replaceTempId(tempId, saved);
-
-        // ✅ Always reload to guarantee UI==DB (removes duplicates/ghosts)
         await loadTodayFromApi();
 
         setMessage?.("Expense saved.");
@@ -381,27 +387,20 @@ export default function ExpensesTodayTab({
   }
 
   async function del(x) {
-    const ok = window.confirm(
-      `Delete expense "${x.category}" (${formatMoney(x.amount)} RWF)?`
-    );
+    const ok = window.confirm(`Delete expense "${x.category}" (${formatMoney(x.amount)} RWF)?`);
     if (!ok) return;
 
     clearAlerts?.();
 
     try {
-      // Optimistic remove first
       setExpenses?.((prev) =>
-        Array.isArray(prev)
-          ? prev.filter((e) => String(e?.id) !== String(x.id))
-          : []
+        Array.isArray(prev) ? prev.filter((e) => String(e?.id) !== String(x.id)) : []
       );
 
       if (isNumericId(x.id)) {
-        // ✅ This may return 204 No Content — apiFetchJson handles that now.
-        await apiFetchJson(`${API_BASE}/expenses/${x.id}`, { method: "DELETE" });
+        await apiFetchJson(`${API}/expenses/${x.id}`, { method: "DELETE" });
       }
 
-      // ✅ Force reload to remove any stale/ghost local rows
       await loadTodayFromApi();
 
       setMessage?.("Expense deleted.");
@@ -471,9 +470,7 @@ export default function ExpensesTodayTab({
               <div style={label}>Category</div>
               <input
                 value={form.category}
-                onChange={(e) =>
-                  setForm((s) => ({ ...s, category: e.target.value }))
-                }
+                onChange={(e) => setForm((s) => ({ ...s, category: e.target.value }))}
                 placeholder="Type category…"
                 style={input}
               />
@@ -483,9 +480,7 @@ export default function ExpensesTodayTab({
               <div style={label}>Payment</div>
               <select
                 value={form.payment_type}
-                onChange={(e) =>
-                  setForm((s) => ({ ...s, payment_type: e.target.value }))
-                }
+                onChange={(e) => setForm((s) => ({ ...s, payment_type: e.target.value }))}
                 style={input}
               >
                 <option value="cash">Cash</option>
@@ -499,9 +494,7 @@ export default function ExpensesTodayTab({
               <div style={{ display: "flex", gap: 8 }}>
                 <input
                   value={form.amount}
-                  onChange={(e) =>
-                    setForm((s) => ({ ...s, amount: e.target.value }))
-                  }
+                  onChange={(e) => setForm((s) => ({ ...s, amount: e.target.value }))}
                   placeholder="e.g. 2500"
                   inputMode="numeric"
                   style={{ ...input, textAlign: "right", fontWeight: 900 }}
@@ -511,8 +504,7 @@ export default function ExpensesTodayTab({
                   onClick={() =>
                     openCalculator?.(
                       form.amount,
-                      (num) =>
-                        setForm((s) => ({ ...s, amount: String(num) })),
+                      (num) => setForm((s) => ({ ...s, amount: String(num) })),
                       "Expense Amount"
                     )
                   }
@@ -537,9 +529,7 @@ export default function ExpensesTodayTab({
             <div style={label}>Description</div>
             <input
               value={form.description}
-              onChange={(e) =>
-                setForm((s) => ({ ...s, description: e.target.value }))
-              }
+              onChange={(e) => setForm((s) => ({ ...s, description: e.target.value }))}
               placeholder="Short note…"
               style={input}
             />
@@ -610,9 +600,7 @@ export default function ExpensesTodayTab({
             flexWrap: "wrap",
           }}
         >
-          <div style={{ fontSize: 13, fontWeight: 950 }}>
-            Expenses ({normalized.length})
-          </div>
+          <div style={{ fontSize: 13, fontWeight: 950 }}>Expenses ({normalized.length})</div>
           <div
             style={{
               marginLeft: "auto",
@@ -621,15 +609,12 @@ export default function ExpensesTodayTab({
               color: "#0f172a",
             }}
           >
-            Total expenses:{" "}
-            <span style={{ color: "#b91c1c" }}>{formatMoney(totalAll)}</span>
+            Total expenses: <span style={{ color: "#b91c1c" }}>{formatMoney(totalAll)}</span>
           </div>
         </div>
 
         {normalized.length === 0 ? (
-          <div style={{ padding: 12, fontSize: 12, color: "#64748b" }}>
-            No expenses for today.
-          </div>
+          <div style={{ padding: 12, fontSize: 12, color: "#64748b" }}>No expenses for today.</div>
         ) : (
           normalized.map((x) => (
             <div
@@ -647,9 +632,7 @@ export default function ExpensesTodayTab({
               }}
               title="Click to edit"
             >
-              <div style={{ fontWeight: 950, color: "#0f172a" }}>
-                {x.category || "-"}
-              </div>
+              <div style={{ fontWeight: 950, color: "#0f172a" }}>{x.category || "-"}</div>
 
               <div
                 style={{
@@ -661,9 +644,7 @@ export default function ExpensesTodayTab({
                 {x.payment_type === "mobile" ? "MOMO" : x.payment_type}
               </div>
 
-              <div style={{ fontWeight: 950, textAlign: "right" }}>
-                {formatMoney(x.amount)}
-              </div>
+              <div style={{ fontWeight: 950, textAlign: "right" }}>{formatMoney(x.amount)}</div>
 
               <div
                 style={{
