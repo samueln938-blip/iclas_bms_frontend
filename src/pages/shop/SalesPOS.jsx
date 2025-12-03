@@ -1,4 +1,4 @@
-// src/pages/shop/SalesPOS.jsx
+// FILE: src/pages/shop/SalesPOS.jsx
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext.jsx";
@@ -10,7 +10,8 @@ import DailyClosureTab from "./tabs/DailyClosureTab.jsx";
 
 import { todayDateString, readExpenses, writeExpenses } from "./posUtils.js";
 
-const API_BASE = "http://127.0.0.1:8000";
+// ✅ Single source of truth for API base (VITE_API_BASE / prod fallback)
+import { API_BASE as CLIENT_API_BASE } from "../../api/client.jsx";
 
 // -------------------- Small calculator modal --------------------
 function safeNumber(raw) {
@@ -112,7 +113,8 @@ function CalculatorModal({ open, initialValue, title = "Calculator", onClose, on
             }}
           />
           <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280", textAlign: "right" }}>
-            Preview: <strong style={{ color: "#111827" }}>{safeNumber(val).toLocaleString("en-RW")}</strong>
+            Preview:{" "}
+            <strong style={{ color: "#111827" }}>{safeNumber(val).toLocaleString("en-RW")}</strong>
           </div>
         </div>
 
@@ -147,14 +149,11 @@ export default function SalesPOS() {
   const location = useLocation();
   const { user, token } = useAuth();
 
+  // ✅ Use centralized API base instead of localhost
+  const API_BASE = CLIENT_API_BASE;
+
   // ✅ role normalize (supports: role, user_role, userRole, type)
-  const role = (
-    user?.role ??
-    user?.user_role ??
-    user?.userRole ??
-    user?.type ??
-    ""
-  )
+  const role = (user?.role ?? user?.user_role ?? user?.userRole ?? user?.type ?? "")
     .toString()
     .toLowerCase();
 
@@ -382,7 +381,7 @@ export default function SalesPOS() {
     } finally {
       setLoading(false);
     }
-  }, [shopId, authHeadersNoJson]);
+  }, [shopId, authHeadersNoJson, API_BASE]);
 
   useEffect(() => {
     if (shopId) reloadShopAndStock();
@@ -413,7 +412,6 @@ export default function SalesPOS() {
         }}
       >
         <div>
-          {/* ✅ ACTIVE again for Admin/Owner/Manager, disabled for cashier */}
           <button
             type="button"
             onClick={() => {
@@ -514,7 +512,6 @@ export default function SalesPOS() {
         </div>
       ) : null}
 
-      {/* Current sale still depends on stock, keep it gated by !loading */}
       {!loading && activeTab === "current" ? (
         <CurrentSaleTab
           API_BASE={API_BASE}
@@ -538,7 +535,6 @@ export default function SalesPOS() {
 
       {!loading && activeTab === "expenses" ? (
         <ExpensesTodayTab
-          // ✅ pass API + auth so expenses are real DB expenses
           API_BASE={API_BASE}
           authHeadersNoJson={authHeadersNoJson}
           shopId={shopId}
@@ -573,7 +569,6 @@ export default function SalesPOS() {
         />
       ) : null}
 
-      {/* ✅ Daily closure is now visible to cashier too */}
       {activeTab === "closure" ? (
         <DailyClosureTab
           API_BASE={API_BASE}
