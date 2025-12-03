@@ -1,8 +1,12 @@
 // src/pages/shop/ShopPurchasesPage.jsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
+import { useAuth } from "../../context/AuthContext.jsx";
 
-const API_BASE = "http://127.0.0.1:8000";
+// ✅ Single source of truth for API base (VITE_API_BASE / prod)
+import { API_BASE as CLIENT_API_BASE } from "../../api/client.jsx";
+
+const API_BASE = CLIENT_API_BASE;
 
 // Grid definition for the summary table
 const PURCHASE_GRID_COLUMNS =
@@ -20,6 +24,19 @@ function formatMoney(value) {
 function ShopPurchasesPage() {
   const { shopId } = useParams();
   const navigate = useNavigate();
+  const { token } = useAuth();
+
+  const authHeaders = useMemo(() => {
+    const h = { "Content-Type": "application/json" };
+    if (token) h.Authorization = `Bearer ${token}`;
+    return h;
+  }, [token]);
+
+  const authHeadersNoJson = useMemo(() => {
+    const h = {};
+    if (token) h.Authorization = `Bearer ${token}`;
+    return h;
+  }, [token]);
 
   const [shop, setShop] = useState(null);
   const [stockRows, setStockRows] = useState([]); // /stock/?shop_id=...
@@ -27,9 +44,7 @@ function ShopPurchasesPage() {
   const [error, setError] = useState("");
 
   // Purchase header fields
-  const [purchaseDate, setPurchaseDate] = useState(
-    () => new Date().toISOString().slice(0, 10) // YYYY-MM-DD
-  );
+  const [purchaseDate, setPurchaseDate] = useState(() => new Date().toISOString().slice(0, 10)); // YYYY-MM-DD
   const [supplierName, setSupplierName] = useState("");
   const [invoiceNumber, setInvoiceNumber] = useState("");
 
@@ -116,11 +131,11 @@ function ShopPurchasesPage() {
       setMessage("");
 
       try {
-        const shopRes = await fetch(`${API_BASE}/shops/${shopId}`);
+        const shopRes = await fetch(`${API_BASE}/shops/${shopId}`, { headers: authHeadersNoJson });
         if (!shopRes.ok) throw new Error("Failed to load shop.");
         const shopData = await shopRes.json();
 
-        const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`);
+        const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`, { headers: authHeadersNoJson });
         if (!stockRes.ok) throw new Error("Failed to load stock.");
         const stockData = await stockRes.json();
 
@@ -135,7 +150,7 @@ function ShopPurchasesPage() {
     }
 
     loadData();
-  }, [shopId]);
+  }, [shopId, authHeadersNoJson]);
 
   // Map item_id -> stock row
   const stockByItemId = useMemo(() => {
@@ -167,7 +182,7 @@ function ShopPurchasesPage() {
 
     try {
       const url = `${API_BASE}/purchases/by-shop-date/?shop_id=${shopId}&purchase_date=${purchaseDate}`;
-      const res = await fetch(url);
+      const res = await fetch(url, { headers: authHeadersNoJson });
       if (!res.ok) {
         console.error("Failed to load purchase lines for date", purchaseDate);
         return;
@@ -322,6 +337,7 @@ function ShopPurchasesPage() {
     try {
       const res = await fetch(`${API_BASE}/purchases/lines/${dbId}`, {
         method: "DELETE",
+        headers: authHeadersNoJson,
       });
 
       if (!res.ok) {
@@ -340,7 +356,7 @@ function ShopPurchasesPage() {
       // Reload lines + stock
       await loadExistingLines();
       try {
-        const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`);
+        const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`, { headers: authHeadersNoJson });
         if (stockRes.ok) {
           const stockData = await stockRes.json();
           setStockRows(stockData || []);
@@ -405,7 +421,7 @@ function ShopPurchasesPage() {
 
         const res = await fetch(`${API_BASE}/purchases/lines/${editingDbId}`, {
           method: "PUT",
-          headers: { "Content-Type": "application/json" },
+          headers: authHeaders,
           body: JSON.stringify(payload),
         });
 
@@ -423,7 +439,7 @@ function ShopPurchasesPage() {
         // reload lines + stock to reflect new values immediately
         await loadExistingLines();
         try {
-          const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`);
+          const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`, { headers: authHeadersNoJson });
           if (stockRes.ok) {
             const stockData = await stockRes.json();
             setStockRows(stockData || []);
@@ -566,19 +582,15 @@ function ShopPurchasesPage() {
           quantity: Number(l.qtyUnits || 0),
           unit_cost_price: Number(l.newUnitCost || 0),
           wholesale_price_per_piece:
-            l.newWholesalePerPiece === "" || l.newWholesalePerPiece == null
-              ? null
-              : Number(l.newWholesalePerPiece),
+            l.newWholesalePerPiece === "" || l.newWholesalePerPiece == null ? null : Number(l.newWholesalePerPiece),
           retail_price_per_piece:
-            l.newRetailPerPiece === "" || l.newRetailPerPiece == null
-              ? null
-              : Number(l.newRetailPerPiece),
+            l.newRetailPerPiece === "" || l.newRetailPerPiece == null ? null : Number(l.newRetailPerPiece),
         })),
       };
 
       const res = await fetch(`${API_BASE}/purchases/`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders,
         body: JSON.stringify(payload),
       });
 
@@ -600,7 +612,7 @@ function ShopPurchasesPage() {
 
       // Reload stock
       try {
-        const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`);
+        const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`, { headers: authHeadersNoJson });
         if (stockRes.ok) {
           const stockData = await stockRes.json();
           setStockRows(stockData || []);
@@ -700,8 +712,7 @@ function ShopPurchasesPage() {
           zIndex: 15,
           paddingBottom: "8px",
           marginBottom: "8px",
-          background:
-            "linear-gradient(to bottom, #f3f4f6 0%, #f3f4f6 65%, rgba(243,244,246,0) 100%)",
+          background: "linear-gradient(to bottom, #f3f4f6 0%, #f3f4f6 65%, rgba(243,244,246,0) 100%)",
         }}
       >
         <div
@@ -766,14 +777,7 @@ function ShopPurchasesPage() {
               fontSize: "12px",
             }}
           >
-            <div
-              style={{
-                fontSize: "13px",
-                fontWeight: 700,
-                color: "#111827",
-                marginBottom: "0",
-              }}
-            >
+            <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827", marginBottom: "0" }}>
               Purchase summary
             </div>
             <div
@@ -799,13 +803,7 @@ function ShopPurchasesPage() {
                 >
                   Total amount
                 </div>
-                <div
-                  style={{
-                    fontSize: "18px",
-                    fontWeight: 800,
-                    color: "#111827",
-                  }}
-                >
+                <div style={{ fontSize: "18px", fontWeight: 800, color: "#111827" }}>
                   {formatMoney(purchaseTotal)}
                 </div>
               </div>
@@ -900,9 +898,7 @@ function ShopPurchasesPage() {
           }}
         >
           <div>
-            <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>
-              Items purchased on {purchaseDate}
-            </h2>
+            <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>Items purchased on {purchaseDate}</h2>
           </div>
         </div>
 
@@ -990,8 +986,8 @@ function ShopPurchasesPage() {
                 lineHeight: 1.35,
               }}
             >
-              Note: Item cannot be changed when editing a saved line. If you need a different item, delete the saved
-              line and add a new one.
+              Note: Item cannot be changed when editing a saved line. If you need a different item, delete the saved line
+              and add a new one.
             </div>
           )}
 
@@ -1021,8 +1017,7 @@ function ShopPurchasesPage() {
             {/* Helpers */}
             <div style={helperGridStyle}>
               <div>
-                Pieces / unit:{" "}
-                <strong style={{ color: padText }}>{padStock ? padPiecesPerUnit : "—"}</strong>
+                Pieces / unit: <strong style={{ color: padText }}>{padStock ? padPiecesPerUnit : "—"}</strong>
               </div>
               <div>
                 Recent unit cost:{" "}
@@ -1058,24 +1053,12 @@ function ShopPurchasesPage() {
           >
             <div>
               <label style={labelStyle}>Qty units</label>
-              <input
-                type="number"
-                min={1}
-                value={pad.qtyUnits}
-                onChange={(e) => updatePad("qtyUnits", e.target.value)}
-                style={inputBase}
-              />
+              <input type="number" min={1} value={pad.qtyUnits} onChange={(e) => updatePad("qtyUnits", e.target.value)} style={inputBase} />
             </div>
 
             <div>
               <label style={labelStyle}>Purchase cost (unit)</label>
-              <input
-                type="number"
-                value={pad.newUnitCost}
-                onChange={(e) => updatePad("newUnitCost", e.target.value)}
-                placeholder="0"
-                style={inputBase}
-              />
+              <input type="number" value={pad.newUnitCost} onChange={(e) => updatePad("newUnitCost", e.target.value)} placeholder="0" style={inputBase} />
             </div>
 
             <div>
@@ -1096,39 +1079,20 @@ function ShopPurchasesPage() {
 
             <div>
               <label style={labelStyle}>New wholesale / piece</label>
-              <input
-                type="number"
-                value={pad.newWholesalePerPiece}
-                onChange={(e) => updatePad("newWholesalePerPiece", e.target.value)}
-                placeholder="0"
-                style={inputBase}
-              />
+              <input type="number" value={pad.newWholesalePerPiece} onChange={(e) => updatePad("newWholesalePerPiece", e.target.value)} placeholder="0" style={inputBase} />
             </div>
 
             <div>
               <label style={labelStyle}>New retail / piece</label>
-              <input
-                type="number"
-                value={pad.newRetailPerPiece}
-                onChange={(e) => updatePad("newRetailPerPiece", e.target.value)}
-                placeholder="0"
-                style={inputBase}
-              />
+              <input type="number" value={pad.newRetailPerPiece} onChange={(e) => updatePad("newRetailPerPiece", e.target.value)} placeholder="0" style={inputBase} />
             </div>
           </div>
         </div>
 
         {/* PART 2: LIST */}
         {linesWithComputed.length === 0 ? (
-          <div
-            style={{
-              padding: "14px 4px 6px",
-              fontSize: "13px",
-              color: "#6b7280",
-            }}
-          >
-            No items in this purchase date yet. Use the pad above and click{" "}
-            <strong>{padButtonText}</strong>.
+          <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
+            No items in this purchase date yet. Use the pad above and click <strong>{padButtonText}</strong>.
           </div>
         ) : (
           <>
@@ -1208,13 +1172,7 @@ function ShopPurchasesPage() {
 
               {filteredLinesWithComputed.map((line) => {
                 const { meta, computed } = line;
-                const {
-                  itemName,
-                  piecesPerUnit,
-                  recentUnitCost,
-                  recentWholesalePerPiece,
-                  recentRetailPerPiece,
-                } = meta;
+                const { itemName, piecesPerUnit, recentUnitCost, recentWholesalePerPiece, recentRetailPerPiece } = meta;
 
                 const { newCostPerPiece, lineTotal } = computed;
 
@@ -1256,9 +1214,7 @@ function ShopPurchasesPage() {
                         >
                           {itemName || "Unknown item"}{" "}
                           {isEditingThisSaved ? (
-                            <span style={{ color: "#2563eb", fontWeight: 800, marginLeft: 6 }}>
-                              (editing)
-                            </span>
+                            <span style={{ color: "#2563eb", fontWeight: 800, marginLeft: 6 }}>(editing)</span>
                           ) : null}
                         </button>
                       ) : (
@@ -1293,9 +1249,7 @@ function ShopPurchasesPage() {
                     <div style={{ textAlign: "right" }}>{formatMoney(recentRetailPerPiece)}</div>
                     <div style={{ textAlign: "right" }}>{formatMoney(line.newRetailPerPiece)}</div>
 
-                    <div style={{ textAlign: "right", fontWeight: 600 }}>
-                      {formatMoney(lineTotal)}
-                    </div>
+                    <div style={{ textAlign: "right", fontWeight: 600 }}>{formatMoney(lineTotal)}</div>
 
                     {/* Last column */}
                     <div style={{ textAlign: "center" }}>
@@ -1347,14 +1301,7 @@ function ShopPurchasesPage() {
         )}
 
         {/* Footer buttons */}
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "flex-end",
-            gap: "12px",
-            marginTop: "14px",
-          }}
-        >
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: "12px", marginTop: "14px" }}>
           <button
             type="button"
             onClick={() => navigate(`/shops/${shopId}/stock`)}
