@@ -1,21 +1,27 @@
-// src/context/AuthContext.jsx
+// FILE: src/context/AuthContext.jsx
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
 
-// ✅ Use Vite env var in production (set in DigitalOcean: VITE_API_BASE)
-// Fallback to localhost only if env var is missing (local dev)
+const STORAGE_KEY = "iclas_auth";
+const AuthContext = createContext(null);
+
+// ✅ Production API base (DigitalOcean backend)
+const PROD_API_BASE = "https://iclas-bms-api-prod-pgtdc.ondigitalocean.app";
+
+// ✅ Normalize base URL (remove trailing slash)
 function normalizeBaseUrl(url) {
   const s = String(url || "").trim();
   if (!s) return "";
   return s.endsWith("/") ? s.slice(0, -1) : s;
 }
 
+// ✅ Prefer Vite env var if present; otherwise default to production API
 const ENV_API_BASE =
-  (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_API_BASE) || "";
+  (typeof import.meta !== "undefined" &&
+    import.meta.env &&
+    import.meta.env.VITE_API_BASE) ||
+  "";
 
-const API_BASE = normalizeBaseUrl(ENV_API_BASE) || "http://127.0.0.1:8000";
-
-const STORAGE_KEY = "iclas_auth";
-const AuthContext = createContext(null);
+const API_BASE = normalizeBaseUrl(ENV_API_BASE) || PROD_API_BASE;
 
 // ✅ Normalize backend roles -> frontend roles used in guards/menus
 function normalizeRole(role) {
@@ -64,8 +70,19 @@ export function AuthProvider({ children }) {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        setUser(normalizeUser(parsed.user) || null);
-        setToken(parsed.token || null);
+
+        // Support several token shapes just in case
+        const restoredToken =
+          parsed?.token ||
+          parsed?.access_token ||
+          parsed?.accessToken ||
+          parsed?.data?.access_token ||
+          null;
+
+        const restoredUser = normalizeUser(parsed?.user || parsed?.data?.user) || null;
+
+        setUser(restoredUser);
+        setToken(restoredToken);
       }
     } catch (err) {
       console.error("Failed to restore auth state:", err);
@@ -75,6 +92,7 @@ export function AuthProvider({ children }) {
   }, []);
 
   const login = async (username, password) => {
+    // FastAPI OAuth2PasswordRequestForm expects x-www-form-urlencoded
     const body = new URLSearchParams();
     body.set("grant_type", "password");
     body.set("username", username);
@@ -84,12 +102,17 @@ export function AuthProvider({ children }) {
     try {
       res = await fetch(`${API_BASE}/auth/login`, {
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: body.toString(),
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Accept: "application/json",
+        },
+        body, // ✅ pass URLSearchParams directly
       });
     } catch (e) {
       // Network error (DNS, CORS hard fail, server down, etc.)
-      throw new Error(`Cannot reach API server at ${API_BASE}`);
+      throw new Error(
+        `Cannot reach API server at ${API_BASE}. Check API URL + CORS allow_origins on backend.`
+      );
     }
 
     let data = null;
@@ -146,8 +169,8 @@ export function AuthProvider({ children }) {
         loading,
         login,
         logout,
-        API_BASE,     // helpful for debugging
-        authHeaders,  // helpful for API calls
+        API_BASE, // helpful for debugging
+        authHeaders, // helpful for API calls
       }}
     >
       {children}
