@@ -1,24 +1,36 @@
 // src/api/client.jsx
 import axios from "axios";
 
-const API_BASE = "http://127.0.0.1:8000";
 const AUTH_KEY = "iclas_auth";
+
+// ✅ Use Vite env var in production (DigitalOcean: VITE_API_BASE)
+// Fallback to localhost only if env var is missing (local dev)
+function normalizeBaseUrl(url) {
+  const s = String(url || "").trim();
+  if (!s) return "";
+  return s.endsWith("/") ? s.slice(0, -1) : s;
+}
+
+const ENV_API_BASE =
+  (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_API_BASE) || "";
+
+const API_BASE = normalizeBaseUrl(ENV_API_BASE) || "http://127.0.0.1:8000";
 
 function getTokenFromStorage() {
   const raw = localStorage.getItem(AUTH_KEY);
   if (!raw) return null;
 
-  // Sometimes people store plain token string; support it.
   try {
     const parsed = JSON.parse(raw);
 
     if (typeof parsed === "string") return parsed;
 
-    // Support multiple common shapes:
+    // Support shapes:
     // { token: "..." }
     // { access_token: "..." }
     // { accessToken: "..." }
     // { data: { access_token: "..." } }
+    // { token: "...", user: {...} }  ✅ your current shape
     const token =
       parsed?.token ||
       parsed?.access_token ||
@@ -43,7 +55,6 @@ api.interceptors.request.use(
     const token = getTokenFromStorage();
     if (token) {
       config.headers = config.headers || {};
-      // If someone already stored "Bearer xxx", normalize it
       const clean = String(token).startsWith("Bearer ")
         ? String(token).slice(7)
         : String(token);
