@@ -1,9 +1,20 @@
 // src/context/AuthContext.jsx
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
 
-const API_BASE = "http://127.0.0.1:8000";
+// ✅ Use Vite env var in production (set in DigitalOcean: VITE_API_BASE)
+// Fallback to localhost only if env var is missing (local dev)
+function normalizeBaseUrl(url) {
+  const s = String(url || "").trim();
+  if (!s) return "";
+  return s.endsWith("/") ? s.slice(0, -1) : s;
+}
+
+const ENV_API_BASE =
+  (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_API_BASE) || "";
+
+const API_BASE = normalizeBaseUrl(ENV_API_BASE) || "http://127.0.0.1:8000";
+
 const STORAGE_KEY = "iclas_auth";
-
 const AuthContext = createContext(null);
 
 // ✅ Normalize backend roles -> frontend roles used in guards/menus
@@ -26,16 +37,26 @@ function normalizeRole(role) {
 
 function normalizeUser(u) {
   if (!u || typeof u !== "object") return null;
-  return {
-    ...u,
-    role: normalizeRole(u.role),
-  };
+  return { ...u, role: normalizeRole(u.role) };
+}
+
+function getErrorMessageFromResponse(data, fallback) {
+  // Common FastAPI shapes: {detail:"..."} or {detail:[{msg:"..."}]}
+  if (!data) return fallback;
+  if (typeof data.detail === "string") return data.detail;
+  if (Array.isArray(data.detail) && data.detail[0]?.msg) return data.detail[0].msg;
+  if (typeof data.message === "string") return data.message;
+  return fallback;
 }
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(null);
   const [loading, setLoading] = useState(true);
+
+  const authHeaders = useMemo(() => {
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }, [token]);
 
   // Load auth state from localStorage
   useEffect(() => {
@@ -59,30 +80,48 @@ export function AuthProvider({ children }) {
     body.set("username", username);
     body.set("password", password);
 
-    const res = await fetch(`${API_BASE}/auth/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: body.toString(),
-    });
+    let res;
+    try {
+      res = await fetch(`${API_BASE}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: body.toString(),
+      });
+    } catch (e) {
+      // Network error (DNS, CORS hard fail, server down, etc.)
+      throw new Error(`Cannot reach API server at ${API_BASE}`);
+    }
 
-    if (!res.ok) throw new Error("Invalid username or password");
+    let data = null;
+    try {
+      data = await res.json();
+    } catch {
+      // ignore json parse errors
+    }
 
-    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(getErrorMessageFromResponse(data, "Invalid username or password"));
+    }
 
-    const accessToken = data.access_token || data.token || data.accessToken || null;
-    if (!accessToken) console.warn("No access token in login response:", data);
+    const accessToken = data?.access_token || data?.token || data?.accessToken || null;
+    if (!accessToken) {
+      console.warn("No access token in login response:", data);
+      throw new Error("Login succeeded but no token was returned by the server.");
+    }
 
     // Prefer backend's `user` object
     let me = null;
-    if (data.user && typeof data.user === "object") {
+    if (data?.user && typeof data.user === "object") {
       me = normalizeUser(data.user);
     } else {
       // Fallback: safest default is cashier, never admin
       me = normalizeUser({
-        id: data.user_id ?? data.id ?? null,
-        username: data.username ?? username,
-        role: data.role ?? data.user_role ?? data.user_type ?? "CASHIER",
-        shop_id: data.shop_id ?? null,
+        id: data?.user_id ?? data?.id ?? null,
+        username: data?.username ?? username,
+        role: data?.role ?? data?.user_role ?? data?.user_type ?? "CASHIER",
+        shop_id: data?.shop_id ?? null,
+        shop_ids: data?.shop_ids ?? [],
+        access_shops: data?.access_shops ?? [],
       });
     }
 
@@ -90,6 +129,7 @@ export function AuthProvider({ children }) {
     setToken(accessToken);
     setUser(me);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    return payload;
   };
 
   const logout = () => {
@@ -99,7 +139,17 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, logout }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        token,
+        loading,
+        login,
+        logout,
+        API_BASE,     // helpful for debugging
+        authHeaders,  // helpful for API calls
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
