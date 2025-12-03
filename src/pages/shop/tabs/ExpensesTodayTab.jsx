@@ -1,6 +1,7 @@
-// src/pages/shop/tabs/ExpensesTodayTab.jsx
+// FILE: src/pages/shop/tabs/ExpensesTodayTab.jsx
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { formatMoney, parseAmount, normalizePaymentType } from "../posUtils.js";
+import { API_BASE as CLIENT_API_BASE } from "../../../api/client.jsx";
 
 function uid() {
   return `${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -50,16 +51,11 @@ function normalizeBaseUrl(url) {
   return s.endsWith("/") ? s.slice(0, -1) : s;
 }
 
-// ✅ Default API base from Vite env (DigitalOcean: VITE_API_BASE)
-// Falls back to localhost only for local dev.
-const DEFAULT_API_BASE = (() => {
-  const env =
-    (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_API_BASE) || "";
-  return normalizeBaseUrl(env) || "http://127.0.0.1:8000";
-})();
+// ✅ Production-safe default API base:
+// Use the centralized API base from src/api/client.jsx (which uses VITE_API_BASE / prod fallback)
+const DEFAULT_API_BASE = CLIENT_API_BASE;
 
 // ✅ Safer "same day" check using LOCAL date (not UTC)
-// Prevents missing/extra expenses around midnight due to timezone conversion.
 function toLocalYMD(v) {
   const d = v instanceof Date ? v : new Date(v);
   if (!Number.isFinite(d.getTime())) return "";
@@ -90,7 +86,7 @@ function sameDayAnyField(row, todayStr) {
 }
 
 export default function ExpensesTodayTab({
-  // ✅ Parent can pass API_BASE; if not, we use VITE_API_BASE automatically
+  // ✅ Parent can pass API_BASE; otherwise use centralized prod base
   API_BASE = DEFAULT_API_BASE,
   authHeadersNoJson,
 
@@ -164,8 +160,7 @@ export default function ExpensesTodayTab({
 
   const apiHeaders = useMemo(() => {
     // authHeadersNoJson usually already contains Authorization header
-    const h = { ...(authHeadersNoJson || {}) };
-    return h;
+    return { ...(authHeadersNoJson || {}) };
   }, [authHeadersNoJson]);
 
   const apiFetchJson = useCallback(
@@ -186,7 +181,7 @@ export default function ExpensesTodayTab({
       // ✅ Handle "No Content" responses (common for DELETE)
       if (res.status === 204) return null;
 
-      // ✅ Robust JSON handling: even if content-type is wrong or body is empty
+      // ✅ Robust JSON handling
       const raw = await res.text().catch(() => "");
       if (!raw) return null;
       try {
@@ -239,7 +234,11 @@ export default function ExpensesTodayTab({
 
   const loadTodayFromApi = useCallback(async () => {
     if (!shopId || !todayStr) return;
-    if (!API) return;
+
+    if (!API) {
+      setError?.("API base URL is missing. Check VITE_API_BASE on DigitalOcean.");
+      return;
+    }
 
     setLoadingRemote(true);
     try {
@@ -287,7 +286,7 @@ export default function ExpensesTodayTab({
     } finally {
       setLoadingRemote(false);
     }
-  }, [API, apiFetchJson, setExpenses, shopId, todayStr]);
+  }, [API, apiFetchJson, setExpenses, setError, shopId, todayStr]);
 
   useEffect(() => {
     loadTodayFromApi();
@@ -322,6 +321,7 @@ export default function ExpensesTodayTab({
     const amount = Math.round(parseAmount(form.amount));
     const description = safeText(form.description);
 
+    if (!API) return setError?.("API base URL is missing. Check VITE_API_BASE on DigitalOcean.");
     if (!category) return setError?.("Category is required.");
     if (!amount || amount <= 0) return setError?.("Amount must be > 0.");
 
@@ -337,8 +337,6 @@ export default function ExpensesTodayTab({
     };
 
     try {
-      const now = Date.now();
-
       if (editingId && isNumericId(editingId)) {
         const url = `${API}/expenses/${editingId}`;
         const saved = await apiFetchJson(url, {
@@ -349,10 +347,10 @@ export default function ExpensesTodayTab({
 
         if (saved) mergeIntoState(saved);
         await loadTodayFromApi();
-
         setMessage?.("Expense updated.");
       } else {
         const tempId = editingId || uid();
+        const now = Date.now();
 
         setExpenses?.((prev) => [
           {
@@ -373,7 +371,6 @@ export default function ExpensesTodayTab({
 
         if (saved) replaceTempId(tempId, saved);
         await loadTodayFromApi();
-
         setMessage?.("Expense saved.");
       }
 
@@ -397,15 +394,14 @@ export default function ExpensesTodayTab({
         Array.isArray(prev) ? prev.filter((e) => String(e?.id) !== String(x.id)) : []
       );
 
-      if (isNumericId(x.id)) {
+      if (API && isNumericId(x.id)) {
         await apiFetchJson(`${API}/expenses/${x.id}`, { method: "DELETE" });
       }
 
       await loadTodayFromApi();
-
       setMessage?.("Expense deleted.");
-      if (String(editingId) === String(x.id)) resetForm();
 
+      if (String(editingId) === String(x.id)) resetForm();
       onExpensesChanged?.();
     } catch (e) {
       console.error(e);
