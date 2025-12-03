@@ -1,12 +1,8 @@
-// FILE: src/pages/shop/ShopClosuresHistoryPage.jsx
+// src/pages/shop/ShopClosuresHistoryPage.jsx
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { useAuth } from "../../context/AuthContext.jsx";
 
-// ✅ Single source of truth for API base (VITE_API_BASE / prod fallback)
-import { API_BASE as CLIENT_API_BASE } from "../../api/client.jsx";
-
-const API_BASE = CLIENT_API_BASE;
+const API_BASE = "https://iclas-bms-api-prod-pgtdc.ondigitalocean.app";
 
 function formatMoney(value) {
   if (value === null || value === undefined || value === "") return "0";
@@ -44,13 +40,6 @@ function toISODateOnly(v) {
 function DailyClosureHistoryPage() {
   const { shopId } = useParams();
   const navigate = useNavigate();
-  const { token } = useAuth();
-
-  const authHeadersNoJson = useMemo(() => {
-    const h = {};
-    if (token) h.Authorization = `Bearer ${token}`;
-    return h;
-  }, [token]);
 
   const [shop, setShop] = useState(null);
   const [loadingShop, setLoadingShop] = useState(true);
@@ -79,7 +68,7 @@ function DailyClosureHistoryPage() {
       setLoadingShop(true);
       setError("");
       try {
-        const res = await fetch(`${API_BASE}/shops/${shopId}`, { headers: authHeadersNoJson });
+        const res = await fetch(`${API_BASE}/shops/${shopId}`);
         if (!res.ok) throw new Error("Failed to load shop.");
         const data = await res.json();
         setShop(data);
@@ -91,7 +80,7 @@ function DailyClosureHistoryPage() {
       }
     }
     if (shopId) loadShop();
-  }, [shopId, authHeadersNoJson]);
+  }, [shopId]);
 
   const shopName = shop?.name || `Shop ${shopId}`;
 
@@ -104,7 +93,7 @@ function DailyClosureHistoryPage() {
     setError("");
     try {
       const url = `${API_BASE}/daily-closures/?shop_id=${shopId}&date_from=${dateFrom}&date_to=${dateTo}`;
-      const res = await fetch(url, { headers: authHeadersNoJson });
+      const res = await fetch(url);
       if (!res.ok) {
         if (res.status === 404) {
           setClosures([]);
@@ -123,7 +112,7 @@ function DailyClosureHistoryPage() {
     } finally {
       setLoadingClosures(false);
     }
-  }, [shopId, dateFrom, dateTo, authHeadersNoJson]);
+  }, [shopId, dateFrom, dateTo]);
 
   useEffect(() => {
     loadClosures();
@@ -132,40 +121,39 @@ function DailyClosureHistoryPage() {
   // --------------------------------------------------
   // ✅ Load system totals for each day shown
   // --------------------------------------------------
-  const loadSystemTotalsForClosures = useCallback(
-    async (rows) => {
-      if (!shopId || !rows || rows.length === 0) {
-        setSystemByDate({});
-        return;
-      }
+  const loadSystemTotalsForClosures = useCallback(async (rows) => {
+    if (!shopId || !rows || rows.length === 0) {
+      setSystemByDate({});
+      return;
+    }
 
-      setLoadingSystem(true);
-      try {
-        const uniqueDates = Array.from(new Set(rows.map((c) => toISODateOnly(c.closure_date)))).filter(Boolean);
+    setLoadingSystem(true);
+    try {
+      const uniqueDates = Array.from(
+        new Set(rows.map((c) => toISODateOnly(c.closure_date)))
+      ).filter(Boolean);
 
-        const entries = await Promise.all(
-          uniqueDates.map(async (dStr) => {
-            const url = `${API_BASE}/daily-closures/system-totals?shop_id=${shopId}&closure_date=${dStr}`;
-            try {
-              const res = await fetch(url, { headers: authHeadersNoJson });
-              if (!res.ok) return [dStr, null];
-              const data = await res.json();
-              return [dStr, data || null];
-            } catch {
-              return [dStr, null];
-            }
-          })
-        );
+      const entries = await Promise.all(
+        uniqueDates.map(async (dStr) => {
+          const url = `${API_BASE}/daily-closures/system-totals?shop_id=${shopId}&closure_date=${dStr}`;
+          try {
+            const res = await fetch(url);
+            if (!res.ok) return [dStr, null];
+            const data = await res.json();
+            return [dStr, data || null];
+          } catch {
+            return [dStr, null];
+          }
+        })
+      );
 
-        const map = {};
-        for (const [k, v] of entries) map[k] = v;
-        setSystemByDate(map);
-      } finally {
-        setLoadingSystem(false);
-      }
-    },
-    [shopId, authHeadersNoJson]
-  );
+      const map = {};
+      for (const [k, v] of entries) map[k] = v;
+      setSystemByDate(map);
+    } finally {
+      setLoadingSystem(false);
+    }
+  }, [shopId]);
 
   useEffect(() => {
     loadSystemTotalsForClosures(closures);
@@ -179,7 +167,7 @@ function DailyClosureHistoryPage() {
     setError("");
     try {
       const url = `${API_BASE}/daily-closures/rebuild-range?shop_id=${shopId}&date_from=${dateFrom}&date_to=${dateTo}`;
-      const res = await fetch(url, { method: "POST", headers: authHeadersNoJson });
+      const res = await fetch(url, { method: "POST" });
       if (!res.ok) {
         const txt = await res.text();
         throw new Error(`Rebuild failed (HTTP ${res.status}): ${txt}`);
@@ -189,7 +177,7 @@ function DailyClosureHistoryPage() {
       console.error(err);
       setError(err.message || "Failed to rebuild range.");
     }
-  }, [shopId, dateFrom, dateTo, loadClosures, authHeadersNoJson]);
+  }, [shopId, dateFrom, dateTo, loadClosures]);
 
   // --------------------------------------------------
   // Period summary
