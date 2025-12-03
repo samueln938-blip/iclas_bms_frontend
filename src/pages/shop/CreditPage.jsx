@@ -3,7 +3,13 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext.jsx";
 
-const API_BASE = import.meta?.env?.VITE_API_BASE || "http://127.0.0.1:8000";
+function normalizeBaseUrl(url) {
+  const s = String(url || "").trim();
+  if (!s) return "";
+  return s.endsWith("/") ? s.slice(0, -1) : s;
+}
+
+const API_BASE = normalizeBaseUrl(import.meta?.env?.VITE_API_BASE) || "http://127.0.0.1:8000";
 
 // -----------------------------
 // Formatting helpers
@@ -106,21 +112,8 @@ function normalizeCreditItems(creditDetail) {
 }
 
 // -----------------------------
-// Networking helpers
+// Networking helpers (rest kept as-is)
 // -----------------------------
-async function fetchJson(url, options = {}) {
-  const res = await fetch(url, options);
-  if (!res.ok) {
-    let detail = `Request failed. Status: ${res.status}`;
-    try {
-      const data = await res.json();
-      if (data?.detail) detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
-    } catch {}
-    throw new Error(detail);
-  }
-  return res.json();
-}
-
 async function promisePool(items, worker, limit = 6) {
   const results = new Array(items.length);
   let i = 0;
@@ -194,7 +187,32 @@ export default function CreditPage() {
   const { shopId } = useParams();
   const navigate = useNavigate();
 
-  const { user } = useAuth();
+  // ✅ CHANGE: use authHeaders so deployed API works
+  const { user, authHeaders } = useAuth();
+
+  // ✅ CHANGE: local fetchJson that always attaches authHeaders (NO feature change)
+  async function fetchJson(url, options = {}) {
+    const res = await fetch(url, {
+      ...options,
+      headers: {
+        ...(authHeaders || {}),
+        ...(options.headers || {}),
+      },
+    });
+
+    if (!res.ok) {
+      let detail = `Request failed. Status: ${res.status}`;
+      try {
+        const data = await res.json();
+        if (data?.detail) detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
+      } catch {}
+      throw new Error(detail);
+    }
+
+    if (res.status === 204) return null;
+    return res.json();
+  }
+
   const roleRaw = user?.role ?? user?.role_name ?? user?.user_role ?? "";
   const role = String(roleRaw).toLowerCase();
   const canSeeWorkspaceLink = ["admin", "manager", "owner", "superadmin"].includes(role);
@@ -253,6 +271,7 @@ export default function CreditPage() {
     }
     if (shopId) loadShop();
     return () => (mounted = false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shopId]);
 
   // ------------------------------------------------------------
@@ -555,22 +574,18 @@ export default function CreditPage() {
     }
   };
 
-  const clearSelection = () => {
-    setSelectedCustomerKey(null);
-    setSelectedCustomer(null);
-    setSelectedGroupDetails(null);
-    setPaymentAmount("");
-    setPaymentNote("");
-    setActiveTab("open");
-  };
-
   const reloadSelectedGroup = async () => {
     if (!selectedCustomerKey) return;
     const fresh = await loadCredits(statusFilter);
 
     const credits = fresh.filter((c) => normalizeKey(c.customer_name, c.customer_phone, c.sale_id) === selectedCustomerKey);
     if (!credits.length) {
-      clearSelection();
+      setSelectedCustomerKey(null);
+      setSelectedCustomer(null);
+      setSelectedGroupDetails(null);
+      setPaymentAmount("");
+      setPaymentNote("");
+      setActiveTab("open");
       return;
     }
     const groupObj = {
@@ -705,6 +720,11 @@ export default function CreditPage() {
         </button>
       )}
 
+      {/* ✅ The rest of your UI remains exactly as you pasted it originally */}
+      {/* (Customers / Details / Payment tabs full content kept) */}
+
+      {/* --- START ORIGINAL UI --- */}
+
       <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "baseline" }}>
         <div>
           <h1 style={{ fontSize: "30px", fontWeight: 800, letterSpacing: "0.03em", margin: 0 }}>Credits</h1>
@@ -738,7 +758,6 @@ export default function CreditPage() {
         </div>
       )}
 
-      {/* summary (unchanged) */}
       <div style={{ marginTop: "12px", marginBottom: "14px", backgroundColor: "#ffffff", borderRadius: "18px", boxShadow: "0 10px 30px rgba(15,37,128,0.06)", padding: "14px 18px 16px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "10px" }}>
           <div>
@@ -817,7 +836,6 @@ export default function CreditPage() {
         </div>
       </div>
 
-      {/* tabs (unchanged) */}
       <div style={{ marginTop: "0.75rem", display: "inline-flex", borderRadius: "999px", backgroundColor: "#e5e7eb", padding: "0.15rem", marginBottom: "12px" }}>
         {[
           { id: "open", label: "Customers" },
@@ -851,7 +869,7 @@ export default function CreditPage() {
         })}
       </div>
 
-      {/* CUSTOMERS TAB (unchanged from your working file) */}
+      {/* CUSTOMERS TAB */}
       {activeTab === "open" && (
         <div style={{ backgroundColor: "#ffffff", borderRadius: "18px", boxShadow: "0 6px 18px rgba(15,37,128,0.04)", padding: "14px 16px 14px", minHeight: "260px" }}>
           <div style={{ fontSize: "14px", fontWeight: 700, marginBottom: "8px" }}>
@@ -1013,7 +1031,6 @@ export default function CreditPage() {
 
                     return (
                       <div key={cd.sale_id} style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: "12px 12px", background: "#fff" }}>
-                        {/* ✅ Sale header (ONLY date/time on left; balance on right) */}
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
                           <div>
                             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -1028,7 +1045,6 @@ export default function CreditPage() {
                               )}
                             </div>
 
-                            {/* ✅ Only date & time */}
                             <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>
                               Date: <strong>{formatDateTime(cd.sale_date)}</strong>
                             </div>
@@ -1042,7 +1058,6 @@ export default function CreditPage() {
                           </div>
                         </div>
 
-                        {/* Items table */}
                         <div style={{ marginTop: 12 }}>
                           <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>Items taken</div>
 
@@ -1101,7 +1116,7 @@ export default function CreditPage() {
         </div>
       )}
 
-      {/* PAYMENT TAB is unchanged from your previously working version; keep it */}
+      {/* PAYMENT TAB */}
       {activeTab === "payment" && (
         <div style={{ marginTop: "6px", backgroundColor: "#ffffff", borderRadius: "18px", boxShadow: "0 6px 18px rgba(15,37,128,0.04)", padding: "14px 16px 14px", minHeight: "260px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "10px" }}>
@@ -1181,6 +1196,8 @@ export default function CreditPage() {
           )}
         </div>
       )}
+
+      {/* --- END ORIGINAL UI --- */}
     </div>
   );
 }
