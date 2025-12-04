@@ -1,5 +1,5 @@
 // FILE: src/App.jsx
-import React, { useEffect, useState } from "react";
+import React from "react";
 import {
   BrowserRouter,
   Routes,
@@ -10,9 +10,6 @@ import {
 } from "react-router-dom";
 
 import "./App.css";
-
-// ✅ API client (used only to pick a default shop for OWNER/MANAGER when shop_id is missing)
-import api from "./api/client";
 
 // Layout
 import AppLayout from "./layout/AppLayout.jsx";
@@ -34,6 +31,9 @@ import CreditPage from "./pages/shop/CreditPage.jsx";
 // Auth
 import LoginPage from "./pages/LoginPage.jsx";
 import { AuthProvider, useAuth } from "./context/AuthContext.jsx";
+
+// ✅ Landing helper (uses shop_id / shop_ids / last_shop)
+import { getLandingPath } from "./utils/roleLanding.js";
 
 // =====================================
 // Role normalization (supports OWNER/MANAGER/CASHIER too)
@@ -150,66 +150,9 @@ function Unauthorized() {
 }
 
 // =====================================
-// ✅ NEW: If OWNER/MANAGER has no shop_id,
-// pick the first active shop and go to its workspace.
-// =====================================
-function GlobalDefaultShopRedirect() {
-  const [shopId, setShopId] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-
-    const run = async () => {
-      setLoading(true);
-      setFailed(false);
-      try {
-        const res = await api.get("/shops/", {
-          params: { only_active: true, skip: 0, limit: 1 },
-        });
-
-        const first = Array.isArray(res.data) ? res.data[0] : null;
-        const id = first?.id ?? null;
-
-        if (!alive) return;
-
-        if (id) setShopId(id);
-        else setFailed(true);
-      } catch (e) {
-        if (!alive) return;
-        setFailed(true);
-      } finally {
-        if (!alive) return;
-        setLoading(false);
-      }
-    };
-
-    run();
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  if (loading) {
-    return (
-      <div className="h-screen flex items-center justify-center text-gray-700 text-lg">
-        Opening workspace…
-      </div>
-    );
-  }
-
-  if (!shopId || failed) {
-    // No shops exist OR request failed → only then open Shops Management
-    return <Navigate to="/admin/shops" replace />;
-  }
-
-  return <Navigate to={`/shops/${shopId}/workspace`} replace />;
-}
-
-// =====================================
-// ✅ Role based home redirect (FIXED)
-// - OWNER/MANAGER -> Shop Workspace (their shop_id if set, otherwise auto-pick first shop)
+// ✅ Role based home redirect (FINAL)
+// Uses roleLanding.js (no API call → no random fallback to Shops Management)
+// - OWNER/MANAGER -> Shop Workspace
 // - CASHIER -> Sales & POS
 // =====================================
 function HomeRedirect() {
@@ -218,24 +161,8 @@ function HomeRedirect() {
   if (loading) return null;
   if (!user) return <Navigate to="/login" replace />;
 
-  const role = toCanonicalRole(user.role);
-  const shopId = user.shop_id;
-
-  // Owner/Manager -> workspace
-  if (role === "admin" || role === "manager") {
-    return shopId ? (
-      <Navigate to={`/shops/${shopId}/workspace`} replace />
-    ) : (
-      <GlobalDefaultShopRedirect />
-    );
-  }
-
-  // Cashier -> POS
-  return shopId ? (
-    <Navigate to={`/shops/${shopId}/pos`} replace />
-  ) : (
-    <Navigate to="/unauthorized" replace />
-  );
+  const path = getLandingPath(user); // "/shops/:id/workspace" or "/shops/:id/pos" or "/admin/shops"
+  return <Navigate to={path} replace />;
 }
 
 // =====================================
@@ -266,8 +193,6 @@ function ProtectedApp() {
               </RequireAuth>
             }
           />
-
-          {/* ✅ Manager can VIEW users. Read-only is enforced inside UserManagementPage + backend */}
           <Route
             path="/admin/users"
             element={
@@ -278,7 +203,6 @@ function ProtectedApp() {
           />
 
           {/* ----- Shop section ----- */}
-          {/* Admin/Manager shop pages */}
           <Route
             path="/shops/:shopId"
             element={
@@ -319,8 +243,6 @@ function ProtectedApp() {
               </RequireAuth>
             }
           />
-
-          {/* ❌ Cashier should NOT access separate closures history page (they use the tabs inside SalesPOS instead) */}
           <Route
             path="/shops/:shopId/closures-history"
             element={
