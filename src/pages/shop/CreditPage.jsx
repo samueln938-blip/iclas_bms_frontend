@@ -9,7 +9,9 @@ function normalizeBaseUrl(url) {
   return s.endsWith("/") ? s.slice(0, -1) : s;
 }
 
-const API_BASE = normalizeBaseUrl(import.meta?.env?.VITE_API_BASE) || "http://127.0.0.1:8000";
+const API_BASE =
+  normalizeBaseUrl(import.meta?.env?.VITE_API_BASE) ||
+  "https://iclas-bms-api-prod-pgtdc.ondigitalocean.app";
 
 // -----------------------------
 // Formatting helpers
