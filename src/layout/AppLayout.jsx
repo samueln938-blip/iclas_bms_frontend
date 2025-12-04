@@ -1,5 +1,5 @@
 // FILE: src/layout/AppLayout.jsx
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { NavLink, useNavigate, useLocation } from "react-router-dom";
 import api from "../api/client";
 import { useAuth } from "../context/AuthContext.jsx";
@@ -9,6 +9,9 @@ import { useAuth } from "../context/AuthContext.jsx";
 function AppLayout({ children }) {
   const navigate = useNavigate();
   const location = useLocation();
+
+  const HEADER_HEIGHT = 70;
+  const MOBILE_BREAKPOINT_PX = 900;
 
   // ✅ Get user + logout from auth context
   const { user, logout } = useAuth();
@@ -22,16 +25,48 @@ function AppLayout({ children }) {
   // Owner + Manager share same layout view now
   const isGlobalViewer = isOwner || isManager;
 
+  // -------- Responsive sidebar (mobile collapse) --------
+  const [isMobile, setIsMobile] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT_PX}px)`);
+
+    const apply = () => {
+      const mobile = !!mq.matches;
+      setIsMobile(mobile);
+      // Default: desktop = open, mobile = closed
+      setSidebarOpen(!mobile);
+    };
+
+    apply();
+
+    if (mq.addEventListener) {
+      mq.addEventListener("change", apply);
+      return () => mq.removeEventListener("change", apply);
+    } else {
+      // Safari / older browsers
+      mq.addListener(apply);
+      return () => mq.removeListener(apply);
+    }
+  }, []);
+
+  // Close sidebar after navigation on mobile (keeps header + logout visible)
+  useEffect(() => {
+    if (isMobile && sidebarOpen) setSidebarOpen(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.pathname]);
+
+  const closeSidebarIfMobile = () => {
+    if (isMobile) setSidebarOpen(false);
+  };
+
   // -------- Sidebar shops state --------
   const [sidebarShops, setSidebarShops] = useState([]);
   const [sidebarLoading, setSidebarLoading] = useState(false);
   const [sidebarError, setSidebarError] = useState("");
 
   const myShopId = user?.shop_id || null;
-
-  // ✅ Mobile drawer state
-  const [isMobile, setIsMobile] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Only show shops relevant to the current user:
   // - OWNER/MANAGER: all shops
@@ -65,38 +100,6 @@ function AppLayout({ children }) {
     loadSidebarShops();
   }, []);
 
-  // ✅ Detect mobile width (no extra libraries)
-  useEffect(() => {
-    const onResize = () => {
-      const mobile = window.innerWidth <= 900;
-      setIsMobile(mobile);
-
-      // If user expands to desktop, keep sidebar visible and close overlay
-      if (!mobile) {
-        setSidebarOpen(false);
-      }
-    };
-
-    onResize();
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
-
-  // ✅ Close drawer when route changes (mobile)
-  useEffect(() => {
-    if (isMobile) setSidebarOpen(false);
-  }, [location.pathname, isMobile]);
-
-  // ✅ Close drawer on ESC
-  useEffect(() => {
-    if (!sidebarOpen) return;
-    const onKey = (e) => {
-      if (e.key === "Escape") setSidebarOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [sidebarOpen]);
-
   // ✅ Cashiers: land on Sales & POS by default
   // (we do NOT block them from going to Credits later)
   useEffect(() => {
@@ -119,6 +122,22 @@ function AppLayout({ children }) {
     }
   }, [isCashier, myShopId, location.pathname, navigate]);
 
+  // ------------------------------------------------------------
+  // Display name + logout
+  // ------------------------------------------------------------
+  const displayName = (() => {
+    if (!user) return "Account";
+    if (user.first_name || user.last_name) {
+      return `${user.first_name || ""} ${user.last_name || ""}`.trim();
+    }
+    return user.username || "Account";
+  })();
+
+  const handleLogout = () => {
+    logout();
+    navigate("/login");
+  };
+
   // ---------- Inline styles ----------
   const shellStyle = {
     display: "flex",
@@ -131,12 +150,12 @@ function AppLayout({ children }) {
   const headerStyle = {
     position: "sticky",
     top: 0,
-    zIndex: 50, // above overlay
+    zIndex: 50, // above sidebar overlay
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
-    padding: "0 16px",
-    height: "70px",
+    padding: isMobile ? "0 14px" : "0 32px",
+    height: `${HEADER_HEIGHT}px`,
     backgroundColor: "#0f2580",
     color: "#ffffff",
   };
@@ -145,25 +164,35 @@ function AppLayout({ children }) {
     display: "flex",
     alignItems: "baseline",
     gap: "12px",
-    fontSize: "20px",
+    fontSize: isMobile ? "18px" : "20px",
     fontWeight: 700,
     minWidth: 0,
   };
 
-  const headerTitleWrapStyle = {
-    display: "flex",
-    alignItems: "baseline",
-    gap: "12px",
-    minWidth: 0,
-  };
-
   const headerSubtitleStyle = {
-    fontSize: "16px",
+    fontSize: isMobile ? "13px" : "16px",
     fontWeight: 400,
     opacity: 0.9,
     whiteSpace: "nowrap",
     overflow: "hidden",
     textOverflow: "ellipsis",
+    maxWidth: isMobile ? "42vw" : "none",
+  };
+
+  const menuButtonStyle = {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: "40px",
+    height: "40px",
+    borderRadius: "999px",
+    border: "1px solid rgba(255,255,255,0.25)",
+    backgroundColor: "rgba(255,255,255,0.10)",
+    color: "#ffffff",
+    cursor: "pointer",
+    fontSize: "18px",
+    fontWeight: 800,
+    flex: "0 0 auto",
   };
 
   const userButtonStyle = {
@@ -171,44 +200,56 @@ function AppLayout({ children }) {
     color: "#ffffff",
     borderRadius: "999px",
     border: "none",
-    padding: "10px 16px",
-    fontSize: "14px",
+    padding: isMobile ? "8px 12px" : "10px 24px",
+    fontSize: isMobile ? "13px" : "14px",
     fontWeight: 600,
     cursor: "pointer",
+    maxWidth: isMobile ? "44vw" : "none",
     whiteSpace: "nowrap",
-  };
-
-  const menuButtonStyle = {
-    width: 42,
-    height: 42,
-    borderRadius: "999px",
-    border: "1px solid rgba(255,255,255,0.25)",
-    backgroundColor: "rgba(255,255,255,0.10)",
-    color: "#ffffff",
-    cursor: "pointer",
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontSize: 18,
-    fontWeight: 800,
-    flex: "0 0 auto",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
   };
 
   const bodyStyle = {
     display: "flex",
     flex: 1,
     minHeight: 0,
+    position: "relative", // for overlay anchoring
+  };
+
+  const overlayStyle = {
+    position: "fixed",
+    top: `${HEADER_HEIGHT}px`,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(15, 23, 42, 0.35)",
+    zIndex: 40,
   };
 
   const sidebarStyle = {
     width: "260px",
-    padding: "24px 16px",
+    padding: isMobile ? "18px 14px" : "24px 16px",
     borderRight: "1px solid #e5e7eb",
     backgroundColor: "#ffffff",
     display: "flex",
     flexDirection: "column",
     gap: "16px",
-    overflowY: "auto",
+
+    // Mobile drawer behavior
+    ...(isMobile
+      ? {
+          position: "fixed",
+          top: `${HEADER_HEIGHT}px`,
+          left: 0,
+          bottom: 0,
+          zIndex: 45,
+          width: "280px",
+          boxShadow: "0 25px 60px rgba(15, 23, 42, 0.25)",
+          transform: sidebarOpen ? "translateX(0)" : "translateX(-105%)",
+          transition: "transform 0.18s ease",
+        }
+      : {}),
   };
 
   const sidebarSectionTitleStyle = {
@@ -229,6 +270,7 @@ function AppLayout({ children }) {
     padding: isMobile ? "16px 14px" : "24px 32px",
     backgroundColor: "#f3f4f6",
     overflowY: "auto",
+    minWidth: 0,
   };
 
   const sidebarLinkBase = {
@@ -265,210 +307,158 @@ function AppLayout({ children }) {
     color: "#9ca3af",
   };
 
-  // Mobile drawer overlay styles
-  const overlayStyle = {
-    position: "fixed",
-    inset: 0,
-    backgroundColor: "rgba(15, 23, 42, 0.45)",
-    zIndex: 40,
-    display: sidebarOpen ? "block" : "none",
-  };
-
-  const drawerStyle = {
-    position: "fixed",
-    top: 70, // below header
-    left: 0,
-    bottom: 0,
-    width: "280px",
-    maxWidth: "85vw",
-    backgroundColor: "#ffffff",
-    borderRight: "1px solid #e5e7eb",
-    boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
-    zIndex: 45,
-    transform: sidebarOpen ? "translateX(0)" : "translateX(-105%)",
-    transition: "transform 0.18s ease",
-    display: "flex",
-    flexDirection: "column",
-  };
-
-  // ------------------------------------------------------------
-  // Display name + logout
-  // ------------------------------------------------------------
-  const displayName = (() => {
-    if (!user) return "Account";
-    if (user.first_name || user.last_name) {
-      return `${user.first_name || ""} ${user.last_name || ""}`.trim();
-    }
-    return user.username || "Account";
-  })();
-
-  const handleLogout = () => {
-    logout();
-    navigate("/login");
-  };
-
-  const toggleSidebar = useCallback(() => {
-    setSidebarOpen((v) => !v);
-  }, []);
-
-  const SidebarContent = (
-    <div style={sidebarStyle}>
-      {/* ✅ OWNER + MANAGER GLOBAL MENU (same view) */}
-      {isGlobalViewer && (
-        <>
-          <div style={sidebarSectionTitleStyle}>GLOBAL</div>
-          <nav style={navListStyle}>
-            <NavLink
-              to="/admin/items"
-              style={({ isActive }) => ({
-                ...sidebarLinkBase,
-                ...(isActive ? sidebarLinkActive : {}),
-              })}
-            >
-              Item Catalogue
-            </NavLink>
-
-            <NavLink
-              to="/admin/shops"
-              style={({ isActive }) => ({
-                ...sidebarLinkBase,
-                ...(isActive ? sidebarLinkActive : {}),
-              })}
-            >
-              Shops Management
-            </NavLink>
-
-            {/* Manager can open it; page itself will be read-only for manager */}
-            <NavLink
-              to="/admin/users"
-              style={({ isActive }) => ({
-                ...sidebarLinkBase,
-                ...(isActive ? sidebarLinkActive : {}),
-              })}
-            >
-              User Management
-            </NavLink>
-          </nav>
-        </>
-      )}
-
-      {/* ✅ CASHIER MENU (always anchored to their shop) */}
-      {isCashier && (
-        <>
-          <div style={sidebarSectionTitleStyle}>CASHIER MENU</div>
-
-          {!myShopId ? (
-            <div style={{ fontSize: "13px", color: "#b91c1c" }}>
-              Your account has no shop assigned. Ask the OWNER to set shop_id.
-            </div>
-          ) : (
-            <nav style={navListStyle}>
-              <NavLink
-                to={`/shops/${myShopId}/pos`}
-                style={({ isActive }) => ({
-                  ...sidebarLinkBase,
-                  ...(isActive ? sidebarLinkActive : {}),
-                })}
-              >
-                Sales & POS
-              </NavLink>
-
-              <NavLink
-                to={`/shops/${myShopId}/credits`}
-                style={({ isActive }) => ({
-                  ...sidebarLinkBase,
-                  ...(isActive ? sidebarLinkActive : {}),
-                })}
-              >
-                Credits
-              </NavLink>
-            </nav>
-          )}
-        </>
-      )}
-
-      {/* SHOPS PANEL (dynamic) */}
-      <div style={{ ...sidebarSectionTitleStyle, marginTop: "12px" }}>
-        SHOPS
-      </div>
-
-      {sidebarLoading ? (
-        <div style={{ fontSize: "13px", color: "#9ca3af" }}>
-          Loading shops...
-        </div>
-      ) : sidebarError ? (
-        <div style={{ fontSize: "13px", color: "#b91c1c" }}>{sidebarError}</div>
-      ) : visibleShops.length === 0 ? (
-        <div style={{ fontSize: "13px", color: "#9ca3af" }}>
-          {isGlobalViewer ? "No shops yet." : "No shop available for your account."}
-        </div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-          {visibleShops.map((shop) => (
-            <button
-              key={shop.id}
-              style={shopButtonStyle}
-              onClick={() => {
-                // ✅ Cashier clicking a shop goes straight to POS
-                if (isCashier) return navigate(`/shops/${shop.id}/pos`);
-                return navigate(`/shops/${shop.id}`);
-              }}
-            >
-              <span>{shop.name}</span>
-              <span style={shopArrowStyle}>›</span>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-
   return (
     <div style={shellStyle}>
       {/* TOP BLUE BAR */}
       <header style={headerStyle}>
         <div style={headerLeftStyle}>
-          {/* ✅ Mobile menu button (collapses sidebar) */}
           {isMobile && (
             <button
               type="button"
-              onClick={toggleSidebar}
+              style={menuButtonStyle}
+              onClick={() => setSidebarOpen((v) => !v)}
               aria-label={sidebarOpen ? "Close menu" : "Open menu"}
               title={sidebarOpen ? "Close menu" : "Open menu"}
-              style={menuButtonStyle}
             >
               ☰
             </button>
           )}
-
-          <div style={headerTitleWrapStyle}>
-            <span style={{ whiteSpace: "nowrap" }}>ICLAS Ltd</span>
-            <span style={headerSubtitleStyle}>Business Management System</span>
-          </div>
+          <span style={{ whiteSpace: "nowrap" }}>ICLAS Ltd</span>
+          <span style={headerSubtitleStyle}>Business Management System</span>
         </div>
 
-        <button style={userButtonStyle} onClick={handleLogout}>
+        <button style={userButtonStyle} onClick={handleLogout} title="Logout">
           {displayName} | Logout
         </button>
       </header>
 
-      {/* Mobile overlay + drawer */}
-      {isMobile && (
-        <>
-          <div
-            style={overlayStyle}
-            onClick={() => setSidebarOpen(false)}
-            aria-hidden="true"
-          />
-          <aside style={drawerStyle} aria-label="Sidebar">
-            {SidebarContent}
-          </aside>
-        </>
-      )}
-
-      {/* Desktop layout */}
+      {/* SIDEBAR + MAIN */}
       <div style={bodyStyle}>
-        {!isMobile && <aside style={sidebarStyle}>{SidebarContent.props.children}</aside>}
+        {/* Mobile overlay */}
+        {isMobile && sidebarOpen && (
+          <div style={overlayStyle} onClick={() => setSidebarOpen(false)} />
+        )}
+
+        {/* LEFT SIDEBAR */}
+        <aside style={sidebarStyle}>
+          {/* ✅ OWNER + MANAGER GLOBAL MENU (same view) */}
+          {isGlobalViewer && (
+            <>
+              <div style={sidebarSectionTitleStyle}>GLOBAL</div>
+              <nav style={navListStyle}>
+                <NavLink
+                  to="/admin/items"
+                  onClick={closeSidebarIfMobile}
+                  style={({ isActive }) => ({
+                    ...sidebarLinkBase,
+                    ...(isActive ? sidebarLinkActive : {}),
+                  })}
+                >
+                  Item Catalogue
+                </NavLink>
+
+                <NavLink
+                  to="/admin/shops"
+                  onClick={closeSidebarIfMobile}
+                  style={({ isActive }) => ({
+                    ...sidebarLinkBase,
+                    ...(isActive ? sidebarLinkActive : {}),
+                  })}
+                >
+                  Shops Management
+                </NavLink>
+
+                {/* Manager can open it; page itself will be read-only for manager */}
+                <NavLink
+                  to="/admin/users"
+                  onClick={closeSidebarIfMobile}
+                  style={({ isActive }) => ({
+                    ...sidebarLinkBase,
+                    ...(isActive ? sidebarLinkActive : {}),
+                  })}
+                >
+                  User Management
+                </NavLink>
+              </nav>
+            </>
+          )}
+
+          {/* ✅ CASHIER MENU (always anchored to their shop) */}
+          {isCashier && (
+            <>
+              <div style={sidebarSectionTitleStyle}>CASHIER MENU</div>
+
+              {!myShopId ? (
+                <div style={{ fontSize: "13px", color: "#b91c1c" }}>
+                  Your account has no shop assigned. Ask the OWNER to set shop_id.
+                </div>
+              ) : (
+                <nav style={navListStyle}>
+                  <NavLink
+                    to={`/shops/${myShopId}/pos`}
+                    onClick={closeSidebarIfMobile}
+                    style={({ isActive }) => ({
+                      ...sidebarLinkBase,
+                      ...(isActive ? sidebarLinkActive : {}),
+                    })}
+                  >
+                    Sales & POS
+                  </NavLink>
+
+                  <NavLink
+                    to={`/shops/${myShopId}/credits`}
+                    onClick={closeSidebarIfMobile}
+                    style={({ isActive }) => ({
+                      ...sidebarLinkBase,
+                      ...(isActive ? sidebarLinkActive : {}),
+                    })}
+                  >
+                    Credits
+                  </NavLink>
+                </nav>
+              )}
+            </>
+          )}
+
+          {/* SHOPS PANEL (dynamic) */}
+          <div style={{ ...sidebarSectionTitleStyle, marginTop: "12px" }}>
+            SHOPS
+          </div>
+
+          {sidebarLoading ? (
+            <div style={{ fontSize: "13px", color: "#9ca3af" }}>
+              Loading shops...
+            </div>
+          ) : sidebarError ? (
+            <div style={{ fontSize: "13px", color: "#b91c1c" }}>
+              {sidebarError}
+            </div>
+          ) : visibleShops.length === 0 ? (
+            <div style={{ fontSize: "13px", color: "#9ca3af" }}>
+              {isGlobalViewer
+                ? "No shops yet."
+                : "No shop available for your account."}
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              {visibleShops.map((shop) => (
+                <button
+                  key={shop.id}
+                  style={shopButtonStyle}
+                  onClick={() => {
+                    closeSidebarIfMobile();
+                    // ✅ Cashier clicking a shop goes straight to POS
+                    if (isCashier) return navigate(`/shops/${shop.id}/pos`);
+                    return navigate(`/shops/${shop.id}`);
+                  }}
+                >
+                  <span>{shop.name}</span>
+                  <span style={shopArrowStyle}>›</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </aside>
 
         {/* MAIN CONTENT */}
         <main style={mainStyle}>{children}</main>
