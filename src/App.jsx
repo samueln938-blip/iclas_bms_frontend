@@ -1,5 +1,5 @@
 // FILE: src/App.jsx
-import React from "react";
+import React, { useEffect, useState } from "react";
 import {
   BrowserRouter,
   Routes,
@@ -10,6 +10,9 @@ import {
 } from "react-router-dom";
 
 import "./App.css";
+
+// ✅ API client (used only to pick a default shop for OWNER/MANAGER when shop_id is missing)
+import api from "./api/client";
 
 // Layout
 import AppLayout from "./layout/AppLayout.jsx";
@@ -147,13 +150,67 @@ function Unauthorized() {
 }
 
 // =====================================
-// ✅ Role based home redirect (UPDATED)
-// - OWNER/MANAGER -> Shop Workspace (their primary shop_id)
+// ✅ NEW: If OWNER/MANAGER has no shop_id,
+// pick the first active shop and go to its workspace.
+// =====================================
+function GlobalDefaultShopRedirect() {
+  const [shopId, setShopId] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+
+    const run = async () => {
+      setLoading(true);
+      setFailed(false);
+      try {
+        const res = await api.get("/shops/", {
+          params: { only_active: true, skip: 0, limit: 1 },
+        });
+
+        const first = Array.isArray(res.data) ? res.data[0] : null;
+        const id = first?.id ?? null;
+
+        if (!alive) return;
+
+        if (id) setShopId(id);
+        else setFailed(true);
+      } catch (e) {
+        if (!alive) return;
+        setFailed(true);
+      } finally {
+        if (!alive) return;
+        setLoading(false);
+      }
+    };
+
+    run();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="h-screen flex items-center justify-center text-gray-700 text-lg">
+        Opening workspace…
+      </div>
+    );
+  }
+
+  if (!shopId || failed) {
+    // No shops exist OR request failed → only then open Shops Management
+    return <Navigate to="/admin/shops" replace />;
+  }
+
+  return <Navigate to={`/shops/${shopId}/workspace`} replace />;
+}
+
+// =====================================
+// ✅ Role based home redirect (FIXED)
+// - OWNER/MANAGER -> Shop Workspace (their shop_id if set, otherwise auto-pick first shop)
 // - CASHIER -> Sales & POS
-//
-// Notes:
-// - If OWNER/MANAGER has no shop_id yet, we send them to Shops Management
-//   so they can create/select a shop and (optionally) assign themselves.
 // =====================================
 function HomeRedirect() {
   const { user, loading } = useAuth();
@@ -169,7 +226,7 @@ function HomeRedirect() {
     return shopId ? (
       <Navigate to={`/shops/${shopId}/workspace`} replace />
     ) : (
-      <Navigate to="/admin/shops" replace />
+      <GlobalDefaultShopRedirect />
     );
   }
 
