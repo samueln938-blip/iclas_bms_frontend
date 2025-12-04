@@ -21,10 +21,18 @@ export function readLastShopId() {
   }
 }
 
+function toInt(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 // Decide best shopId to land on
 export function pickLandingShopId(user) {
   const last = readLastShopId();
+
+  // backend gives these sometimes:
   const shopIds = Array.isArray(user?.shop_ids) ? user.shop_ids : [];
+  const primary = toInt(user?.shop_id);
 
   const role = String(user?.role || "").toLowerCase();
   const isCashier = role === "cashier";
@@ -32,36 +40,38 @@ export function pickLandingShopId(user) {
   // Cashier: must stay within assigned shop(s)
   if (isCashier) {
     if (last != null && shopIds.includes(last)) return last;
-    if (user?.shop_id != null) return Number(user.shop_id);
-    if (shopIds[0] != null) return Number(shopIds[0]);
+    if (primary != null) return primary;
+    if (shopIds[0] != null) return toInt(shopIds[0]);
     return null;
   }
 
-  // Owner/Manager: can use last shop, else fallback
+  // Owner/Manager: prefer last shop (if set), then primary, then first accessible shop
   if (last != null) return last;
-  if (user?.shop_id != null) return Number(user.shop_id);
-  if (shopIds[0] != null) return Number(shopIds[0]);
-  return 1; // final fallback
+  if (primary != null) return primary;
+  if (shopIds[0] != null) return toInt(shopIds[0]);
+
+  // ✅ SAFE: no fake fallback shop id in production
+  return null;
 }
 
 /**
- * Your actual routes (based on ShopWorkspacePage navigation):
- * - Workspace: /shops/:shopId
- * - Sales & POS: /shops/:shopId/sales-pos
+ * App routes (based on your routing):
+ * - Workspace: /shops/:shopId/workspace  (or /shops/:shopId)
+ * - Sales & POS: /shops/:shopId/pos
  */
 export function getLandingPath(user) {
+  if (!user) return "/login";
+
   const role = String(user?.role || "").toLowerCase();
   const shopId = pickLandingShopId(user);
 
-  if (!user) return "/login";
-
   // CASHIER -> Sales & POS
   if (role === "cashier") {
-    if (!shopId) return "/login";
-    return `/shops/${shopId}/sales-pos`;
+    if (!shopId) return "/unauthorized";
+    return `/shops/${shopId}/pos`;
   }
 
   // OWNER + MANAGER -> Shop Workspace
-  if (!shopId) return "/login";
-  return `/shops/${shopId}`;
+  if (!shopId) return "/admin/shops"; // no shop known yet
+  return `/shops/${shopId}/workspace`;
 }
