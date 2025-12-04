@@ -2,7 +2,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 
-const API_BASE = "http://127.0.0.1:8000";
+const API_BASE = "https://iclas-bms-api-prod-pgtdc.ondigitalocean.app";
 
 function formatMoney(value) {
   if (value === null || value === undefined || value === "") return "0";
