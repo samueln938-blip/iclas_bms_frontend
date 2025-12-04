@@ -32,7 +32,7 @@ const LoginPage = () => {
     const role = canonicalRole(user?.role);
     const shopId = user?.shop_id;
 
-    // ✅ OWNER/MANAGER -> your new Summary page (not Shops Management)
+    // ✅ OWNER/MANAGER -> Summary page
     if (role === "admin" || role === "manager") return "/iclas";
 
     // cashier
@@ -50,12 +50,18 @@ const LoginPage = () => {
 
     // ✅ Admin/Manager: allow internal routes, including /iclas
     if (role === "admin" || role === "manager") {
-      return p === "/iclas" || p.startsWith("/admin") || p.startsWith("/shops") || p === "/";
+      return (
+        p === "/iclas" ||
+        p.startsWith("/admin") ||
+        p.startsWith("/shops") ||
+        p === "/"
+      );
     }
 
     // Cashier: only allow the pages they’re supposed to use
     // (Sales & POS + Credits + Closures History) and only within /shops/:id/...
-    const cashierAllowed = /^\/shops\/\d+\/(pos|sales-pos|credits|closures-history)\/?$/i;
+    const cashierAllowed =
+      /^\/shops\/\d+\/(pos|sales-pos|credits|closures-history)\/?$/i;
     return cashierAllowed.test(p);
   }
 
@@ -68,11 +74,12 @@ const LoginPage = () => {
 
     try {
       const payload = await login(username.trim(), password);
-
       const me = payload?.user || null;
 
       const from = location.state?.from?.pathname || "";
-      const target = isSafeFromPathForRole(from, me) ? from : defaultLandingFor(me);
+      const target = isSafeFromPathForRole(from, me)
+        ? from
+        : defaultLandingFor(me);
 
       navigate(target || "/", { replace: true });
     } catch (err) {
