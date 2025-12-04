@@ -1,3 +1,4 @@
+// FILE: src/pages/ICLASSummaryPage.jsx
 import React, { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
@@ -85,7 +86,7 @@ export default function ICLASSummaryPage() {
       marginTop: 18,
     };
 
-    const linkCard = (accent, bg) => ({
+    const linkCard = {
       width: "100%",
       border: "none",
       cursor: "pointer",
@@ -101,7 +102,7 @@ export default function ICLASSummaryPage() {
       outline: "1px solid #eef2ff",
       position: "relative",
       overflow: "hidden",
-    });
+    };
 
     const dot = (accent, bg) => ({
       width: 36,
@@ -178,9 +179,8 @@ export default function ICLASSummaryPage() {
     };
   }, []);
 
-  const goGlobal = () => navigate("/admin/items"); // safe global entry
-  const goShops = () => navigate("/admin/shops");  // shops list (owner/manager)
-  // If cashier opens this page accidentally, these routes are guarded anyway.
+  const goGlobal = () => navigate("/admin/items");
+  const goShops = () => navigate("/admin/shops");
 
   return (
     <div style={styles.shell}>
@@ -198,6 +198,7 @@ export default function ICLASSummaryPage() {
           >
             Welcome
           </button>
+
           <button
             type="button"
             onClick={() => setTab("summary")}
@@ -223,7 +224,7 @@ export default function ICLASSummaryPage() {
               <div className="iclas-link-grid" style={styles.linkGrid}>
                 <button
                   type="button"
-                  style={styles.linkCard("#0f2580", "#e0e7ff")}
+                  style={styles.linkCard}
                   onClick={goGlobal}
                   onMouseEnter={(e) => {
                     e.currentTarget.style.transform = "translateY(-1px)";
@@ -243,7 +244,7 @@ export default function ICLASSummaryPage() {
 
                 <button
                   type="button"
-                  style={styles.linkCard("#166534", "#dcfce7")}
+                  style={styles.linkCard}
                   onClick={goShops}
                   onMouseEnter={(e) => {
                     e.currentTarget.style.transform = "translateY(-1px)";
