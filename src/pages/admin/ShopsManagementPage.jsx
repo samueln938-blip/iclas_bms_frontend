@@ -8,7 +8,25 @@ const EMPTY_FORM = {
   location: "",
 };
 
-function ShopManagementPage() {
+function readCurrentRoleFromStorage() {
+  try {
+    const raw = localStorage.getItem("iclas_auth");
+    if (!raw) return "";
+    const parsed = JSON.parse(raw);
+
+    const role =
+      parsed?.user?.role ||
+      parsed?.role ||
+      parsed?.user_role ||
+      parsed?.profile?.role ||
+      "";
+    return String(role || "").toUpperCase();
+  } catch {
+    return "";
+  }
+}
+
+function ShopsManagementPage() {
   const [shops, setShops] = useState([]);
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingShopId, setEditingShopId] = useState(null);
@@ -21,8 +39,27 @@ function ShopManagementPage() {
   const formCardRef = useRef(null);
   const isEditing = editingShopId !== null;
 
-  // NEW: tabs ("create" or "shops")
+  // ✅ Who am I? (OWNER vs MANAGER)
+  const [currentRole, setCurrentRole] = useState("");
+  const isOwnerViewer = currentRole === "OWNER" || currentRole === "ADMIN";
+  const isManagerViewer = currentRole === "MANAGER";
+  const readOnly = isManagerViewer;
+
+  // Tabs ("create" or "shops")
   const [activeTab, setActiveTab] = useState("create");
+
+  // Read current role on mount
+  useEffect(() => {
+    const r = readCurrentRoleFromStorage();
+    setCurrentRole(r);
+  }, []);
+
+  // Default tab by role
+  useEffect(() => {
+    if (isOwnerViewer) setActiveTab("create");
+    else setActiveTab("shops");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentRole]);
 
   // ------------------------------------------------
   // Load shops
@@ -31,11 +68,15 @@ function ShopManagementPage() {
     setLoading(true);
     setError("");
     try {
-      const res = await api.get("/shops/");
+      // ✅ Show both active + inactive in management page
+      const res = await api.get("/shops/", { params: { only_active: false } });
       setShops(res.data || []);
     } catch (err) {
       console.error("Error loading shops", err);
-      setError("Failed to load shops from server.");
+      setError(
+        err?.response?.data?.detail ||
+          "Failed to load shops from server."
+      );
     } finally {
       setLoading(false);
     }
@@ -54,6 +95,7 @@ function ShopManagementPage() {
   };
 
   const handleChange = (e) => {
+    if (readOnly) return;
     const { name, value } = e.target;
     setForm((prev) => ({
       ...prev,
@@ -63,6 +105,11 @@ function ShopManagementPage() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (readOnly) {
+      setError("This page is read-only for MANAGER.");
+      return;
+    }
+
     setSaving(true);
     setMessage("");
     setError("");
@@ -91,13 +138,15 @@ function ShopManagementPage() {
       await loadShops();
     } catch (err) {
       console.error("Error saving shop", err);
-      setError("Failed to save shop.");
+      setError(err?.response?.data?.detail || "Failed to save shop.");
     } finally {
       setSaving(false);
     }
   };
 
   const handleEditClick = (shop) => {
+    if (readOnly) return;
+
     setError("");
     setMessage("");
     setEditingShopId(shop.id);
@@ -118,13 +167,13 @@ function ShopManagementPage() {
           block: "start",
         });
       } else {
-        // Fallback: scroll top
         window.scrollTo({ top: 0, behavior: "smooth" });
       }
     }, 0);
   };
 
   const handleCancelEdit = () => {
+    if (readOnly) return;
     resetForm();
     setMessage("Edit cancelled.");
   };
@@ -133,6 +182,8 @@ function ShopManagementPage() {
   // Delete (soft delete)
   // ------------------------------------------------
   const handleDeleteClick = async (shop) => {
+    if (readOnly) return;
+
     const confirmText = shop.is_active
       ? `Are you sure you want to deactivate "${shop.name}"?`
       : `Shop "${shop.name}" is already inactive. Deactivate again?`;
@@ -148,7 +199,7 @@ function ShopManagementPage() {
       await loadShops();
     } catch (err) {
       console.error("Error deleting shop", err);
-      setError("Failed to delete shop.");
+      setError(err?.response?.data?.detail || "Failed to delete shop.");
     }
   };
 
@@ -182,43 +233,52 @@ function ShopManagementPage() {
       >
         Shops Management
       </h1>
+
+      <p style={{ color: "#6b7280", marginBottom: "0.5rem" }}>
+        {readOnly ? (
+          <>
+            You are logged in as <b>MANAGER</b>. This page is <b>read-only</b>.
+          </>
+        ) : (
+          <>
+            You are logged in as <b>OWNER</b>. You can create, update and deactivate shops.
+          </>
+        )}
+      </p>
+
       <p style={{ color: "#6b7280", marginBottom: "1.25rem" }}>
-        Manage your ICLAS shops: create new shops, update their details, and
-        deactivate shops that are no longer in use.
+        Manage your ICLAS shops: create new shops, update their details, and deactivate shops that are no longer in use.
       </p>
 
       {/* Tabs */}
-      <div
-        style={{
-          display: "flex",
-          gap: "0.5rem",
-          marginBottom: "1.5rem",
-        }}
-      >
-        <button
-          type="button"
-          onClick={() => setActiveTab("create")}
-          style={{
-            padding: "0.45rem 1.4rem",
-            borderRadius: "9999px",
-            border:
-              activeTab === "create"
-                ? "none"
-                : "1px solid rgba(209,213,219,1)",
-            backgroundColor:
-              activeTab === "create" ? "#4b6bfb" : "rgba(249,250,251,1)",
-            color: activeTab === "create" ? "#ffffff" : "#374151",
-            fontSize: "0.9rem",
-            fontWeight: 600,
-            cursor: "pointer",
-            boxShadow:
-              activeTab === "create"
-                ? "0 10px 25px rgba(59,130,246,0.35)"
-                : "none",
-          }}
-        >
-          Create shop
-        </button>
+      <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1.5rem" }}>
+        {isOwnerViewer && (
+          <button
+            type="button"
+            onClick={() => setActiveTab("create")}
+            style={{
+              padding: "0.45rem 1.4rem",
+              borderRadius: "9999px",
+              border:
+                activeTab === "create"
+                  ? "none"
+                  : "1px solid rgba(209,213,219,1)",
+              backgroundColor:
+                activeTab === "create" ? "#4b6bfb" : "rgba(249,250,251,1)",
+              color: activeTab === "create" ? "#ffffff" : "#374151",
+              fontSize: "0.9rem",
+              fontWeight: 600,
+              cursor: "pointer",
+              boxShadow:
+                activeTab === "create"
+                  ? "0 10px 25px rgba(59,130,246,0.35)"
+                  : "none",
+            }}
+          >
+            Create shop
+          </button>
+        )}
+
         <button
           type="button"
           onClick={() => setActiveTab("shops")}
@@ -260,8 +320,8 @@ function ShopManagementPage() {
         </div>
       )}
 
-      {/* Top section: form (Create shop tab) */}
-      {activeTab === "create" && (
+      {/* Create / Edit (OWNER ONLY) */}
+      {activeTab === "create" && isOwnerViewer && (
         <div
           ref={formCardRef}
           style={{
@@ -281,18 +341,11 @@ function ShopManagementPage() {
               gap: "0.75rem",
             }}
           >
-            <h2
-              style={{
-                fontSize: "1.5rem",
-                fontWeight: 700,
-              }}
-            >
+            <h2 style={{ fontSize: "1.5rem", fontWeight: 700 }}>
               Shop
             </h2>
 
-            <div
-              style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}
-            >
+            <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
               <span
                 style={{
                   padding: "0.2rem 0.7rem",
@@ -419,7 +472,7 @@ function ShopManagementPage() {
         </div>
       )}
 
-      {/* Shops table (Shops tab) */}
+      {/* Shops tab */}
       {activeTab === "shops" && (
         <div
           style={{
@@ -430,23 +483,9 @@ function ShopManagementPage() {
             marginBottom: "3rem",
           }}
         >
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "flex-end",
-              marginBottom: "0.75rem",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "0.5rem",
-              }}
-            >
-              <span style={{ fontSize: "0.9rem", color: "#4b5563" }}>
-                Search:
-              </span>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "0.75rem" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+              <span style={{ fontSize: "0.9rem", color: "#4b5563" }}>Search:</span>
               <input
                 type="text"
                 value={searchQuery}
@@ -463,13 +502,7 @@ function ShopManagementPage() {
             </div>
           </div>
 
-          <h2
-            style={{
-              fontSize: "1.4rem",
-              fontWeight: 700,
-              marginBottom: "1rem",
-            }}
-          >
+          <h2 style={{ fontSize: "1.4rem", fontWeight: 700, marginBottom: "1rem" }}>
             Shops
           </h2>
 
@@ -479,13 +512,7 @@ function ShopManagementPage() {
             <p style={{ color: "#6b7280" }}>No shops match your search.</p>
           ) : (
             <div style={{ overflowX: "auto" }}>
-              <table
-                style={{
-                  width: "100%",
-                  borderCollapse: "collapse",
-                  fontSize: "0.95rem",
-                }}
-              >
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.95rem" }}>
                 <thead>
                   <tr
                     style={{
@@ -497,37 +524,40 @@ function ShopManagementPage() {
                     <th style={{ padding: "0.5rem 0.75rem" }}>Name</th>
                     <th style={{ padding: "0.5rem 0.75rem" }}>Location</th>
                     <th style={{ padding: "0.5rem 0.75rem" }}>Status</th>
-                    <th style={{ padding: "0.5rem 0.75rem" }}>Actions</th>
+                    {isOwnerViewer && <th style={{ padding: "0.5rem 0.75rem" }}>Actions</th>}
                   </tr>
                 </thead>
+
                 <tbody>
                   {filteredShops.map((shop) => (
-                    <tr
-                      key={shop.id}
-                      style={{ borderBottom: "1px solid #f3f4f6" }}
-                    >
+                    <tr key={shop.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
                       <td style={{ padding: "0.55rem 0.75rem" }}>
-                        {/* Click name to edit */}
-                        <button
-                          type="button"
-                          onClick={() => handleEditClick(shop)}
-                          style={{
-                            background: "none",
-                            border: "none",
-                            padding: 0,
-                            margin: 0,
-                            color: "#1d4ed8",
-                            textDecoration: "underline",
-                            cursor: "pointer",
-                            font: "inherit",
-                          }}
-                        >
-                          {shop.name}
-                        </button>
+                        {isOwnerViewer ? (
+                          <button
+                            type="button"
+                            onClick={() => handleEditClick(shop)}
+                            style={{
+                              background: "none",
+                              border: "none",
+                              padding: 0,
+                              margin: 0,
+                              color: "#1d4ed8",
+                              textDecoration: "underline",
+                              cursor: "pointer",
+                              font: "inherit",
+                            }}
+                          >
+                            {shop.name}
+                          </button>
+                        ) : (
+                          shop.name
+                        )}
                       </td>
+
                       <td style={{ padding: "0.55rem 0.75rem" }}>
                         {shop.location || "—"}
                       </td>
+
                       <td style={{ padding: "0.55rem 0.75rem" }}>
                         <span
                           style={{
@@ -536,44 +566,51 @@ function ShopManagementPage() {
                             borderRadius: "9999px",
                             fontSize: "0.75rem",
                             fontWeight: 600,
-                            backgroundColor: shop.is_active
-                              ? "#dcfce7"
-                              : "#fee2e2",
+                            backgroundColor: shop.is_active ? "#dcfce7" : "#fee2e2",
                             color: shop.is_active ? "#166534" : "#b91c1c",
                           }}
                         >
                           {shop.is_active ? "Active" : "Inactive"}
                         </span>
                       </td>
-                      <td style={{ padding: "0.55rem 0.75rem" }}>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteClick(shop)}
-                          title="Deactivate shop"
-                          aria-label={`Deactivate ${shop.name}`}
-                          style={{
-                            width: "2rem",
-                            height: "2rem",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            borderRadius: "9999px",
-                            border: "1px solid #fee2e2",
-                            backgroundColor: "#fef2f2",
-                            color: "#b91c1c",
-                            fontSize: "1rem",
-                            fontWeight: 600,
-                            cursor: "pointer",
-                            opacity: shop.is_active ? 1 : 0.6,
-                          }}
-                        >
-                          🗑️
-                        </button>
-                      </td>
+
+                      {isOwnerViewer && (
+                        <td style={{ padding: "0.55rem 0.75rem" }}>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteClick(shop)}
+                            title="Deactivate shop"
+                            aria-label={`Deactivate ${shop.name}`}
+                            style={{
+                              width: "2rem",
+                              height: "2rem",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              borderRadius: "9999px",
+                              border: "1px solid #fee2e2",
+                              backgroundColor: "#fef2f2",
+                              color: "#b91c1c",
+                              fontSize: "1rem",
+                              fontWeight: 600,
+                              cursor: "pointer",
+                              opacity: shop.is_active ? 1 : 0.6,
+                            }}
+                          >
+                            🗑️
+                          </button>
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
               </table>
+
+              {readOnly && (
+                <div style={{ marginTop: "0.8rem", fontSize: "0.9rem", color: "#6b7280" }}>
+                  Read-only: managers can view shops but cannot create/update/deactivate.
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -582,4 +619,4 @@ function ShopManagementPage() {
   );
 }
 
-export default ShopManagementPage;
+export default ShopsManagementPage;
