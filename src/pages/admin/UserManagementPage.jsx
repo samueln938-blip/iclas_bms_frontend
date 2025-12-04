@@ -22,6 +22,16 @@ const EMPTY_FORM = {
   confirm_password: "",
 };
 
+// ✅ Viewer role normalization:
+// AuthContext maps backend OWNER -> "admin" (frontend role).
+// This page expects OWNER/MANAGER/CASHIER.
+// So: ADMIN => OWNER here (viewer permissions).
+function normalizeViewerRole(rawRole) {
+  const up = String(rawRole || "").trim().toUpperCase();
+  if (up === "ADMIN") return "OWNER";
+  return up;
+}
+
 function readCurrentRoleFromStorage() {
   try {
     const raw = localStorage.getItem("iclas_auth");
@@ -35,7 +45,7 @@ function readCurrentRoleFromStorage() {
       parsed?.profile?.role ||
       "";
 
-    return String(role || "").toUpperCase();
+    return normalizeViewerRole(role);
   } catch {
     return "";
   }
@@ -136,7 +146,7 @@ function UserManagementPage() {
   // ✅ Role comes from AuthContext (same source as AppLayout)
   // Fallback to localStorage only if user is not ready yet.
   useEffect(() => {
-    const roleFromContext = String(user?.role || "").toUpperCase();
+    const roleFromContext = normalizeViewerRole(user?.role);
     if (roleFromContext) {
       setCurrentRole(roleFromContext);
       return;
