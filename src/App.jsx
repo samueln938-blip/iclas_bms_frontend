@@ -19,6 +19,9 @@ import ItemCataloguePage from "./pages/admin/ItemCataloguePage.jsx";
 import ShopsManagementPage from "./pages/admin/ShopsManagementPage.jsx";
 import UserManagementPage from "./pages/admin/UserManagementPage.jsx";
 
+// ✅ ICLAS Summary page (Owner/Manager landing)
+import ICLASSummaryPage from "./pages/ICLASSummaryPage.jsx";
+
 // Shop pages
 import ShopWorkspacePage from "./pages/shop/ShopWorkspacePage.jsx";
 import ShopStockPage from "./pages/shop/ShopStockPage.jsx";
@@ -32,7 +35,7 @@ import CreditPage from "./pages/shop/CreditPage.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
 import { AuthProvider, useAuth } from "./context/AuthContext.jsx";
 
-// ✅ Landing helper (uses shop_id / shop_ids / last_shop)
+// ✅ Landing helper (for cashier; uses shop_id / shop_ids / last_shop)
 import { getLandingPath } from "./utils/roleLanding.js";
 
 // =====================================
@@ -150,10 +153,9 @@ function Unauthorized() {
 }
 
 // =====================================
-// ✅ Role based home redirect (FINAL)
-// Uses roleLanding.js (no API call → no random fallback to Shops Management)
-// - OWNER/MANAGER -> Shop Workspace
-// - CASHIER -> Sales & POS
+// ✅ Role based home redirect (UPDATED)
+// - OWNER/MANAGER -> ICLAS Summary (/iclas)
+// - CASHIER -> Sales & POS (roleLanding.js)
 // =====================================
 function HomeRedirect() {
   const { user, loading } = useAuth();
@@ -161,7 +163,14 @@ function HomeRedirect() {
   if (loading) return null;
   if (!user) return <Navigate to="/login" replace />;
 
-  const path = getLandingPath(user); // "/shops/:id/workspace" or "/shops/:id/pos" or "/admin/shops"
+  const role = toCanonicalRole(user.role);
+
+  if (role === "admin" || role === "manager") {
+    return <Navigate to="/iclas" replace />;
+  }
+
+  // Cashier stays on POS (or credits when redirected)
+  const path = getLandingPath(user);
   return <Navigate to={path} replace />;
 }
 
@@ -175,6 +184,16 @@ function ProtectedApp() {
         <Routes>
           {/* Default after login */}
           <Route path="/" element={<HomeRedirect />} />
+
+          {/* ✅ ICLAS Summary for Owner/Manager */}
+          <Route
+            path="/iclas"
+            element={
+              <RequireAuth allowedRoles={["admin", "manager"]}>
+                <ICLASSummaryPage />
+              </RequireAuth>
+            }
+          />
 
           {/* ----- Admin section ----- */}
           <Route
