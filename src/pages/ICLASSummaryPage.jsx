@@ -1,10 +1,41 @@
 // FILE: src/pages/ICLASSummaryPage.jsx
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import api from "../api/client";
 
 export default function ICLASSummaryPage() {
   const navigate = useNavigate();
   const [tab, setTab] = useState("welcome"); // welcome | summary
+
+  // Shops list (so "Shops" quick link shows Mulindi 1 / Mulindi 2)
+  const [shops, setShops] = useState([]);
+  const [shopsLoading, setShopsLoading] = useState(false);
+  const [shopsError, setShopsError] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+
+    const load = async () => {
+      setShopsLoading(true);
+      setShopsError("");
+      try {
+        const res = await api.get("/shops/", { params: { only_active: true } });
+        if (!alive) return;
+        setShops(Array.isArray(res.data) ? res.data : []);
+      } catch (e) {
+        if (!alive) return;
+        setShopsError("Failed to load shops list.");
+      } finally {
+        if (!alive) return;
+        setShopsLoading(false);
+      }
+    };
+
+    load();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const styles = useMemo(() => {
     const shell = {
@@ -77,6 +108,7 @@ export default function ICLASSummaryPage() {
       letterSpacing: "0.12em",
       color: "#6b7280",
       marginBottom: 10,
+      textAlign: "center",
     };
 
     const linkGrid = {
@@ -86,25 +118,15 @@ export default function ICLASSummaryPage() {
       marginTop: 18,
     };
 
-    const linkCard = {
-      width: "100%",
-      border: "none",
-      cursor: "pointer",
+    const blockCard = (borderColor) => ({
       borderRadius: 18,
       padding: "16px 16px",
       backgroundColor: "#ffffff",
       boxShadow: "0 12px 30px rgba(15,37,128,0.06)",
-      textAlign: "left",
-      display: "flex",
-      flexDirection: "column",
-      gap: 6,
-      transition: "transform 0.12s ease, box-shadow 0.12s ease",
-      outline: "1px solid #eef2ff",
-      position: "relative",
-      overflow: "hidden",
-    };
+      border: `1px solid ${borderColor}`,
+    });
 
-    const dot = (accent, bg) => ({
+    const badge = (accent, bg) => ({
       width: 36,
       height: 36,
       borderRadius: 999,
@@ -115,22 +137,56 @@ export default function ICLASSummaryPage() {
       justifyContent: "center",
       fontWeight: 900,
       fontSize: 18,
-      marginBottom: 6,
-      flex: "0 0 auto",
+      marginBottom: 10,
     });
 
-    const linkTitle = (accent) => ({
+    const blockTitle = (accent) => ({
       fontSize: 18,
-      fontWeight: 800,
+      fontWeight: 900,
       margin: 0,
       color: accent,
     });
 
-    const linkDesc = {
-      margin: 0,
+    const blockDesc = {
+      margin: "6px 0 12px 0",
       fontSize: 13,
       lineHeight: 1.45,
       color: "#4b5563",
+    };
+
+    const miniBtn = (accent, bg) => ({
+      width: "100%",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 10,
+      padding: "10px 12px",
+      borderRadius: 12,
+      border: "1px solid #e5e7eb",
+      backgroundColor: bg,
+      color: accent,
+      cursor: "pointer",
+      fontSize: 14,
+      fontWeight: 800,
+      textAlign: "left",
+    });
+
+    const arrow = {
+      fontWeight: 900,
+      opacity: 0.8,
+    };
+
+    const small = {
+      fontSize: 12,
+      color: "#6b7280",
+      marginTop: 8,
+      lineHeight: 1.4,
+    };
+
+    const error = {
+      fontSize: 13,
+      color: "#b91c1c",
+      marginTop: 8,
     };
 
     const note = {
@@ -151,7 +207,6 @@ export default function ICLASSummaryPage() {
       textAlign: "center",
     };
 
-    // Responsive: 1 column on small screens
     const responsiveTag = `
       @media (max-width: 640px) {
         .iclas-link-grid { grid-template-columns: 1fr !important; }
@@ -169,18 +224,24 @@ export default function ICLASSummaryPage() {
       tabInactive,
       sectionTitle,
       linkGrid,
-      linkCard,
-      dot,
-      linkTitle,
-      linkDesc,
+      blockCard,
+      badge,
+      blockTitle,
+      blockDesc,
+      miniBtn,
+      arrow,
+      small,
+      error,
       note,
       footerHint,
       responsiveTag,
     };
   }, []);
 
-  const goGlobal = () => navigate("/admin/items");
-  const goShops = () => navigate("/admin/shops");
+  const goItemCatalogue = () => navigate("/admin/items");
+  const goShopsManagement = () => navigate("/admin/shops");
+  const goUserManagement = () => navigate("/admin/users");
+  const openShopWorkspace = (shopId) => navigate(`/shops/${shopId}/workspace`);
 
   return (
     <div style={styles.shell}>
@@ -198,7 +259,6 @@ export default function ICLASSummaryPage() {
           >
             Welcome
           </button>
-
           <button
             type="button"
             onClick={() => setTab("summary")}
@@ -222,45 +282,102 @@ export default function ICLASSummaryPage() {
               <div style={styles.sectionTitle}>QUICK LINKS</div>
 
               <div className="iclas-link-grid" style={styles.linkGrid}>
-                <button
-                  type="button"
-                  style={styles.linkCard}
-                  onClick={goGlobal}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.transform = "translateY(-1px)";
-                    e.currentTarget.style.boxShadow = "0 16px 38px rgba(15,37,128,0.10)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.transform = "translateY(0)";
-                    e.currentTarget.style.boxShadow = "0 12px 30px rgba(15,37,128,0.06)";
-                  }}
-                >
-                  <div style={styles.dot("#0f2580", "#e0e7ff")}>G</div>
-                  <h3 style={styles.linkTitle("#0f2580")}>Global</h3>
-                  <p style={styles.linkDesc}>
-                    Item Catalogue, Shops Management, User Management.
+                {/* GLOBAL BLOCK (shows list of global pages) */}
+                <div style={styles.blockCard("#dbeafe")}>
+                  <div style={styles.badge("#0f2580", "#e0e7ff")}>G</div>
+                  <h3 style={styles.blockTitle("#0f2580")}>Global</h3>
+                  <p style={styles.blockDesc}>
+                    Choose where you want to go in the Global section.
                   </p>
-                </button>
 
-                <button
-                  type="button"
-                  style={styles.linkCard}
-                  onClick={goShops}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.transform = "translateY(-1px)";
-                    e.currentTarget.style.boxShadow = "0 16px 38px rgba(15,37,128,0.10)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.transform = "translateY(0)";
-                    e.currentTarget.style.boxShadow = "0 12px 30px rgba(15,37,128,0.06)";
-                  }}
-                >
-                  <div style={styles.dot("#166534", "#dcfce7")}>S</div>
-                  <h3 style={styles.linkTitle("#166534")}>Shops</h3>
-                  <p style={styles.linkDesc}>
-                    Open a shop workspace and manage stock, purchases, sales, closures, and credits.
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    <button
+                      type="button"
+                      style={styles.miniBtn("#0f2580", "#ffffff")}
+                      onClick={goItemCatalogue}
+                    >
+                      <span>Item Catalogue</span>
+                      <span style={styles.arrow}>›</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      style={styles.miniBtn("#0f2580", "#ffffff")}
+                      onClick={goShopsManagement}
+                    >
+                      <span>Shops Management</span>
+                      <span style={styles.arrow}>›</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      style={styles.miniBtn("#0f2580", "#ffffff")}
+                      onClick={goUserManagement}
+                    >
+                      <span>User Management</span>
+                      <span style={styles.arrow}>›</span>
+                    </button>
+                  </div>
+
+                  <div style={styles.small}>
+                    Tip: You can always return here using <b>ICLAS Summary</b> in the left menu.
+                  </div>
+                </div>
+
+                {/* SHOPS BLOCK (shows list of shops to open workspace directly) */}
+                <div style={styles.blockCard("#dcfce7")}>
+                  <div style={styles.badge("#166534", "#dcfce7")}>S</div>
+                  <h3 style={styles.blockTitle("#166534")}>Shops</h3>
+                  <p style={styles.blockDesc}>
+                    Open a shop workspace directly from the list below.
                   </p>
-                </button>
+
+                  {shopsLoading ? (
+                    <div style={styles.small}>Loading shops…</div>
+                  ) : shopsError ? (
+                    <>
+                      <div style={styles.error}>{shopsError}</div>
+                      <button
+                        type="button"
+                        style={{ ...styles.miniBtn("#166534", "#ffffff"), marginTop: 10 }}
+                        onClick={goShopsManagement}
+                      >
+                        <span>Go to Shops Management</span>
+                        <span style={styles.arrow}>›</span>
+                      </button>
+                    </>
+                  ) : shops.length === 0 ? (
+                    <>
+                      <div style={styles.small}>No active shops yet.</div>
+                      <button
+                        type="button"
+                        style={{ ...styles.miniBtn("#166534", "#ffffff"), marginTop: 10 }}
+                        onClick={goShopsManagement}
+                      >
+                        <span>Create / Manage shops</span>
+                        <span style={styles.arrow}>›</span>
+                      </button>
+                    </>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {shops.map((s) => (
+                        <button
+                          key={s.id}
+                          type="button"
+                          style={styles.miniBtn("#166534", "#ffffff")}
+                          onClick={() => openShopWorkspace(s.id)}
+                        >
+                          <span>{s.name}</span>
+                          <span style={styles.arrow}>›</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  <div style={styles.small}>
+                    Prefer managing shops first? Use <b>Shops Management</b> under Global.
+                  </div>
+                </div>
               </div>
 
               <div style={styles.footerHint}>
