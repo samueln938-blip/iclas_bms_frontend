@@ -1,3 +1,4 @@
+// FILE: src/pages/admin/ShopsManagementPage.jsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import api from "../../api/client";
 
