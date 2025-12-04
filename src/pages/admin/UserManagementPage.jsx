@@ -1,6 +1,7 @@
 // src/pages/admin/UserManagementPage.jsx
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import api from "../../api/client";
+import { useAuth } from "../../context/AuthContext.jsx";
 
 const ROLE_OPTIONS = [
   { value: "OWNER", label: "Owner" },
@@ -21,25 +22,13 @@ const EMPTY_FORM = {
   confirm_password: "",
 };
 
-function readCurrentRoleFromStorage() {
-  try {
-    const raw = localStorage.getItem("iclas_auth");
-    if (!raw) return "";
-    const parsed = JSON.parse(raw);
-
-    const role =
-      parsed?.user?.role ||
-      parsed?.role ||
-      parsed?.user_role ||
-      parsed?.profile?.role ||
-      "";
-    return String(role || "").toUpperCase();
-  } catch {
-    return "";
-  }
+function toRoleUpper(role) {
+  return String(role || "").trim().toUpperCase();
 }
 
 function UserManagementPage() {
+  const { user, loading: authLoading } = useAuth();
+
   const [shops, setShops] = useState([]);
   const [users, setUsers] = useState([]);
 
@@ -56,15 +45,15 @@ function UserManagementPage() {
   // Password reset result (edit-only)
   const [tempPassword, setTempPassword] = useState("");
 
+  // main tabs: "create" or "list"
+  const [tab, setTab] = useState("list");
+
   // Who am I? (OWNER vs MANAGER)
-  const [currentRole, setCurrentRole] = useState("");
+  const currentRole = useMemo(() => toRoleUpper(user?.role), [user?.role]);
 
   const isOwnerViewer = currentRole === "OWNER";
   const isManagerViewer = currentRole === "MANAGER";
   const readOnly = isManagerViewer; // manager can only read this page
-
-  // main tabs: "create" or "list"
-  const [tab, setTab] = useState("list");
 
   const resetMessages = () => {
     setError("");
@@ -107,18 +96,13 @@ function UserManagementPage() {
     }
   }, []);
 
-  // Read current role on mount
+  // Set default tab by role (OWNER gets create; MANAGER gets list)
   useEffect(() => {
-    const r = readCurrentRoleFromStorage();
-    setCurrentRole(r);
-  }, []);
-
-  // Set default tab by role
-  useEffect(() => {
+    if (authLoading) return;
     if (isOwnerViewer) setTab("create");
     else setTab("list");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentRole]);
+  }, [authLoading, currentRole]);
 
   useEffect(() => {
     loadAll();
@@ -132,20 +116,20 @@ function UserManagementPage() {
     setTab("create");
   };
 
-  const startEdit = (user) => {
+  const startEdit = (u) => {
     if (readOnly) return;
     resetMessages();
     setTempPassword("");
 
     setForm({
-      id: user.id,
-      first_name: user.first_name || "",
-      last_name: user.last_name || "",
-      national_id: user.national_id || "",
-      username: user.username || "",
-      role: user.role || "CASHIER",
-      shop_id: user.shop_id ?? "",
-      is_active: !!user.is_active,
+      id: u.id,
+      first_name: u.first_name || "",
+      last_name: u.last_name || "",
+      national_id: u.national_id || "",
+      username: u.username || "",
+      role: u.role || "CASHIER",
+      shop_id: u.shop_id ?? "",
+      is_active: !!u.is_active,
       password: "",
       confirm_password: "",
     });
@@ -179,6 +163,9 @@ function UserManagementPage() {
       return "Cashier must be assigned to a shop.";
     }
 
+    // OWNER + MANAGER should have no required shop assignment
+    // (shop_id is optional "primary/default" only)
+
     // For new user: password required
     if (!form.id) {
       if (!form.password) return "Password is required for a new user.";
@@ -197,14 +184,17 @@ function UserManagementPage() {
       shop_id: form.shop_id === "" ? null : Number(form.shop_id),
     };
 
-    // NOTE: Managers are GLOBAL NOW → do not send shop_ids at all.
-    // shop_id is just a "default/primary" shop (optional).
+    // NOTE:
+    // - Managers are GLOBAL NOW → do not send shop_ids at all.
+    // - shop_id is just a "default/primary" shop (optional for OWNER/MANAGER).
 
     return payload;
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (readOnly) return;
+
     resetMessages();
     setTempPassword("");
 
@@ -394,6 +384,10 @@ function UserManagementPage() {
     whiteSpace: "nowrap",
   };
 
+  if (authLoading) {
+    return <div style={{ textAlign: "center" }}>Checking session…</div>;
+  }
+
   return (
     <div>
       <h1
@@ -420,8 +414,8 @@ function UserManagementPage() {
       </p>
 
       <p style={{ marginBottom: 24, color: "#4b5563", textAlign: "center" }}>
-        Note: <b>Managers automatically have access to ALL shops</b>. The “Primary shop”
-        is only a default shop to open first (optional).
+        Note: <b>Managers automatically have access to ALL shops</b>. The “Primary shop” is
+        only a default shop to open first (optional).
       </p>
 
       {loading ? (
@@ -606,7 +600,9 @@ function UserManagementPage() {
                 {/* Primary Shop */}
                 <div>
                   <div style={labelStyle}>
-                    {form.role === "CASHIER" ? "Assigned shop (required)" : "Primary shop (optional)"}
+                    {form.role === "CASHIER"
+                      ? "Assigned shop (required)"
+                      : "Primary shop (optional)"}
                   </div>
                   <select
                     name="shop_id"
@@ -694,7 +690,14 @@ function UserManagementPage() {
                 {form.id && (
                   <div style={{ marginTop: 8 }}>
                     <div style={labelStyle}>Password tools</div>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 8,
+                        alignItems: "center",
+                        flexWrap: "wrap",
+                      }}
+                    >
                       <button
                         type="button"
                         onClick={handleResetPassword}
@@ -715,7 +718,8 @@ function UserManagementPage() {
                           <span
                             style={{
                               ...chipStyle,
-                              fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                              fontFamily:
+                                "ui-monospace, SFMono-Regular, Menlo, monospace",
                               fontSize: 12,
                             }}
                             title="Temporary password"
@@ -792,8 +796,18 @@ function UserManagementPage() {
           {/* LIST */}
           {tab === "list" && (
             <div style={panelStyle}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <h2 style={{ fontSize: 18, fontWeight: 700, marginTop: 0 }}>Existing users</h2>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: 10,
+                  flexWrap: "wrap",
+                }}
+              >
+                <h2 style={{ fontSize: 18, fontWeight: 700, marginTop: 0 }}>
+                  Existing users
+                </h2>
                 <button
                   type="button"
                   onClick={loadAll}
@@ -811,9 +825,7 @@ function UserManagementPage() {
               </div>
 
               {users.length === 0 ? (
-                <div style={{ fontSize: 14, color: "#6b7280" }}>
-                  No users yet.
-                </div>
+                <div style={{ fontSize: 14, color: "#6b7280" }}>No users yet.</div>
               ) : (
                 <div style={{ overflowX: "auto", marginTop: 8 }}>
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
@@ -854,7 +866,9 @@ function UserManagementPage() {
                                     </option>
                                   ))}
                                 </select>
-                                {quickSavingUserId === u.id && <span style={smallText}>Saving…</span>}
+                                {quickSavingUserId === u.id && (
+                                  <span style={smallText}>Saving…</span>
+                                )}
                               </div>
                             ) : (
                               getShopName(u.shop_id)
@@ -872,7 +886,13 @@ function UserManagementPage() {
                           <td style={{ padding: "6px 6px" }}>{u.is_active ? "Yes" : "No"}</td>
 
                           {isOwnerViewer && (
-                            <td style={{ padding: "6px 6px", textAlign: "right", whiteSpace: "nowrap" }}>
+                            <td
+                              style={{
+                                padding: "6px 6px",
+                                textAlign: "right",
+                                whiteSpace: "nowrap",
+                              }}
+                            >
                               <button
                                 type="button"
                                 onClick={() => startEdit(u)}
