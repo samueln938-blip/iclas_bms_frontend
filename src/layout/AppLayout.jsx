@@ -1,8 +1,10 @@
-// FILE: src/layout/AppLayout.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { NavLink, useNavigate, useLocation } from "react-router-dom";
 import api from "../api/client";
 import { useAuth } from "../context/AuthContext.jsx";
+
+// ✅ Remember last opened shop for landing helpers
+import { saveLastShopId } from "../utils/roleLanding.js";
 
 // Shops in the sidebar are loaded from the backend.
 
@@ -138,6 +140,14 @@ function AppLayout({ children }) {
     navigate("/login");
   };
 
+  // ✅ One-click return if you leave the summary page without logging out
+  const homePath = (() => {
+    if (isCashier) {
+      return myShopId ? `/shops/${myShopId}/pos` : "/unauthorized";
+    }
+    return "/iclas";
+  })();
+
   // ---------- Inline styles ----------
   const shellStyle = {
     display: "flex",
@@ -177,6 +187,18 @@ function AppLayout({ children }) {
     overflow: "hidden",
     textOverflow: "ellipsis",
     maxWidth: isMobile ? "42vw" : "none",
+  };
+
+  const brandButtonStyle = {
+    background: "transparent",
+    border: "none",
+    color: "#ffffff",
+    padding: 0,
+    margin: 0,
+    cursor: "pointer",
+    font: "inherit",
+    fontWeight: 800,
+    whiteSpace: "nowrap",
   };
 
   const menuButtonStyle = {
@@ -323,7 +345,17 @@ function AppLayout({ children }) {
               ☰
             </button>
           )}
-          <span style={{ whiteSpace: "nowrap" }}>ICLAS Ltd</span>
+
+          {/* ✅ Clickable brand: quick way back to Summary (Owner/Manager) or POS (Cashier) */}
+          <button
+            type="button"
+            style={brandButtonStyle}
+            onClick={() => navigate(homePath)}
+            title="Go to home"
+          >
+            ICLAS Ltd
+          </button>
+
           <span style={headerSubtitleStyle}>Business Management System</span>
         </div>
 
@@ -346,6 +378,18 @@ function AppLayout({ children }) {
             <>
               <div style={sidebarSectionTitleStyle}>GLOBAL</div>
               <nav style={navListStyle}>
+                {/* ✅ Back to ICLAS Summary any time */}
+                <NavLink
+                  to="/iclas"
+                  onClick={closeSidebarIfMobile}
+                  style={({ isActive }) => ({
+                    ...sidebarLinkBase,
+                    ...(isActive ? sidebarLinkActive : {}),
+                  })}
+                >
+                  ICLAS Summary
+                </NavLink>
+
                 <NavLink
                   to="/admin/items"
                   onClick={closeSidebarIfMobile}
@@ -447,8 +491,14 @@ function AppLayout({ children }) {
                   style={shopButtonStyle}
                   onClick={() => {
                     closeSidebarIfMobile();
+
+                    // ✅ remember last opened shop
+                    saveLastShopId(shop.id);
+
                     // ✅ Cashier clicking a shop goes straight to POS
                     if (isCashier) return navigate(`/shops/${shop.id}/pos`);
+
+                    // Owner/Manager → shop workspace (your routes support /shops/:id)
                     return navigate(`/shops/${shop.id}`);
                   }}
                 >
