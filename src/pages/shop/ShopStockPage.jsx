@@ -2,7 +2,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 
-const API_BASE = "REPLACE_WITH_YOUR_PRODUCTION_API_BASE";
+const API_BASE = "https://iclas-bms-api-prod-pgtdc.ondigitalocean.app";
 
 function formatNumber(value) {
   if (value === null || value === undefined) return "0";
