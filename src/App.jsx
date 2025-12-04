@@ -1,4 +1,4 @@
-// src/App.jsx
+// FILE: src/App.jsx
 import React from "react";
 import {
   BrowserRouter,
@@ -112,9 +112,7 @@ function RequireShopAccess({ children }) {
   if (requested !== mine) {
     // Friendly redirect to the cashier’s own shop, keeping POS/Credits intent
     const wantsCredits = location.pathname.includes("/credits");
-    const dest = wantsCredits
-      ? `/shops/${mine}/credits`
-      : `/shops/${mine}/pos`;
+    const dest = wantsCredits ? `/shops/${mine}/credits` : `/shops/${mine}/pos`;
     return <Navigate to={dest} replace />;
   }
 
@@ -149,10 +147,13 @@ function Unauthorized() {
 }
 
 // =====================================
-// Role based home redirect
-// - OWNER -> /admin/shops
-// - MANAGER -> /admin/shops
-// - CASHIER -> /shops/:shopId/pos
+// ✅ Role based home redirect (UPDATED)
+// - OWNER/MANAGER -> Shop Workspace (their primary shop_id)
+// - CASHIER -> Sales & POS
+//
+// Notes:
+// - If OWNER/MANAGER has no shop_id yet, we send them to Shops Management
+//   so they can create/select a shop and (optionally) assign themselves.
 // =====================================
 function HomeRedirect() {
   const { user, loading } = useAuth();
@@ -163,10 +164,16 @@ function HomeRedirect() {
   const role = toCanonicalRole(user.role);
   const shopId = user.shop_id;
 
-  if (role === "admin") return <Navigate to="/admin/shops" replace />;
-  if (role === "manager") return <Navigate to="/admin/shops" replace />;
+  // Owner/Manager -> workspace
+  if (role === "admin" || role === "manager") {
+    return shopId ? (
+      <Navigate to={`/shops/${shopId}`} replace />
+    ) : (
+      <Navigate to="/admin/shops" replace />
+    );
+  }
 
-  // cashier
+  // Cashier -> POS
   return shopId ? (
     <Navigate to={`/shops/${shopId}/pos`} replace />
   ) : (
@@ -203,7 +210,7 @@ function ProtectedApp() {
             }
           />
 
-          {/* ✅ Manager can VIEW users. Read-only will be enforced inside UserManagementPage + backend */}
+          {/* ✅ Manager can VIEW users. Read-only is enforced inside UserManagementPage + backend */}
           <Route
             path="/admin/users"
             element={
