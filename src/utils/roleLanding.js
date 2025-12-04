@@ -1,8 +1,8 @@
-// src/utils/roleLanding.js
+// FILE: src/utils/roleLanding.js
 
 const LAST_SHOP_KEY = "iclas_last_shop_id";
 
-// You can call this when user clicks a shop in the sidebar
+// Call this when user clicks a shop in the sidebar (optional but recommended)
 export function saveLastShopId(shopId) {
   try {
     if (shopId == null) return;
@@ -21,17 +21,15 @@ export function readLastShopId() {
   }
 }
 
-// Pick a shop id safely
+// Decide best shopId to land on
 export function pickLandingShopId(user) {
   const last = readLastShopId();
-
-  // user.shop_ids comes from your backend auth response (multi-shop safe)
   const shopIds = Array.isArray(user?.shop_ids) ? user.shop_ids : [];
 
-  // For cashiers, limit to their assigned shops
   const role = String(user?.role || "").toLowerCase();
   const isCashier = role === "cashier";
 
+  // Cashier: must stay within assigned shop(s)
   if (isCashier) {
     if (last != null && shopIds.includes(last)) return last;
     if (user?.shop_id != null) return Number(user.shop_id);
@@ -39,32 +37,31 @@ export function pickLandingShopId(user) {
     return null;
   }
 
-  // Owner/Manager: can use last shop if present, else fall back
+  // Owner/Manager: can use last shop, else fallback
   if (last != null) return last;
   if (user?.shop_id != null) return Number(user.shop_id);
   if (shopIds[0] != null) return Number(shopIds[0]);
-  return 1; // final fallback (only for global roles)
+  return 1; // final fallback
 }
 
 /**
- * ✅ IMPORTANT:
- * Adjust these paths to match YOUR actual routes:
- * - Shop Workspace route
- * - Sales & POS route
+ * Your actual routes (based on ShopWorkspacePage navigation):
+ * - Workspace: /shops/:shopId
+ * - Sales & POS: /shops/:shopId/sales-pos
  */
 export function getLandingPath(user) {
   const role = String(user?.role || "").toLowerCase();
   const shopId = pickLandingShopId(user);
 
-  // If cashier has no shop assigned, send them to a safe page (or logout screen)
-  if (role === "cashier" && !shopId) return "/login";
+  if (!user) return "/login";
 
+  // CASHIER -> Sales & POS
   if (role === "cashier") {
-    // 👇 change this to your real SalesPOS route if different
-    return `/shop/${shopId}/pos`;
+    if (!shopId) return "/login";
+    return `/shops/${shopId}/sales-pos`;
   }
 
-  // OWNER + MANAGER land on workspace
-  // 👇 change this to your real workspace route if different
-  return `/shop/${shopId}`;
+  // OWNER + MANAGER -> Shop Workspace
+  if (!shopId) return "/login";
+  return `/shops/${shopId}`;
 }
