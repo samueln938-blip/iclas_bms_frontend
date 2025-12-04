@@ -1,4 +1,4 @@
-// src/pages/admin/UserManagementPage.jsx
+// FILE: src/pages/admin/UserManagementPage.jsx
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import api from "../../api/client";
 import { useAuth } from "../../context/AuthContext.jsx";
@@ -22,12 +22,41 @@ const EMPTY_FORM = {
   confirm_password: "",
 };
 
-function toRoleUpper(role) {
-  return String(role || "").trim().toUpperCase();
+function readCurrentRoleFromStorage() {
+  try {
+    const raw = localStorage.getItem("iclas_auth");
+    if (!raw) return "";
+    const parsed = JSON.parse(raw);
+
+    const role =
+      parsed?.user?.role ||
+      parsed?.role ||
+      parsed?.user_role ||
+      parsed?.profile?.role ||
+      "";
+
+    return String(role || "").toUpperCase();
+  } catch {
+    return "";
+  }
+}
+
+function makeUsername(first, last) {
+  const f = String(first || "").trim().toLowerCase();
+  const l = String(last || "").trim().toLowerCase();
+  const base = [f, l].filter(Boolean).join(".");
+  if (!base) return "";
+
+  // keep letters/numbers/dot/underscore only, collapse dots
+  return base
+    .replace(/\s+/g, ".")
+    .replace(/[^a-z0-9._]/g, "")
+    .replace(/\.+/g, ".")
+    .replace(/^\.|\.$/g, "");
 }
 
 function UserManagementPage() {
-  const { user, loading: authLoading } = useAuth();
+  const { user } = useAuth();
 
   const [shops, setShops] = useState([]);
   const [users, setUsers] = useState([]);
@@ -45,15 +74,18 @@ function UserManagementPage() {
   // Password reset result (edit-only)
   const [tempPassword, setTempPassword] = useState("");
 
-  // main tabs: "create" or "list"
-  const [tab, setTab] = useState("list");
+  // Role detection
+  const [currentRole, setCurrentRole] = useState("");
 
-  // Who am I? (OWNER vs MANAGER)
-  const currentRole = useMemo(() => toRoleUpper(user?.role), [user?.role]);
+  // Track whether user manually edited username (for auto-fill behavior)
+  const [usernameTouched, setUsernameTouched] = useState(false);
 
   const isOwnerViewer = currentRole === "OWNER";
   const isManagerViewer = currentRole === "MANAGER";
   const readOnly = isManagerViewer; // manager can only read this page
+
+  // main tabs: "create" or "list"
+  const [tab, setTab] = useState("list");
 
   const resetMessages = () => {
     setError("");
@@ -71,6 +103,11 @@ function UserManagementPage() {
     const shop = shopMap.get(shopId);
     return shop ? shop.name : `Shop #${shopId}`;
   };
+
+  const suggestedUsername = useMemo(() => {
+    // for new user creation, auto-suggest username as first.last
+    return makeUsername(form.first_name, form.last_name);
+  }, [form.first_name, form.last_name]);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -96,22 +133,44 @@ function UserManagementPage() {
     }
   }, []);
 
-  // Set default tab by role (OWNER gets create; MANAGER gets list)
+  // ✅ Role comes from AuthContext (same source as AppLayout)
+  // Fallback to localStorage only if user is not ready yet.
   useEffect(() => {
-    if (authLoading) return;
-    if (isOwnerViewer) setTab("create");
-    else setTab("list");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading, currentRole]);
+    const roleFromContext = String(user?.role || "").toUpperCase();
+    if (roleFromContext) {
+      setCurrentRole(roleFromContext);
+      return;
+    }
+    const roleFromStorage = readCurrentRoleFromStorage();
+    setCurrentRole(roleFromStorage);
+  }, [user?.role]);
+
+  // Set default tab by role
+  useEffect(() => {
+    setTab(isOwnerViewer ? "create" : "list");
+  }, [isOwnerViewer]);
 
   useEffect(() => {
     loadAll();
   }, [loadAll]);
 
+  // Auto-fill username for NEW user while typing names (unless user manually edits username)
+  useEffect(() => {
+    if (readOnly) return;
+    if (form.id) return; // only new user
+    if (usernameTouched) return;
+    setForm((prev) => ({
+      ...prev,
+      username: suggestedUsername,
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestedUsername, form.id, readOnly]);
+
   const startCreateNew = () => {
     if (readOnly) return;
     resetMessages();
     setTempPassword("");
+    setUsernameTouched(false);
     setForm(EMPTY_FORM);
     setTab("create");
   };
@@ -120,6 +179,7 @@ function UserManagementPage() {
     if (readOnly) return;
     resetMessages();
     setTempPassword("");
+    setUsernameTouched(true); // keep username stable in edit mode
 
     setForm({
       id: u.id,
@@ -142,6 +202,8 @@ function UserManagementPage() {
     resetMessages();
     const { name, value, type, checked } = e.target;
 
+    if (name === "username") setUsernameTouched(true);
+
     setForm((prev) => ({
       ...prev,
       [name]: type === "checkbox" ? checked : value,
@@ -163,9 +225,6 @@ function UserManagementPage() {
       return "Cashier must be assigned to a shop.";
     }
 
-    // OWNER + MANAGER should have no required shop assignment
-    // (shop_id is optional "primary/default" only)
-
     // For new user: password required
     if (!form.id) {
       if (!form.password) return "Password is required for a new user.";
@@ -184,17 +243,14 @@ function UserManagementPage() {
       shop_id: form.shop_id === "" ? null : Number(form.shop_id),
     };
 
-    // NOTE:
-    // - Managers are GLOBAL NOW → do not send shop_ids at all.
-    // - shop_id is just a "default/primary" shop (optional for OWNER/MANAGER).
+    // Managers are GLOBAL NOW → do not send shop_ids at all.
+    // shop_id is just a "default/primary" shop (optional).
 
     return payload;
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (readOnly) return;
-
     resetMessages();
     setTempPassword("");
 
@@ -218,9 +274,14 @@ function UserManagementPage() {
         setSuccess("User updated successfully.");
       } else {
         // CREATE new user (POST /users/) (OWNER only)
+        const username =
+          (form.username || "").trim().toLowerCase() ||
+          suggestedUsername ||
+          null;
+
         const payload = {
           ...basePayload,
-          username: form.username ? form.username.trim().toLowerCase() : null,
+          username,
           password: form.password,
         };
         await api.post("/users/", payload);
@@ -235,6 +296,7 @@ function UserManagementPage() {
       setForm((prev) =>
         form.id ? { ...prev, password: "", confirm_password: "" } : { ...EMPTY_FORM }
       );
+      setUsernameTouched(false);
     } catch (err) {
       console.error("Error saving user:", err);
       const backendDetail =
@@ -384,9 +446,7 @@ function UserManagementPage() {
     whiteSpace: "nowrap",
   };
 
-  if (authLoading) {
-    return <div style={{ textAlign: "center" }}>Checking session…</div>;
-  }
+  const roleLabel = currentRole || "UNKNOWN";
 
   return (
     <div>
@@ -406,16 +466,20 @@ function UserManagementPage() {
           <>
             You are logged in as <b>MANAGER</b>. This page is <b>read-only</b>.
           </>
-        ) : (
+        ) : isOwnerViewer ? (
           <>
             You are logged in as <b>OWNER</b>. You can create and manage users.
+          </>
+        ) : (
+          <>
+            Logged in role: <b>{roleLabel}</b>. If you expected OWNER, log out and log in again.
           </>
         )}
       </p>
 
       <p style={{ marginBottom: 24, color: "#4b5563", textAlign: "center" }}>
-        Note: <b>Managers automatically have access to ALL shops</b>. The “Primary shop” is
-        only a default shop to open first (optional).
+        Note: <b>Managers automatically have access to ALL shops</b>. The “Primary shop”
+        is only a default shop to open first (optional).
       </p>
 
       {loading ? (
@@ -600,9 +664,7 @@ function UserManagementPage() {
                 {/* Primary Shop */}
                 <div>
                   <div style={labelStyle}>
-                    {form.role === "CASHIER"
-                      ? "Assigned shop (required)"
-                      : "Primary shop (optional)"}
+                    {form.role === "CASHIER" ? "Assigned shop (required)" : "Primary shop (optional)"}
                   </div>
                   <select
                     name="shop_id"
@@ -621,9 +683,9 @@ function UserManagementPage() {
                   </select>
                 </div>
 
-                {/* Username (optional for new user) */}
+                {/* Username */}
                 <div>
-                  <div style={labelStyle}>Username (optional)</div>
+                  <div style={labelStyle}>Username</div>
                   <input
                     type="text"
                     name="username"
@@ -631,9 +693,11 @@ function UserManagementPage() {
                     onChange={handleChange}
                     style={inputStyle}
                     disabled={!!form.id}
+                    required={!form.id}
+                    placeholder="first.last"
                   />
                   <div style={smallText}>
-                    Leave empty when creating a new user to auto-generate from names.
+                    Default is <b>first.last</b>. You can edit it before saving (new user only).
                   </div>
                 </div>
 
@@ -670,6 +734,7 @@ function UserManagementPage() {
                         onChange={handleChange}
                         style={inputStyle}
                         autoComplete="new-password"
+                        required
                       />
                     </div>
                     <div>
@@ -681,6 +746,7 @@ function UserManagementPage() {
                         onChange={handleChange}
                         style={inputStyle}
                         autoComplete="new-password"
+                        required
                       />
                     </div>
                   </>
@@ -690,14 +756,7 @@ function UserManagementPage() {
                 {form.id && (
                   <div style={{ marginTop: 8 }}>
                     <div style={labelStyle}>Password tools</div>
-                    <div
-                      style={{
-                        display: "flex",
-                        gap: 8,
-                        alignItems: "center",
-                        flexWrap: "wrap",
-                      }}
-                    >
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                       <button
                         type="button"
                         onClick={handleResetPassword}
@@ -718,8 +777,7 @@ function UserManagementPage() {
                           <span
                             style={{
                               ...chipStyle,
-                              fontFamily:
-                                "ui-monospace, SFMono-Regular, Menlo, monospace",
+                              fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
                               fontSize: 12,
                             }}
                             title="Temporary password"
@@ -796,18 +854,8 @@ function UserManagementPage() {
           {/* LIST */}
           {tab === "list" && (
             <div style={panelStyle}>
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  gap: 10,
-                  flexWrap: "wrap",
-                }}
-              >
-                <h2 style={{ fontSize: 18, fontWeight: 700, marginTop: 0 }}>
-                  Existing users
-                </h2>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <h2 style={{ fontSize: 18, fontWeight: 700, marginTop: 0 }}>Existing users</h2>
                 <button
                   type="button"
                   onClick={loadAll}
@@ -825,7 +873,9 @@ function UserManagementPage() {
               </div>
 
               {users.length === 0 ? (
-                <div style={{ fontSize: 14, color: "#6b7280" }}>No users yet.</div>
+                <div style={{ fontSize: 14, color: "#6b7280" }}>
+                  No users yet.
+                </div>
               ) : (
                 <div style={{ overflowX: "auto", marginTop: 8 }}>
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
@@ -866,9 +916,7 @@ function UserManagementPage() {
                                     </option>
                                   ))}
                                 </select>
-                                {quickSavingUserId === u.id && (
-                                  <span style={smallText}>Saving…</span>
-                                )}
+                                {quickSavingUserId === u.id && <span style={smallText}>Saving…</span>}
                               </div>
                             ) : (
                               getShopName(u.shop_id)
@@ -886,13 +934,7 @@ function UserManagementPage() {
                           <td style={{ padding: "6px 6px" }}>{u.is_active ? "Yes" : "No"}</td>
 
                           {isOwnerViewer && (
-                            <td
-                              style={{
-                                padding: "6px 6px",
-                                textAlign: "right",
-                                whiteSpace: "nowrap",
-                              }}
-                            >
+                            <td style={{ padding: "6px 6px", textAlign: "right", whiteSpace: "nowrap" }}>
                               <button
                                 type="button"
                                 onClick={() => startEdit(u)}
