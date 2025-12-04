@@ -167,7 +167,7 @@ function HomeRedirect() {
   // Owner/Manager -> workspace
   if (role === "admin" || role === "manager") {
     return shopId ? (
-      <Navigate to={`/shops/${shopId}`} replace />
+      <Navigate to={`/shops/${shopId}/workspace`} replace />
     ) : (
       <Navigate to="/admin/shops" replace />
     );
