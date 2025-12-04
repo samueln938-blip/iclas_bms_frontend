@@ -1,6 +1,13 @@
 // src/App.jsx
 import React from "react";
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
+import {
+  BrowserRouter,
+  Routes,
+  Route,
+  Navigate,
+  useLocation,
+  useParams,
+} from "react-router-dom";
 
 import "./App.css";
 
@@ -75,6 +82,46 @@ function RequireAuth({ children, allowedRoles }) {
 }
 
 // =====================================
+// Shop access guard
+// - Cashier must ONLY access their assigned shop_id
+// - Owner/Manager can access any shop
+// =====================================
+function RequireShopAccess({ children }) {
+  const { user, loading } = useAuth();
+  const location = useLocation();
+  const { shopId } = useParams();
+
+  if (loading) return null;
+  if (!user) return <Navigate to="/login" state={{ from: location }} replace />;
+
+  const role = toCanonicalRole(user.role);
+
+  // Owner/Manager: global access
+  if (role === "admin" || role === "manager") return children;
+
+  // Cashier: must match their assigned shop_id
+  const myShopId = user.shop_id;
+
+  if (!myShopId) {
+    return <Navigate to="/unauthorized" replace />;
+  }
+
+  const requested = String(shopId || "");
+  const mine = String(myShopId);
+
+  if (requested !== mine) {
+    // Friendly redirect to the cashier’s own shop, keeping POS/Credits intent
+    const wantsCredits = location.pathname.includes("/credits");
+    const dest = wantsCredits
+      ? `/shops/${mine}/credits`
+      : `/shops/${mine}/pos`;
+    return <Navigate to={dest} replace />;
+  }
+
+  return children;
+}
+
+// =====================================
 // Simple pages
 // =====================================
 function NotFound() {
@@ -104,7 +151,7 @@ function Unauthorized() {
 // =====================================
 // Role based home redirect
 // - OWNER -> /admin/shops
-// - MANAGER -> /admin/shops  ✅ same as owner (full view)
+// - MANAGER -> /admin/shops
 // - CASHIER -> /shops/:shopId/pos
 // =====================================
 function HomeRedirect() {
@@ -117,14 +164,14 @@ function HomeRedirect() {
   const shopId = user.shop_id;
 
   if (role === "admin") return <Navigate to="/admin/shops" replace />;
-
-  if (role === "manager") {
-    // ✅ manager lands like owner
-    return <Navigate to="/admin/shops" replace />;
-  }
+  if (role === "manager") return <Navigate to="/admin/shops" replace />;
 
   // cashier
-  return shopId ? <Navigate to={`/shops/${shopId}/pos`} replace /> : <Navigate to="/unauthorized" replace />;
+  return shopId ? (
+    <Navigate to={`/shops/${shopId}/pos`} replace />
+  ) : (
+    <Navigate to="/unauthorized" replace />
+  );
 }
 
 // =====================================
@@ -139,7 +186,6 @@ function ProtectedApp() {
           <Route path="/" element={<HomeRedirect />} />
 
           {/* ----- Admin section ----- */}
-          {/* ✅ Manager can VIEW admin pages. Read-only is enforced inside pages + backend. */}
           <Route
             path="/admin/items"
             element={
@@ -156,6 +202,8 @@ function ProtectedApp() {
               </RequireAuth>
             }
           />
+
+          {/* ✅ Manager can VIEW users. Read-only will be enforced inside UserManagementPage + backend */}
           <Route
             path="/admin/users"
             element={
@@ -166,7 +214,7 @@ function ProtectedApp() {
           />
 
           {/* ----- Shop section ----- */}
-          {/* Cashiers should NOT access workspace routes */}
+          {/* Admin/Manager shop pages */}
           <Route
             path="/shops/:shopId"
             element={
@@ -183,7 +231,6 @@ function ProtectedApp() {
               </RequireAuth>
             }
           />
-
           <Route
             path="/shops/:shopId/stock"
             element={
@@ -209,22 +256,24 @@ function ProtectedApp() {
             }
           />
 
-          {/* ✅ Cashier CAN access closures history */}
+          {/* ❌ Cashier should NOT access separate closures history page (they use the tabs inside SalesPOS instead) */}
           <Route
             path="/shops/:shopId/closures-history"
             element={
-              <RequireAuth allowedRoles={["admin", "manager", "cashier"]}>
+              <RequireAuth allowedRoles={["admin", "manager"]}>
                 <ShopClosuresHistoryPage />
               </RequireAuth>
             }
           />
 
-          {/* ✅ Sales & POS */}
+          {/* ✅ Sales & POS (Cashier allowed, but ONLY for assigned shop) */}
           <Route
             path="/shops/:shopId/pos"
             element={
               <RequireAuth allowedRoles={["admin", "manager", "cashier"]}>
-                <SalesPOS />
+                <RequireShopAccess>
+                  <SalesPOS />
+                </RequireShopAccess>
               </RequireAuth>
             }
           />
@@ -232,17 +281,21 @@ function ProtectedApp() {
             path="/shops/:shopId/sales-pos"
             element={
               <RequireAuth allowedRoles={["admin", "manager", "cashier"]}>
-                <SalesPOS />
+                <RequireShopAccess>
+                  <SalesPOS />
+                </RequireShopAccess>
               </RequireAuth>
             }
           />
 
-          {/* ✅ Credits */}
+          {/* ✅ Credits (Cashier allowed, but ONLY for assigned shop) */}
           <Route
             path="/shops/:shopId/credits"
             element={
               <RequireAuth allowedRoles={["admin", "manager", "cashier"]}>
-                <CreditPage />
+                <RequireShopAccess>
+                  <CreditPage />
+                </RequireShopAccess>
               </RequireAuth>
             }
           />
