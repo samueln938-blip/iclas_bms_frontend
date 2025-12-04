@@ -32,7 +32,9 @@ const LoginPage = () => {
     const role = canonicalRole(user?.role);
     const shopId = user?.shop_id;
 
-    if (role === "admin" || role === "manager") return "/admin/shops";
+    // ✅ OWNER/MANAGER -> your new Summary page (not Shops Management)
+    if (role === "admin" || role === "manager") return "/iclas";
+
     // cashier
     return shopId ? `/shops/${shopId}/pos` : "/unauthorized";
   }
@@ -46,9 +48,9 @@ const LoginPage = () => {
 
     const role = canonicalRole(user?.role);
 
-    // Admin/Manager: allow internal routes
+    // ✅ Admin/Manager: allow internal routes, including /iclas
     if (role === "admin" || role === "manager") {
-      return p.startsWith("/admin") || p.startsWith("/shops") || p === "/";
+      return p === "/iclas" || p.startsWith("/admin") || p.startsWith("/shops") || p === "/";
     }
 
     // Cashier: only allow the pages they’re supposed to use
