@@ -8,9 +8,13 @@ import { API_BASE as CLIENT_API_BASE } from "../../api/client.jsx";
 
 const API_BASE = CLIENT_API_BASE;
 
+// ✅ Header should NOT be sticky (keep same look/text)
+const HEADER_STICKY = false;
+
 // Grid definition for the summary table
+// ✅ Added "All pieces" column after "Pieces / unit"
 const PURCHASE_GRID_COLUMNS =
-  "minmax(200px, 2.3fr) 80px 90px 120px 120px 120px 130px 130px 130px 130px 110px 40px";
+  "minmax(200px, 2.3fr) 90px 90px 110px 120px 120px 120px 130px 130px 130px 130px 110px 40px";
 
 function formatMoney(value) {
   if (value === null || value === undefined || value === "") return "0";
@@ -19,6 +23,178 @@ function formatMoney(value) {
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
   });
+}
+
+function formatQty(value) {
+  if (value === null || value === undefined || value === "") return "";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value);
+  return n.toLocaleString("en-RW", { maximumFractionDigits: 2 });
+}
+
+/**
+ * ✅ Mobile-friendly searchable item picker (combobox)
+ * - shows cursor + keyboard on phone
+ * - filter by typing
+ * - scroll list below
+ * - preserves your existing updatePad("itemId", ...) behavior
+ */
+function ItemComboBox({ items, valueId, onChangeId, disabled }) {
+  const wrapRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+
+  const selected = useMemo(() => {
+    if (!valueId) return null;
+    return items.find((it) => String(it.id) === String(valueId)) || null;
+  }, [items, valueId]);
+
+  // keep input text in sync with selected item
+  useEffect(() => {
+    if (!open) setQ(selected ? selected.label : "");
+  }, [selected, open]);
+
+  const filtered = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    if (!s) return items.slice(0, 400);
+    return items
+      .filter((it) => String(it.label || "").toLowerCase().includes(s))
+      .slice(0, 400);
+  }, [items, q]);
+
+  // click outside closes dropdown
+  useEffect(() => {
+    const onDown = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", onDown);
+    return () => document.removeEventListener("pointerdown", onDown);
+  }, []);
+
+  const clearSelection = () => {
+    setQ("");
+    setOpen(false);
+    onChangeId("");
+  };
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative", width: "100%" }}>
+      <div style={{ position: "relative" }}>
+        <input
+          value={disabled ? (selected?.label || "") : q}
+          onChange={(e) => {
+            setQ(e.target.value);
+            setOpen(true);
+          }}
+          onFocus={() => {
+            if (!disabled) setOpen(true);
+          }}
+          onKeyDown={(e) => {
+            if (disabled) return;
+            if (e.key === "Enter") {
+              e.preventDefault();
+              if (filtered.length > 0) {
+                onChangeId(String(filtered[0].id));
+                setOpen(false);
+              }
+            }
+            if (e.key === "Escape") {
+              setOpen(false);
+            }
+          }}
+          placeholder={disabled ? "" : "Type item name to search…"}
+          inputMode="text"
+          autoComplete="off"
+          spellCheck={false}
+          readOnly={disabled}
+          style={{
+            width: "100%",
+            padding: "10px 36px 10px 12px",
+            borderRadius: "12px",
+            border: "1px solid #d1d5db",
+            fontSize: "13px",
+            outline: "none",
+            backgroundColor: disabled ? "#f9fafb" : "#ffffff",
+            color: "#111827",
+            cursor: disabled ? "not-allowed" : "text",
+          }}
+        />
+
+        {!disabled && (q || selected) ? (
+          <button
+            type="button"
+            onClick={clearSelection}
+            title="Clear"
+            style={{
+              position: "absolute",
+              right: 8,
+              top: "50%",
+              transform: "translateY(-50%)",
+              width: 24,
+              height: 24,
+              borderRadius: "999px",
+              border: "1px solid #e5e7eb",
+              background: "#ffffff",
+              cursor: "pointer",
+              color: "#6b7280",
+              fontWeight: 800,
+              lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
+        ) : null}
+      </div>
+
+      {!disabled && open && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 6px)",
+            left: 0,
+            right: 0,
+            backgroundColor: "#ffffff",
+            border: "1px solid #e5e7eb",
+            borderRadius: "12px",
+            boxShadow: "0 12px 30px rgba(0,0,0,0.12)",
+            maxHeight: "280px",
+            overflowY: "auto",
+            zIndex: 999,
+          }}
+        >
+          {filtered.length === 0 ? (
+            <div style={{ padding: "10px 12px", fontSize: "13px", color: "#6b7280" }}>
+              No matching items
+            </div>
+          ) : (
+            filtered.map((it) => (
+              <button
+                key={it.id}
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  onChangeId(String(it.id));
+                  setOpen(false);
+                }}
+                style={{
+                  width: "100%",
+                  textAlign: "left",
+                  padding: "10px 12px",
+                  border: "none",
+                  background: "transparent",
+                  cursor: "pointer",
+                  fontSize: "13px",
+                  color: "#111827",
+                }}
+              >
+                <span style={{ fontWeight: 600 }}>{it.label}</span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function ShopPurchasesPage() {
@@ -63,9 +239,9 @@ function ShopPurchasesPage() {
   // Which NEW line is being edited (null = adding new)
   const [editingLineId, setEditingLineId] = useState(null);
 
-  // ✅ NEW: which SAVED DB line is being edited (null = not editing saved)
-  const [editingDbId, setEditingDbId] = useState(null); // numeric DB purchase_line.id
-  const [editingDbUiId, setEditingDbUiId] = useState(null); // "db-123" for selection highlight
+  // ✅ which SAVED DB line is being edited
+  const [editingDbId, setEditingDbId] = useState(null);
+  const [editingDbUiId, setEditingDbUiId] = useState(null);
 
   // Which line is currently highlighted/selected (for both DB & new)
   const [selectedLineId, setSelectedLineId] = useState(null);
@@ -73,17 +249,19 @@ function ShopPurchasesPage() {
   // Search term for the list
   const [searchTerm, setSearchTerm] = useState("");
 
-  const [saving, setSaving] = useState(false); // save purchase (POST /purchases/)
-  const [padSaving, setPadSaving] = useState(false); // update/delete saved line
+  const [saving, setSaving] = useState(false);
+  const [padSaving, setPadSaving] = useState(false);
   const [message, setMessage] = useState("");
 
   // Refs
   const padRef = useRef(null);
   const stickyHeaderRef = useRef(null);
 
-  // Track sticky header height for accurate scroll offset
+  // Track sticky header height for accurate scroll offset (only needed when header is sticky)
   const [headerHeight, setHeaderHeight] = useState(180);
   useEffect(() => {
+    if (!HEADER_STICKY) return;
+
     const calc = () => {
       if (stickyHeaderRef.current) {
         setHeaderHeight(stickyHeaderRef.current.offsetHeight || 180);
@@ -115,7 +293,6 @@ function ShopPurchasesPage() {
     resetPadToDefaults();
   };
 
-  // Smooth scroll so the pad stops *below* the sticky header
   const scrollPadIntoView = () => {
     if (!padRef.current) return;
     padRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -187,7 +364,7 @@ function ShopPurchasesPage() {
         console.error("Failed to load purchase lines for date", purchaseDate);
         return;
       }
-      const data = await res.json(); // [{id, item_id, quantity, unit_cost_price}, ...]
+      const data = await res.json();
 
       const mapped = data.map((pl) => ({
         id: `db-${pl.id}`,
@@ -196,14 +373,12 @@ function ShopPurchasesPage() {
         itemId: pl.item_id,
         qtyUnits: pl.quantity,
         newUnitCost: pl.unit_cost_price,
-        // For historical lines, use current wholesale/retail from stock as "new" prices
         newWholesalePerPiece: stockByItemId[pl.item_id]?.wholesale_price_per_piece || "",
         newRetailPerPiece: stockByItemId[pl.item_id]?.selling_price_per_piece || "",
       }));
 
       setLines(mapped);
 
-      // If the user was editing a saved line, keep highlight as long as it still exists
       setSelectedLineId((prev) => {
         if (!prev) return null;
         const exists = mapped.some((m) => m.id === prev) || lines.some((l) => l.id === prev && !l.isFromDb);
@@ -219,7 +394,6 @@ function ShopPurchasesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shopId, purchaseDate, stockRows, stockByItemId]);
 
-  // When date changes, cancel edit mode (prevents editing wrong date)
   useEffect(() => {
     cancelAnyEdit();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -231,7 +405,6 @@ function ShopPurchasesPage() {
   const updatePad = (field, rawValue) => {
     setPad((prev) => {
       if (field === "itemId") {
-        // ✅ Do NOT allow changing item when editing a saved DB line
         if (editingDbId !== null) return prev;
 
         if (rawValue === "") {
@@ -288,14 +461,14 @@ function ShopPurchasesPage() {
   };
 
   // ------------------------------------------------
-  // ✅ Start editing (SAVED DB line)
+  // Start editing (SAVED DB line)
   // ------------------------------------------------
   const startEditSavedLine = (line) => {
     setSelectedLineId(line.id);
 
-    setEditingLineId(null); // not editing a "new" line
-    setEditingDbId(line.dbId); // numeric purchase_line.id
-    setEditingDbUiId(line.id); // e.g. "db-12"
+    setEditingLineId(null);
+    setEditingDbId(line.dbId);
+    setEditingDbUiId(line.id);
 
     setPad({
       itemId: line.itemId,
@@ -308,7 +481,7 @@ function ShopPurchasesPage() {
   };
 
   // ------------------------------------------------
-  // Remove NEW line only (existing behavior)
+  // Remove NEW line only
   // ------------------------------------------------
   const removeLine = (id) => {
     setLines((prev) => prev.filter((l) => l.id !== id));
@@ -322,7 +495,7 @@ function ShopPurchasesPage() {
   };
 
   // ------------------------------------------------
-  // ✅ Delete SAVED DB line (optional but very useful)
+  // Delete SAVED DB line
   // ------------------------------------------------
   const deleteSavedLine = async (dbId) => {
     const ok = window.confirm(
@@ -353,7 +526,6 @@ function ShopPurchasesPage() {
 
       cancelAnyEdit();
 
-      // Reload lines + stock
       await loadExistingLines();
       try {
         const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`, { headers: authHeadersNoJson });
@@ -374,9 +546,7 @@ function ShopPurchasesPage() {
   };
 
   // ------------------------------------------------
-  // Submit pad:
-  // - if editing saved DB line => PUT backend
-  // - else existing behavior (add/update NEW line locally)
+  // Submit pad
   // ------------------------------------------------
   const handleSubmitPad = async () => {
     if (!stockRows.length) return;
@@ -387,6 +557,7 @@ function ShopPurchasesPage() {
       return;
     }
 
+    // ✅ Allow decimals like 0.5, only require > 0
     const qtyUnits = Number(pad.qtyUnits || 0);
     if (qtyUnits <= 0) {
       setError("Quantity (units) must be greater than zero.");
@@ -402,7 +573,7 @@ function ShopPurchasesPage() {
     setError("");
     setMessage("");
 
-    // ✅ Editing SAVED line: call backend PUT
+    // Editing SAVED line => PUT backend
     if (editingDbId !== null) {
       setPadSaving(true);
       try {
@@ -436,7 +607,6 @@ function ShopPurchasesPage() {
         setMessage("Saved purchase line updated and stock recalculated.");
         setError("");
 
-        // reload lines + stock to reflect new values immediately
         await loadExistingLines();
         try {
           const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`, { headers: authHeadersNoJson });
@@ -495,7 +665,6 @@ function ShopPurchasesPage() {
     setEditingLineId(null);
     setSelectedLineId(null);
 
-    // After adding/editing, go back to blank pad (Select item)
     resetPadToDefaults();
     scrollPadIntoView();
   };
@@ -518,6 +687,9 @@ function ShopPurchasesPage() {
       const newCostPerPiece = piecesPerUnit > 0 ? newUnitCost / piecesPerUnit : 0;
       const lineTotal = qtyUnits * newUnitCost;
 
+      // ✅ New computed column
+      const allPieces = qtyUnits * piecesPerUnit;
+
       return {
         ...line,
         meta: {
@@ -531,6 +703,7 @@ function ShopPurchasesPage() {
         computed: {
           newCostPerPiece,
           lineTotal,
+          allPieces,
         },
       };
     });
@@ -579,7 +752,7 @@ function ShopPurchasesPage() {
         invoice_number: invoiceNumber || null,
         lines: newLinesForSave.map((l) => ({
           item_id: l.itemId,
-          quantity: Number(l.qtyUnits || 0),
+          quantity: Number(l.qtyUnits || 0), // ✅ now supports decimals
           unit_cost_price: Number(l.newUnitCost || 0),
           wholesale_price_per_piece:
             l.newWholesalePerPiece === "" || l.newWholesalePerPiece == null ? null : Number(l.newWholesalePerPiece),
@@ -605,7 +778,6 @@ function ShopPurchasesPage() {
       setMessage("Purchase saved and stock updated successfully.");
       setError("");
 
-      // Clear ONLY new lines; DB lines will be reloaded below
       setLines([]);
       setSelectedLineId(null);
       resetPadToDefaults();
@@ -648,24 +820,21 @@ function ShopPurchasesPage() {
     );
   }
 
-  // Pad theme
-  const padDark = true; // keep the style you liked
-  const padBg = padDark
-    ? "radial-gradient(1200px 400px at 30% -40%, rgba(59,130,246,0.25), rgba(0,0,0,0) 60%), linear-gradient(180deg, #0b1220, #050812)"
-    : "#f9fafb";
-  const padText = padDark ? "#e5e7eb" : "#111827";
-  const padMuted = padDark ? "#9ca3af" : "#6b7280";
-  const padBorder = padDark ? "1px solid rgba(255,255,255,0.10)" : "1px dashed #d1d5db";
+  // ✅ Pad theme: WHITE
+  const padBg = "#ffffff";
+  const padText = "#111827";
+  const padMuted = "#6b7280";
+  const padBorder = "1px solid #e5e7eb";
 
   const inputBase = {
     width: "100%",
     padding: "10px 12px",
     borderRadius: "12px",
-    border: padDark ? "1px solid rgba(255,255,255,0.18)" : "1px solid #d1d5db",
+    border: "1px solid #d1d5db",
     fontSize: "13px",
     outline: "none",
-    backgroundColor: padDark ? "rgba(255,255,255,0.06)" : "#ffffff",
-    color: padDark ? "#ffffff" : "#111827",
+    backgroundColor: "#ffffff",
+    color: "#111827",
   };
 
   const labelStyle = {
@@ -687,9 +856,6 @@ function ShopPurchasesPage() {
     alignItems: "center",
   };
 
-  // force readable option text when dropdown opens
-  const optionStyle = { color: "#111827", backgroundColor: "#ffffff" };
-
   const isEditingSaved = editingDbId !== null;
   const isEditingNew = editingLineId !== null;
 
@@ -701,13 +867,22 @@ function ShopPurchasesPage() {
 
   const padButtonText = isEditingSaved ? "Update saved item" : isEditingNew ? "Update item" : "+ Add to list";
 
+  const pickerItems = useMemo(
+    () =>
+      (stockRows || []).map((s) => ({
+        id: s.item_id,
+        label: s.item_name,
+      })),
+    [stockRows]
+  );
+
   return (
     <div style={{ padding: "16px 24px 24px" }}>
-      {/* Sticky header */}
+      {/* Header (same format, just not sticky) */}
       <div
         ref={stickyHeaderRef}
         style={{
-          position: "sticky",
+          position: HEADER_STICKY ? "sticky" : "static",
           top: 0,
           zIndex: 15,
           paddingBottom: "8px",
@@ -879,7 +1054,7 @@ function ShopPurchasesPage() {
         </div>
       )}
 
-      {/* MAIN CARD: Pad (top) + List (bottom) */}
+      {/* MAIN CARD */}
       <div
         style={{
           backgroundColor: "#ffffff",
@@ -888,7 +1063,6 @@ function ShopPurchasesPage() {
           padding: "16px 18px 14px",
         }}
       >
-        {/* Card title */}
         <div
           style={{
             display: "flex",
@@ -902,7 +1076,7 @@ function ShopPurchasesPage() {
           </div>
         </div>
 
-        {/* PART 1: PAD */}
+        {/* PAD */}
         <div
           ref={padRef}
           style={{
@@ -912,7 +1086,7 @@ function ShopPurchasesPage() {
             background: padBg,
             border: padBorder,
             color: padText,
-            scrollMarginTop: `${headerHeight + 12}px`,
+            scrollMarginTop: HEADER_STICKY ? `${headerHeight + 12}px` : "12px",
           }}
         >
           <div
@@ -940,9 +1114,9 @@ function ShopPurchasesPage() {
                   style={{
                     padding: "0.4rem 1rem",
                     borderRadius: "9999px",
-                    border: padDark ? "1px solid rgba(255,255,255,0.22)" : "1px solid #d1d5db",
-                    backgroundColor: padDark ? "rgba(255,255,255,0.06)" : "#ffffff",
-                    color: padDark ? "#ffffff" : "#111827",
+                    border: "1px solid #d1d5db",
+                    backgroundColor: "#ffffff",
+                    color: "#111827",
                     fontSize: "0.8rem",
                     cursor: padSaving ? "not-allowed" : "pointer",
                     opacity: padSaving ? 0.7 : 1,
@@ -979,9 +1153,9 @@ function ShopPurchasesPage() {
                 marginBottom: "10px",
                 padding: "8px 10px",
                 borderRadius: "12px",
-                border: "1px solid rgba(255,255,255,0.16)",
-                background: "rgba(255,255,255,0.06)",
-                color: padMuted,
+                border: "1px solid #e5e7eb",
+                background: "#f9fafb",
+                color: "#6b7280",
                 fontSize: "12px",
                 lineHeight: 1.35,
               }}
@@ -991,30 +1165,16 @@ function ShopPurchasesPage() {
             </div>
           )}
 
-          {/* ITEM SELECT */}
+          {/* Item picker */}
           <div>
             <label style={labelStyle}>Item</label>
-            <select
-              value={pad.itemId === "" ? "" : String(pad.itemId)}
-              onChange={(e) => updatePad("itemId", e.target.value)}
+            <ItemComboBox
+              items={pickerItems}
+              valueId={pad.itemId === "" ? "" : String(pad.itemId)}
+              onChangeId={(idStr) => updatePad("itemId", idStr)}
               disabled={!stockRows.length || isEditingSaved}
-              style={{
-                ...inputBase,
-                cursor: !stockRows.length || isEditingSaved ? "not-allowed" : "pointer",
-                opacity: isEditingSaved ? 0.75 : 1,
-              }}
-            >
-              <option value="" disabled style={optionStyle}>
-                Select item
-              </option>
-              {stockRows.map((s) => (
-                <option key={s.item_id} value={String(s.item_id)} style={optionStyle}>
-                  {s.item_name}
-                </option>
-              ))}
-            </select>
+            />
 
-            {/* Helpers */}
             <div style={helperGridStyle}>
               <div>
                 Pieces / unit: <strong style={{ color: padText }}>{padStock ? padPiecesPerUnit : "—"}</strong>
@@ -1040,7 +1200,7 @@ function ShopPurchasesPage() {
             </div>
           </div>
 
-          {/* INPUTS ROW */}
+          {/* Inputs */}
           <div
             style={{
               marginTop: "12px",
@@ -1053,12 +1213,25 @@ function ShopPurchasesPage() {
           >
             <div>
               <label style={labelStyle}>Qty units</label>
-              <input type="number" min={1} value={pad.qtyUnits} onChange={(e) => updatePad("qtyUnits", e.target.value)} style={inputBase} />
+              <input
+                type="number"
+                min={0.01}
+                step="0.01"
+                value={pad.qtyUnits}
+                onChange={(e) => updatePad("qtyUnits", e.target.value)}
+                style={inputBase}
+              />
             </div>
 
             <div>
               <label style={labelStyle}>Purchase cost (unit)</label>
-              <input type="number" value={pad.newUnitCost} onChange={(e) => updatePad("newUnitCost", e.target.value)} placeholder="0" style={inputBase} />
+              <input
+                type="number"
+                value={pad.newUnitCost}
+                onChange={(e) => updatePad("newUnitCost", e.target.value)}
+                placeholder="0"
+                style={inputBase}
+              />
             </div>
 
             <div>
@@ -1070,8 +1243,8 @@ function ShopPurchasesPage() {
                 placeholder="—"
                 style={{
                   ...inputBase,
-                  backgroundColor: padDark ? "rgba(255,255,255,0.10)" : "#f3f4f6",
-                  color: padDark ? "#ffffff" : "#111827",
+                  backgroundColor: "#f3f4f6",
+                  color: "#111827",
                   fontWeight: 800,
                 }}
               />
@@ -1079,24 +1252,35 @@ function ShopPurchasesPage() {
 
             <div>
               <label style={labelStyle}>New wholesale / piece</label>
-              <input type="number" value={pad.newWholesalePerPiece} onChange={(e) => updatePad("newWholesalePerPiece", e.target.value)} placeholder="0" style={inputBase} />
+              <input
+                type="number"
+                value={pad.newWholesalePerPiece}
+                onChange={(e) => updatePad("newWholesalePerPiece", e.target.value)}
+                placeholder="0"
+                style={inputBase}
+              />
             </div>
 
             <div>
               <label style={labelStyle}>New retail / piece</label>
-              <input type="number" value={pad.newRetailPerPiece} onChange={(e) => updatePad("newRetailPerPiece", e.target.value)} placeholder="0" style={inputBase} />
+              <input
+                type="number"
+                value={pad.newRetailPerPiece}
+                onChange={(e) => updatePad("newRetailPerPiece", e.target.value)}
+                placeholder="0"
+                style={inputBase}
+              />
             </div>
           </div>
         </div>
 
-        {/* PART 2: LIST */}
+        {/* LIST */}
         {linesWithComputed.length === 0 ? (
           <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
             No items in this purchase date yet. Use the pad above and click <strong>{padButtonText}</strong>.
           </div>
         ) : (
           <>
-            {/* Search bar */}
             <div
               style={{
                 display: "flex",
@@ -1125,7 +1309,6 @@ function ShopPurchasesPage() {
               />
             </div>
 
-            {/* Table */}
             <div
               style={{
                 maxHeight: "420px",
@@ -1141,7 +1324,7 @@ function ShopPurchasesPage() {
                 style={{
                   display: "grid",
                   gridTemplateColumns: PURCHASE_GRID_COLUMNS,
-                  minWidth: "1150px",
+                  minWidth: "1260px",
                   alignItems: "center",
                   padding: "6px 4px 6px 8px",
                   borderBottom: "1px solid #e5e7eb",
@@ -1159,8 +1342,9 @@ function ShopPurchasesPage() {
                 <div>Item</div>
                 <div style={{ textAlign: "center" }}>Qty units</div>
                 <div style={{ textAlign: "center" }}>Pieces / unit</div>
-                <div style={{ textAlign: "right" }}>Recent unit</div>
-                <div style={{ textAlign: "right" }}>New unit</div>
+                <div style={{ textAlign: "center" }}>All pieces</div>
+                <div style={{ textAlign: "right" }}>Recent cost/unit</div>
+                <div style={{ textAlign: "right" }}>New cost/unit</div>
                 <div style={{ textAlign: "right" }}>Cost / piece</div>
                 <div style={{ textAlign: "right" }}>Recent wholesale</div>
                 <div style={{ textAlign: "right" }}>New wholesale</div>
@@ -1173,8 +1357,7 @@ function ShopPurchasesPage() {
               {filteredLinesWithComputed.map((line) => {
                 const { meta, computed } = line;
                 const { itemName, piecesPerUnit, recentUnitCost, recentWholesalePerPiece, recentRetailPerPiece } = meta;
-
-                const { newCostPerPiece, lineTotal } = computed;
+                const { newCostPerPiece, lineTotal, allPieces } = computed;
 
                 const isFromDb = line.isFromDb;
                 const isSelected = selectedLineId === line.id;
@@ -1186,7 +1369,7 @@ function ShopPurchasesPage() {
                     style={{
                       display: "grid",
                       gridTemplateColumns: PURCHASE_GRID_COLUMNS,
-                      minWidth: "1150px",
+                      minWidth: "1260px",
                       alignItems: "center",
                       padding: "8px 4px 8px 8px",
                       borderBottom: "1px solid #f3f4f6",
@@ -1239,8 +1422,9 @@ function ShopPurchasesPage() {
                       )}
                     </div>
 
-                    <div style={{ textAlign: "center" }}>{line.qtyUnits}</div>
-                    <div style={{ textAlign: "center" }}>{piecesPerUnit}</div>
+                    <div style={{ textAlign: "center" }}>{formatQty(line.qtyUnits)}</div>
+                    <div style={{ textAlign: "center" }}>{formatQty(piecesPerUnit)}</div>
+                    <div style={{ textAlign: "center" }}>{formatQty(allPieces)}</div>
                     <div style={{ textAlign: "right" }}>{formatMoney(recentUnitCost)}</div>
                     <div style={{ textAlign: "right" }}>{formatMoney(line.newUnitCost)}</div>
                     <div style={{ textAlign: "right" }}>{formatMoney(newCostPerPiece)}</div>
@@ -1251,7 +1435,6 @@ function ShopPurchasesPage() {
 
                     <div style={{ textAlign: "right", fontWeight: 600 }}>{formatMoney(lineTotal)}</div>
 
-                    {/* Last column */}
                     <div style={{ textAlign: "center" }}>
                       {isFromDb ? (
                         <button
@@ -1300,7 +1483,6 @@ function ShopPurchasesPage() {
           </>
         )}
 
-        {/* Footer buttons */}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: "12px", marginTop: "14px" }}>
           <button
             type="button"
