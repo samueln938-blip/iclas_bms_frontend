@@ -10,12 +10,12 @@ const EMPTY_FORM = {
   unit: "",
   category: "",
   pieces_per_unit: 1,
-  reorder_level_pieces: 0, // ✅ NEW
+  reorder_level_pieces: 0,
 };
 
 function ItemCataloguePage() {
   const [items, setItems] = useState([]);
-  const [shops, setShops] = useState([]); // list of shops
+  const [shops, setShops] = useState([]);
 
   const [form, setForm] = useState(EMPTY_FORM);
   const [loading, setLoading] = useState(false);
@@ -24,25 +24,20 @@ function ItemCataloguePage() {
   const [bulkFile, setBulkFile] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [editingItemId, setEditingItemId] = useState(null); // null = creating, not editing
+  const [editingItemId, setEditingItemId] = useState(null);
 
   const [searchQuery, setSearchQuery] = useState("");
-  const [sortField, setSortField] = useState("name"); // "name" | "category" | "pieces_per_unit" | "reorder_level_pieces"
-  const [sortDirection, setSortDirection] = useState("asc"); // "asc" | "desc"
+  const [sortField, setSortField] = useState("name");
+  const [sortDirection, setSortDirection] = useState("asc");
 
   const isEditing = editingItemId !== null;
 
   // Item → shops usage map { [itemId]: { count, names, ids } }
   const [itemShopUsage, setItemShopUsage] = useState({});
 
-  // Used to reset the file input after upload
   const fileInputRef = useRef(null);
-
-  // Used to scroll the form card into view when editing
   const formCardRef = useRef(null);
 
-  // "manage" = Item form + Bulk upload
-  // "list"   = Items table
   const [activeTab, setActiveTab] = useState("manage");
 
   // ✅ Pagination/progress (backend default is limit=200)
@@ -51,6 +46,20 @@ function ItemCataloguePage() {
     fetching: false,
     fetched: 0,
   });
+
+  // ✅ UI: “Manage shops” dropdown per row
+  const [openShopPanelForItemId, setOpenShopPanelForItemId] = useState(null);
+
+  useEffect(() => {
+    const onDocClick = (e) => {
+      // Close panel when clicking outside
+      if (!e.target.closest?.("[data-shop-panel-root='true']")) {
+        setOpenShopPanelForItemId(null);
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
 
   // ------------------------------------------------
   //  Load items from backend (FETCH ALL PAGES)
@@ -63,8 +72,6 @@ function ItemCataloguePage() {
     try {
       let all = [];
       let skip = 0;
-
-      // Safety guard to avoid infinite loops if backend misbehaves
       const MAX_PAGES = 2000;
 
       for (let page = 0; page < MAX_PAGES; page++) {
@@ -77,9 +84,7 @@ function ItemCataloguePage() {
 
         setItemsProgress({ fetching: true, fetched: all.length });
 
-        // If backend returns fewer than the limit, we reached the end
         if (chunk.length < ITEMS_PAGE_LIMIT) break;
-
         skip += ITEMS_PAGE_LIMIT;
       }
 
@@ -93,7 +98,6 @@ function ItemCataloguePage() {
     }
   };
 
-  // Load shops list (for "Add to shop")
   const loadShops = async () => {
     try {
       const res = await api.get("/shops/");
@@ -106,7 +110,6 @@ function ItemCataloguePage() {
     }
   };
 
-  // Load item→shops usage  (NOW FROM /items/shop-usage)
   const loadItemShopUsage = async () => {
     try {
       const res = await api.get("/items/shop-usage");
@@ -117,13 +120,12 @@ function ItemCataloguePage() {
         map[entry.item_id] = {
           count: entry.shop_ids?.length || 0,
           names: entry.shop_names || [],
-          ids: entry.shop_ids || [], // ✅ NEW (so we can exclude already assigned shops)
+          ids: entry.shop_ids || [],
         };
       }
       setItemShopUsage(map);
     } catch (err) {
       console.error("Error loading item-shop usage", err);
-      // silently fail; the column will just show "No shop yet"
     }
   };
 
@@ -144,7 +146,6 @@ function ItemCataloguePage() {
 
   const handleChange = (e) => {
     const { name, value } = e.target;
-
     const numericFields = ["pieces_per_unit", "reorder_level_pieces"];
     setForm((prev) => ({
       ...prev,
@@ -165,7 +166,7 @@ function ItemCataloguePage() {
         unit: form.unit?.trim() || null,
         category: form.category?.trim() || null,
         pieces_per_unit: form.pieces_per_unit || 1,
-        reorder_level_pieces: Number(form.reorder_level_pieces || 0), // ✅ NEW
+        reorder_level_pieces: Number(form.reorder_level_pieces || 0),
       };
 
       if (!payload.name || !payload.unit) {
@@ -173,13 +174,11 @@ function ItemCataloguePage() {
         setSaving(false);
         return;
       }
-
       if (payload.pieces_per_unit <= 0) {
         setError("Pieces per unit must be greater than 0.");
         setSaving(false);
         return;
       }
-
       if (payload.reorder_level_pieces < 0) {
         setError("Reorder level (pieces) cannot be negative.");
         setSaving(false);
@@ -209,7 +208,6 @@ function ItemCataloguePage() {
     }
   };
 
-  // FIXED: always switch to "manage" tab, then scroll after render
   const handleEditClick = (item) => {
     setError("");
     setMessage("");
@@ -221,7 +219,7 @@ function ItemCataloguePage() {
       unit: item.unit || "",
       category: item.category || "",
       pieces_per_unit: item.pieces_per_unit ?? 1,
-      reorder_level_pieces: item.reorder_level_pieces ?? 0, // ✅ NEW
+      reorder_level_pieces: item.reorder_level_pieces ?? 0,
     });
 
     setActiveTab("manage");
@@ -242,11 +240,10 @@ function ItemCataloguePage() {
   };
 
   // ------------------------------------------------
-  //  Activate / Deactivate (toggle is_active)
+  // Activate / Deactivate
   // ------------------------------------------------
   const handleDeleteClick = async (item) => {
     const desiredStatus = !item.is_active;
-
     const confirmText = desiredStatus
       ? `Do you want to ACTIVATE "${item.name}" again?`
       : `Are you sure you want to DEACTIVATE "${item.name}"?`;
@@ -257,7 +254,6 @@ function ItemCataloguePage() {
     try {
       setError("");
       setMessage("");
-
       await api.put(`/items/${item.id}`, { is_active: desiredStatus });
 
       setMessage(
@@ -279,7 +275,7 @@ function ItemCataloguePage() {
   };
 
   // ------------------------------------------------
-  //  Bulk upload handlers
+  // Bulk upload
   // ------------------------------------------------
   const handleFileChange = (e) => {
     const file = e.target.files?.[0];
@@ -327,12 +323,11 @@ function ItemCataloguePage() {
   };
 
   // ------------------------------------------------
-  //  Search + sort helpers
+  // Search + sort
   // ------------------------------------------------
   const handleSortChange = (field) => {
-    if (sortField === field) {
-      setSortDirection((prev) => (prev === "asc" ? "desc" : "asc"));
-    } else {
+    if (sortField === field) setSortDirection((prev) => (prev === "asc" ? "desc" : "asc"));
+    else {
       setSortField(field);
       setSortDirection("asc");
     }
@@ -353,18 +348,12 @@ function ItemCataloguePage() {
         const unit = (item.unit || "").toLowerCase();
         const category = (item.category || "").toLowerCase();
         const sku = (item.sku || "").toLowerCase();
-        return (
-          name.includes(q) ||
-          unit.includes(q) ||
-          category.includes(q) ||
-          sku.includes(q)
-        );
+        return name.includes(q) || unit.includes(q) || category.includes(q) || sku.includes(q);
       });
     }
 
-    const sorted = [...data].sort((a, b) => {
-      let aVal;
-      let bVal;
+    return [...data].sort((a, b) => {
+      let aVal, bVal;
 
       if (sortField === "pieces_per_unit") {
         aVal = a.pieces_per_unit ?? 0;
@@ -384,8 +373,6 @@ function ItemCataloguePage() {
       if (aVal > bVal) return sortDirection === "asc" ? 1 : -1;
       return 0;
     });
-
-    return sorted;
   }, [items, searchQuery, sortField, sortDirection]);
 
   const listSummaryText = useMemo(() => {
@@ -397,37 +384,7 @@ function ItemCataloguePage() {
   }, [items.length, filteredAndSortedItems.length, searchQuery]);
 
   // ------------------------------------------------
-  //  Assign item to shop (backend endpoint)
-  // ------------------------------------------------
-  const handleAssignToShop = async (itemId, shopIdStr) => {
-    if (!shopIdStr) return;
-    const shopId = Number(shopIdStr);
-    if (!shopId) return;
-
-    setError("");
-    setMessage("");
-
-    try {
-      const payload = { shop_ids: [shopId] };
-      await api.post(`/items/${itemId}/assign-to-shops`, payload);
-
-      const shopName =
-        shops.find((s) => s.id === shopId)?.name || `Shop ${shopId}`;
-      setMessage(`Item assigned to "${shopName}".`);
-
-      await loadItemShopUsage();
-    } catch (err) {
-      console.error("Error assigning item to shop", err);
-      const backendMsg =
-        err?.response?.data?.detail ||
-        err?.response?.data?.message ||
-        "Failed to add item to shop.";
-      setError(backendMsg);
-    }
-  };
-
-  // ------------------------------------------------
-  // ✅ NEW: Remove item from shop (undo wrong selection)
+  // Assign / Remove helpers
   // ------------------------------------------------
   const removeUsageLocally = (itemId, shopId) => {
     setItemShopUsage((prev) => {
@@ -454,7 +411,7 @@ function ItemCataloguePage() {
     });
   };
 
-  const handleRemoveFromShop = async (itemId, shopIdStr) => {
+  const handleAssignToShop = async (itemId, shopIdStr) => {
     if (!shopIdStr) return;
     const shopId = Number(shopIdStr);
     if (!shopId) return;
@@ -462,13 +419,31 @@ function ItemCataloguePage() {
     setError("");
     setMessage("");
 
-    const shopName =
-      shops.find((s) => s.id === shopId)?.name || `Shop ${shopId}`;
+    try {
+      await api.post(`/items/${itemId}/assign-to-shops`, { shop_ids: [shopId] });
 
-    // Optimistic UI update
+      const shopName = shops.find((s) => s.id === shopId)?.name || `Shop ${shopId}`;
+      setMessage(`Item assigned to "${shopName}".`);
+      await loadItemShopUsage();
+    } catch (err) {
+      console.error("Error assigning item to shop", err);
+      const backendMsg =
+        err?.response?.data?.detail || err?.response?.data?.message || "Failed to add item to shop.";
+      setError(backendMsg);
+    }
+  };
+
+  const handleRemoveFromShop = async (itemId, shopId) => {
+    if (!shopId) return;
+
+    setError("");
+    setMessage("");
+
+    const shopName = shops.find((s) => s.id === shopId)?.name || `Shop ${shopId}`;
+
+    // optimistic UI
     removeUsageLocally(itemId, shopId);
 
-    // Try common backend endpoints (safe). If none exist, we warn.
     const candidates = [
       { method: "post", url: `/items/${itemId}/remove-from-shops`, data: { shop_ids: [shopId] } },
       { method: "post", url: `/items/${itemId}/unassign-from-shops`, data: { shop_ids: [shopId] } },
@@ -500,7 +475,7 @@ function ItemCataloguePage() {
   };
 
   // ------------------------------------------------
-  //  Simple styles for tabs
+  // Styles
   // ------------------------------------------------
   const tabsWrapperStyle = {
     display: "inline-flex",
@@ -526,12 +501,55 @@ function ItemCataloguePage() {
       ? { ...tabButtonBase, backgroundColor: "#111827", color: "#ffffff" }
       : tabButtonBase;
 
+  const pillStyle = {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "0.35rem",
+    padding: "0.18rem 0.7rem",
+    borderRadius: "9999px",
+    fontSize: "0.78rem",
+    fontWeight: 700,
+    backgroundColor: "#eff6ff",
+    color: "#1d4ed8",
+    border: "1px solid #dbeafe",
+    maxWidth: "220px",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  };
+
+  const manageBtnStyle = {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "0.35rem",
+    padding: "0.34rem 0.65rem",
+    borderRadius: "9999px",
+    border: "1px solid #e5e7eb",
+    backgroundColor: "#ffffff",
+    fontSize: "0.8rem",
+    fontWeight: 800,
+    color: "#111827",
+    cursor: "pointer",
+  };
+
+  const panelStyle = {
+    position: "absolute",
+    top: "calc(100% + 8px)",
+    right: 0,
+    zIndex: 20,
+    width: "320px",
+    borderRadius: "14px",
+    border: "1px solid #e5e7eb",
+    backgroundColor: "#ffffff",
+    boxShadow: "0 20px 40px rgba(15,23,42,0.12)",
+    padding: "12px",
+  };
+
   // ------------------------------------------------
-  //  Render
+  // Render
   // ------------------------------------------------
   return (
     <div style={{ padding: "2.5rem 3rem" }}>
-      {/* Header */}
       <h1
         style={{
           fontSize: "2.5rem",
@@ -543,6 +561,7 @@ function ItemCataloguePage() {
       >
         Item Catalogue
       </h1>
+
       <p
         style={{
           color: "#6b7280",
@@ -555,27 +574,17 @@ function ItemCataloguePage() {
         update existing ones, or upload from a CSV exported from your Google Sheet.
       </p>
 
-      {/* Tabs */}
       <div style={{ marginBottom: "1.5rem" }}>
         <div style={tabsWrapperStyle}>
-          <button
-            type="button"
-            style={getTabButtonStyle("manage")}
-            onClick={() => setActiveTab("manage")}
-          >
+          <button type="button" style={getTabButtonStyle("manage")} onClick={() => setActiveTab("manage")}>
             Manage items
           </button>
-          <button
-            type="button"
-            style={getTabButtonStyle("list")}
-            onClick={() => setActiveTab("list")}
-          >
+          <button type="button" style={getTabButtonStyle("list")} onClick={() => setActiveTab("list")}>
             Items list ({items.length})
           </button>
         </div>
       </div>
 
-      {/* Messages */}
       {(message || error) && (
         <div
           style={{
@@ -591,7 +600,6 @@ function ItemCataloguePage() {
         </div>
       )}
 
-      {/* Tab 1: Item form + Bulk Upload */}
       {activeTab === "manage" && (
         <div
           style={{
@@ -611,15 +619,7 @@ function ItemCataloguePage() {
               boxShadow: "0 10px 30px rgba(15,23,42,0.06)",
             }}
           >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                marginBottom: "1rem",
-                gap: "0.75rem",
-              }}
-            >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1rem", gap: "0.75rem" }}>
               <h2 style={{ fontSize: "1.5rem", fontWeight: 700 }}>Item</h2>
 
               <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
@@ -658,24 +658,10 @@ function ItemCataloguePage() {
             </div>
 
             <form onSubmit={handleSubmit}>
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  gap: "1rem 1.5rem",
-                  marginBottom: "1.25rem",
-                }}
-              >
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem 1.5rem", marginBottom: "1.25rem" }}>
                 {/* Name */}
                 <div>
-                  <label
-                    style={{
-                      display: "block",
-                      fontSize: "0.9rem",
-                      fontWeight: 600,
-                      marginBottom: "0.35rem",
-                    }}
-                  >
+                  <label style={{ display: "block", fontSize: "0.9rem", fontWeight: 600, marginBottom: "0.35rem" }}>
                     Name <span style={{ color: "#b91c1c" }}>*</span>
                   </label>
                   <input
@@ -685,26 +671,13 @@ function ItemCataloguePage() {
                     onChange={handleChange}
                     placeholder="e.g. MUGURUSI 10KG"
                     required
-                    style={{
-                      width: "100%",
-                      padding: "0.6rem 0.75rem",
-                      borderRadius: "0.6rem",
-                      border: "1px solid #d1d5db",
-                      fontSize: "0.95rem",
-                    }}
+                    style={{ width: "100%", padding: "0.6rem 0.75rem", borderRadius: "0.6rem", border: "1px solid #d1d5db", fontSize: "0.95rem" }}
                   />
                 </div>
 
                 {/* SKU */}
                 <div>
-                  <label
-                    style={{
-                      display: "block",
-                      fontSize: "0.9rem",
-                      fontWeight: 600,
-                      marginBottom: "0.35rem",
-                    }}
-                  >
+                  <label style={{ display: "block", fontSize: "0.9rem", fontWeight: 600, marginBottom: "0.35rem" }}>
                     SKU
                   </label>
                   <input
@@ -713,26 +686,13 @@ function ItemCataloguePage() {
                     value={form.sku}
                     onChange={handleChange}
                     placeholder="Optional code"
-                    style={{
-                      width: "100%",
-                      padding: "0.6rem 0.75rem",
-                      borderRadius: "0.6rem",
-                      border: "1px solid #d1d5db",
-                      fontSize: "0.95rem",
-                    }}
+                    style={{ width: "100%", padding: "0.6rem 0.75rem", borderRadius: "0.6rem", border: "1px solid #d1d5db", fontSize: "0.95rem" }}
                   />
                 </div>
 
                 {/* Unit */}
                 <div>
-                  <label
-                    style={{
-                      display: "block",
-                      fontSize: "0.9rem",
-                      fontWeight: 600,
-                      marginBottom: "0.35rem",
-                    }}
-                  >
+                  <label style={{ display: "block", fontSize: "0.9rem", fontWeight: 600, marginBottom: "0.35rem" }}>
                     Unit <span style={{ color: "#b91c1c" }}>*</span>
                   </label>
                   <input
@@ -742,26 +702,13 @@ function ItemCataloguePage() {
                     onChange={handleChange}
                     placeholder="e.g. 10 Kg, Box, Crate"
                     required
-                    style={{
-                      width: "100%",
-                      padding: "0.6rem 0.75rem",
-                      borderRadius: "0.6rem",
-                      border: "1px solid #d1d5db",
-                      fontSize: "0.95rem",
-                    }}
+                    style={{ width: "100%", padding: "0.6rem 0.75rem", borderRadius: "0.6rem", border: "1px solid #d1d5db", fontSize: "0.95rem" }}
                   />
                 </div>
 
                 {/* Category */}
                 <div>
-                  <label
-                    style={{
-                      display: "block",
-                      fontSize: "0.9rem",
-                      fontWeight: 600,
-                      marginBottom: "0.35rem",
-                    }}
-                  >
+                  <label style={{ display: "block", fontSize: "0.9rem", fontWeight: 600, marginBottom: "0.35rem" }}>
                     Category
                   </label>
                   <input
@@ -770,26 +717,13 @@ function ItemCataloguePage() {
                     value={form.category}
                     onChange={handleChange}
                     placeholder="e.g. Sugar, Cooking Oil"
-                    style={{
-                      width: "100%",
-                      padding: "0.6rem 0.75rem",
-                      borderRadius: "0.6rem",
-                      border: "1px solid #d1d5db",
-                      fontSize: "0.95rem",
-                    }}
+                    style={{ width: "100%", padding: "0.6rem 0.75rem", borderRadius: "0.6rem", border: "1px solid #d1d5db", fontSize: "0.95rem" }}
                   />
                 </div>
 
                 {/* Pieces per unit */}
                 <div>
-                  <label
-                    style={{
-                      display: "block",
-                      fontSize: "0.9rem",
-                      fontWeight: 600,
-                      marginBottom: "0.35rem",
-                    }}
-                  >
+                  <label style={{ display: "block", fontSize: "0.9rem", fontWeight: 600, marginBottom: "0.35rem" }}>
                     Pieces per unit
                   </label>
                   <input
@@ -798,26 +732,13 @@ function ItemCataloguePage() {
                     value={form.pieces_per_unit}
                     onChange={handleChange}
                     min={1}
-                    style={{
-                      width: "100%",
-                      padding: "0.6rem 0.75rem",
-                      borderRadius: "0.6rem",
-                      border: "1px solid #d1d5db",
-                      fontSize: "0.95rem",
-                    }}
+                    style={{ width: "100%", padding: "0.6rem 0.75rem", borderRadius: "0.6rem", border: "1px solid #d1d5db", fontSize: "0.95rem" }}
                   />
                 </div>
 
-                {/* Reorder level */}
+                {/* Reorder */}
                 <div>
-                  <label
-                    style={{
-                      display: "block",
-                      fontSize: "0.9rem",
-                      fontWeight: 600,
-                      marginBottom: "0.35rem",
-                    }}
-                  >
+                  <label style={{ display: "block", fontSize: "0.9rem", fontWeight: 600, marginBottom: "0.35rem" }}>
                     Reorder level (pieces)
                   </label>
                   <input
@@ -827,13 +748,7 @@ function ItemCataloguePage() {
                     onChange={handleChange}
                     min={0}
                     placeholder="0 = no alert"
-                    style={{
-                      width: "100%",
-                      padding: "0.6rem 0.75rem",
-                      borderRadius: "0.6rem",
-                      border: "1px solid #d1d5db",
-                      fontSize: "0.95rem",
-                    }}
+                    style={{ width: "100%", padding: "0.6rem 0.75rem", borderRadius: "0.6rem", border: "1px solid #d1d5db", fontSize: "0.95rem" }}
                   />
                   <div style={{ marginTop: "0.35rem", fontSize: "0.8rem", color: "#6b7280" }}>
                     If remaining stock is ≤ this number, it appears in “To Buy”.
@@ -856,18 +771,12 @@ function ItemCataloguePage() {
                   fontSize: "0.98rem",
                 }}
               >
-                {saving
-                  ? isEditing
-                    ? "Saving changes..."
-                    : "Saving..."
-                  : isEditing
-                  ? "Save changes"
-                  : "Add Item"}
+                {saving ? (isEditing ? "Saving changes..." : "Saving...") : isEditing ? "Save changes" : "Add Item"}
               </button>
             </form>
           </div>
 
-          {/* Bulk upload */}
+          {/* Bulk */}
           <div
             style={{
               backgroundColor: "#ffffff",
@@ -883,18 +792,11 @@ function ItemCataloguePage() {
             <p style={{ color: "#6b7280", fontSize: "0.95rem", marginBottom: "0.75rem" }}>
               Columns supported:
             </p>
-
             <p style={{ color: "#111827", fontWeight: 600, fontSize: "0.95rem", marginBottom: "1rem" }}>
               name, sku, unit, category, pieces_per_unit, reorder_level_pieces
             </p>
 
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".csv"
-              onChange={handleFileChange}
-              style={{ marginBottom: "0.75rem" }}
-            />
+            <input ref={fileInputRef} type="file" accept=".csv" onChange={handleFileChange} style={{ marginBottom: "0.75rem" }} />
 
             <button
               type="button"
@@ -917,7 +819,6 @@ function ItemCataloguePage() {
         </div>
       )}
 
-      {/* Tab 2: Items table */}
       {activeTab === "list" && (
         <div
           style={{
@@ -928,7 +829,7 @@ function ItemCataloguePage() {
             marginBottom: "3rem",
           }}
         >
-          {/* Summary + Search row */}
+          {/* Summary + Search */}
           <div
             style={{
               display: "flex",
@@ -1001,9 +902,7 @@ function ItemCataloguePage() {
             </div>
           </div>
 
-          <h2 style={{ fontSize: "1.3rem", fontWeight: 700, marginBottom: "1rem" }}>
-            Items
-          </h2>
+          <h2 style={{ fontSize: "1.3rem", fontWeight: 700, marginBottom: "1rem" }}>Items</h2>
 
           {loading ? (
             <p style={{ color: "#6b7280" }}>Loading items...</p>
@@ -1011,22 +910,9 @@ function ItemCataloguePage() {
             <p style={{ color: "#6b7280" }}>No items match your search.</p>
           ) : (
             <div style={{ overflowX: "auto" }}>
-              <table
-                style={{
-                  width: "100%",
-                  borderCollapse: "collapse",
-                  fontSize: "0.9rem",
-                  color: "#111827",
-                }}
-              >
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem", color: "#111827" }}>
                 <thead>
-                  <tr
-                    style={{
-                      textAlign: "left",
-                      borderBottom: "1px solid #e5e7eb",
-                      color: "#6b7280",
-                    }}
-                  >
+                  <tr style={{ textAlign: "left", borderBottom: "1px solid #e5e7eb", color: "#6b7280" }}>
                     <th style={{ padding: "0.55rem 0.75rem", width: "64px" }}>#</th>
 
                     <th style={{ padding: "0.55rem 0.75rem" }}>
@@ -1046,8 +932,7 @@ function ItemCataloguePage() {
                           gap: "0.25rem",
                         }}
                       >
-                        Name{" "}
-                        <span style={{ fontSize: "0.7rem" }}>{renderSortIcon("name")}</span>
+                        Name <span style={{ fontSize: "0.7rem" }}>{renderSortIcon("name")}</span>
                       </button>
                     </th>
 
@@ -1070,8 +955,7 @@ function ItemCataloguePage() {
                           gap: "0.25rem",
                         }}
                       >
-                        Category{" "}
-                        <span style={{ fontSize: "0.7rem" }}>{renderSortIcon("category")}</span>
+                        Category <span style={{ fontSize: "0.7rem" }}>{renderSortIcon("category")}</span>
                       </button>
                     </th>
 
@@ -1092,8 +976,7 @@ function ItemCataloguePage() {
                           gap: "0.25rem",
                         }}
                       >
-                        Pieces / unit{" "}
-                        <span style={{ fontSize: "0.7rem" }}>{renderSortIcon("pieces_per_unit")}</span>
+                        Pieces / unit <span style={{ fontSize: "0.7rem" }}>{renderSortIcon("pieces_per_unit")}</span>
                       </button>
                     </th>
 
@@ -1114,15 +997,12 @@ function ItemCataloguePage() {
                           gap: "0.25rem",
                         }}
                       >
-                        Reorder (pcs){" "}
-                        <span style={{ fontSize: "0.7rem" }}>
-                          {renderSortIcon("reorder_level_pieces")}
-                        </span>
+                        Reorder (pcs) <span style={{ fontSize: "0.7rem" }}>{renderSortIcon("reorder_level_pieces")}</span>
                       </button>
                     </th>
 
                     <th style={{ padding: "0.55rem 0.75rem" }}>Status</th>
-                    <th style={{ padding: "0.55rem 0.75rem" }}>Shops (Add / Remove)</th>
+                    <th style={{ padding: "0.55rem 0.75rem" }}>Shop</th>
                     <th style={{ padding: "0.55rem 0.75rem" }}>Actions</th>
                   </tr>
                 </thead>
@@ -1133,15 +1013,15 @@ function ItemCataloguePage() {
                     const names = usage.names || [];
                     const ids = usage.ids || [];
 
-                    const displayNames =
-                      names.length <= 2
-                        ? names.join(", ")
-                        : `${names.slice(0, 2).join(", ")} +${names.length - 2}`;
-
-                    const availableShopsToAdd = shops.filter((s) => !ids.includes(s.id));
                     const assignedShops = shops.filter((s) => ids.includes(s.id));
+                    const availableShopsToAdd = shops.filter((s) => !ids.includes(s.id));
+
+                    // Show only ONE selected shop by default:
+                    const primaryName = names?.[0] || null;
+                    const extraCount = Math.max(0, (names?.length || 0) - 1);
 
                     const isInactive = !item.is_active;
+                    const panelOpen = openShopPanelForItemId === item.id;
 
                     return (
                       <tr
@@ -1152,9 +1032,7 @@ function ItemCataloguePage() {
                           opacity: isInactive ? 0.85 : 1,
                         }}
                       >
-                        <td style={{ padding: "0.55rem 0.75rem", color: "#6b7280" }}>
-                          {idx + 1}
-                        </td>
+                        <td style={{ padding: "0.55rem 0.75rem", color: "#6b7280" }}>{idx + 1}</td>
 
                         <td style={{ padding: "0.55rem 0.75rem" }}>
                           <button
@@ -1207,104 +1085,166 @@ function ItemCataloguePage() {
                           </span>
                         </td>
 
+                        {/* ✅ Clean “Shop” cell: show only selected, hide actions under ˅ */}
                         <td style={{ padding: "0.55rem 0.75rem" }}>
-                          {shops.length === 0 ? (
-                            <span style={{ fontSize: "0.8rem", color: "#9ca3af" }}>No shops yet</span>
-                          ) : (
-                            <div
-                              style={{
-                                display: "flex",
-                                flexDirection: "column",
-                                gap: "0.35rem",
-                                alignItems: "flex-start",
-                                minWidth: "240px",
-                              }}
+                          <div
+                            data-shop-panel-root="true"
+                            style={{
+                              position: "relative",
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "8px",
+                              flexWrap: "wrap",
+                              minWidth: "240px",
+                            }}
+                          >
+                            {primaryName ? (
+                              <span style={pillStyle} title={(names || []).join(", ")}>
+                                {primaryName}
+                                {extraCount > 0 && (
+                                  <span
+                                    style={{
+                                      marginLeft: "6px",
+                                      padding: "2px 8px",
+                                      borderRadius: "9999px",
+                                      backgroundColor: "#e5e7eb",
+                                      color: "#374151",
+                                      fontSize: "0.72rem",
+                                      fontWeight: 800,
+                                    }}
+                                  >
+                                    +{extraCount}
+                                  </span>
+                                )}
+                              </span>
+                            ) : (
+                              <span
+                                style={{
+                                  ...pillStyle,
+                                  backgroundColor: "#f3f4f6",
+                                  color: "#6b7280",
+                                  border: "1px solid #e5e7eb",
+                                }}
+                              >
+                                Not in any shop
+                              </span>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => setOpenShopPanelForItemId((cur) => (cur === item.id ? null : item.id))}
+                              style={manageBtnStyle}
+                              title="Manage shops"
                             >
-                              {names.length === 0 ? (
-                                <span style={{ fontSize: "0.8rem", color: "#9ca3af" }}>
-                                  Not in any shop yet
-                                </span>
-                              ) : (
-                                <span
-                                  title={names.join(", ")}
-                                  style={{
-                                    display: "inline-block",
-                                    padding: "0.18rem 0.7rem",
-                                    borderRadius: "9999px",
-                                    fontSize: "0.78rem",
-                                    fontWeight: 600,
-                                    backgroundColor: "#eff6ff",
-                                    color: "#1d4ed8",
-                                    maxWidth: "260px",
-                                    overflow: "hidden",
-                                    textOverflow: "ellipsis",
-                                    whiteSpace: "nowrap",
-                                  }}
-                                >
-                                  {displayNames}
-                                </span>
-                              )}
+                              <span style={{ fontSize: "0.95rem", lineHeight: 1 }}>˅</span>
+                              Manage
+                            </button>
 
-                              {/* Add */}
-                              {availableShopsToAdd.length === 0 ? (
-                                <span style={{ fontSize: "0.78rem", color: "#9ca3af" }}>In all shops</span>
-                              ) : (
-                                <select
-                                  defaultValue=""
-                                  onChange={(e) => {
-                                    handleAssignToShop(item.id, e.target.value);
-                                    e.target.value = "";
-                                  }}
-                                  style={{
-                                    padding: "0.28rem 0.55rem",
-                                    borderRadius: "0.5rem",
-                                    border: "1px solid #d1d5db",
-                                    fontSize: "0.82rem",
-                                    backgroundColor: "#f9fafb",
-                                    cursor: "pointer",
-                                  }}
-                                >
-                                  <option value="" disabled>
-                                    + Add to shop
-                                  </option>
-                                  {availableShopsToAdd.map((shop) => (
-                                    <option key={shop.id} value={String(shop.id)}>
-                                      {shop.name}
-                                    </option>
-                                  ))}
-                                </select>
-                              )}
+                            {panelOpen && (
+                              <div style={panelStyle}>
+                                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                                  <div style={{ fontWeight: 800, color: "#111827", fontSize: "0.9rem" }}>Shops for this item</div>
+                                  <button
+                                    type="button"
+                                    onClick={() => setOpenShopPanelForItemId(null)}
+                                    style={{
+                                      border: "none",
+                                      background: "transparent",
+                                      cursor: "pointer",
+                                      fontWeight: 900,
+                                      fontSize: "1rem",
+                                      color: "#6b7280",
+                                    }}
+                                    aria-label="Close"
+                                    title="Close"
+                                  >
+                                    ✕
+                                  </button>
+                                </div>
 
-                              {/* ✅ Remove (Undo wrong assignment) */}
-                              {assignedShops.length > 0 && (
-                                <select
-                                  defaultValue=""
-                                  onChange={(e) => {
-                                    handleRemoveFromShop(item.id, e.target.value);
-                                    e.target.value = "";
-                                  }}
-                                  style={{
-                                    padding: "0.28rem 0.55rem",
-                                    borderRadius: "0.5rem",
-                                    border: "1px solid #fca5a5",
-                                    fontSize: "0.82rem",
-                                    backgroundColor: "#fff1f2",
-                                    cursor: "pointer",
-                                    color: "#991b1b",
-                                  }}
-                                >
-                                  <option value="" disabled>
-                                    – Remove from shop
-                                  </option>
-                                  {assignedShops.map((shop) => (
-                                    <option key={shop.id} value={String(shop.id)}>
-                                      {shop.name}
-                                    </option>
-                                  ))}
-                                </select>
-                              )}
-                            </div>
-                          )}
+                                {/* Assigned list */}
+                                {assignedShops.length === 0 ? (
+                                  <div style={{ fontSize: "0.85rem", color: "#6b7280", padding: "8px 0" }}>
+                                    Not assigned to any shop yet.
+                                  </div>
+                                ) : (
+                                  <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "10px" }}>
+                                    {assignedShops.map((s) => (
+                                      <div
+                                        key={s.id}
+                                        style={{
+                                          display: "flex",
+                                          alignItems: "center",
+                                          justifyContent: "space-between",
+                                          gap: "10px",
+                                          padding: "8px 10px",
+                                          borderRadius: "12px",
+                                          border: "1px solid #e5e7eb",
+                                          backgroundColor: "#f9fafb",
+                                        }}
+                                      >
+                                        <span style={{ fontSize: "0.86rem", fontWeight: 800, color: "#111827" }}>{s.name}</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleRemoveFromShop(item.id, s.id)}
+                                          style={{
+                                            padding: "6px 10px",
+                                            borderRadius: "9999px",
+                                            border: "1px solid #fca5a5",
+                                            backgroundColor: "#fff1f2",
+                                            color: "#991b1b",
+                                            fontSize: "0.78rem",
+                                            fontWeight: 900,
+                                            cursor: "pointer",
+                                          }}
+                                          title={`Remove from ${s.name}`}
+                                        >
+                                          Remove
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+
+                                {/* Add dropdown */}
+                                <div style={{ borderTop: "1px solid #f3f4f6", paddingTop: "10px" }}>
+                                  <div style={{ fontSize: "0.82rem", fontWeight: 900, color: "#374151", marginBottom: "6px" }}>
+                                    Add to shop
+                                  </div>
+
+                                  {availableShopsToAdd.length === 0 ? (
+                                    <div style={{ fontSize: "0.85rem", color: "#6b7280" }}>Already in all shops.</div>
+                                  ) : (
+                                    <select
+                                      defaultValue=""
+                                      onChange={(e) => {
+                                        handleAssignToShop(item.id, e.target.value);
+                                        e.target.value = "";
+                                      }}
+                                      style={{
+                                        width: "100%",
+                                        padding: "10px 10px",
+                                        borderRadius: "12px",
+                                        border: "1px solid #d1d5db",
+                                        backgroundColor: "#ffffff",
+                                        fontSize: "0.9rem",
+                                        cursor: "pointer",
+                                      }}
+                                    >
+                                      <option value="" disabled>
+                                        Select shop…
+                                      </option>
+                                      {availableShopsToAdd.map((s) => (
+                                        <option key={s.id} value={String(s.id)}>
+                                          {s.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </div>
                         </td>
 
                         <td style={{ padding: "0.55rem 0.75rem" }}>
