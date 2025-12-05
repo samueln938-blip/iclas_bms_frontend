@@ -8,13 +8,12 @@ import { API_BASE as CLIENT_API_BASE } from "../../api/client.jsx";
 
 const API_BASE = CLIENT_API_BASE;
 
-// ✅ Header should NOT be sticky (keep same look/text)
-const HEADER_STICKY = false;
+// ✅ You requested: header should NOT be sticky (but keep same format)
+const HEADER_IS_STICKY = false;
 
-// Grid definition for the summary table
-// ✅ Added "All pieces" column after "Pieces / unit"
+// ✅ Added "All pieces" column after PIECES/UNIT
 const PURCHASE_GRID_COLUMNS =
-  "minmax(200px, 2.3fr) 90px 90px 110px 120px 120px 120px 130px 130px 130px 130px 110px 40px";
+  "minmax(200px, 2.3fr) 90px 90px 110px 140px 140px 140px 130px 130px 130px 130px 110px 40px";
 
 function formatMoney(value) {
   if (value === null || value === undefined || value === "") return "0";
@@ -33,11 +32,10 @@ function formatQty(value) {
 }
 
 /**
- * ✅ Mobile-friendly searchable item picker (combobox)
- * - shows cursor + keyboard on phone
- * - filter by typing
+ * ✅ Mobile-friendly searchable dropdown:
+ * - type to search (keyboard appears on phone)
  * - scroll list below
- * - preserves your existing updatePad("itemId", ...) behavior
+ * - click to select
  */
 function ItemComboBox({ items, valueId, onChangeId, disabled }) {
   const wrapRef = useRef(null);
@@ -49,20 +47,20 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
     return items.find((it) => String(it.id) === String(valueId)) || null;
   }, [items, valueId]);
 
-  // keep input text in sync with selected item
+  // Keep input text aligned with selected item when dropdown closes
   useEffect(() => {
     if (!open) setQ(selected ? selected.label : "");
   }, [selected, open]);
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
-    if (!s) return items.slice(0, 400);
+    if (!s) return items.slice(0, 500);
     return items
       .filter((it) => String(it.label || "").toLowerCase().includes(s))
-      .slice(0, 400);
+      .slice(0, 500);
   }, [items, q]);
 
-  // click outside closes dropdown
+  // Close on outside click
   useEffect(() => {
     const onDown = (e) => {
       if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
@@ -91,15 +89,13 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
           }}
           onKeyDown={(e) => {
             if (disabled) return;
+            if (e.key === "Escape") setOpen(false);
             if (e.key === "Enter") {
               e.preventDefault();
               if (filtered.length > 0) {
                 onChangeId(String(filtered[0].id));
                 setOpen(false);
               }
-            }
-            if (e.key === "Escape") {
-              setOpen(false);
             }
           }}
           placeholder={disabled ? "" : "Type item name to search…"}
@@ -215,66 +211,50 @@ function ShopPurchasesPage() {
   }, [token]);
 
   const [shop, setShop] = useState(null);
-  const [stockRows, setStockRows] = useState([]); // /stock/?shop_id=...
+  const [stockRows, setStockRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  // Purchase header fields
-  const [purchaseDate, setPurchaseDate] = useState(() => new Date().toISOString().slice(0, 10)); // YYYY-MM-DD
+  const [purchaseDate, setPurchaseDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [supplierName, setSupplierName] = useState("");
   const [invoiceNumber, setInvoiceNumber] = useState("");
 
-  // Purchase lines in this entry (both from DB and new)
   const [lines, setLines] = useState([]);
 
-  // PAD for entering one item
   const [pad, setPad] = useState({
-    itemId: "", // keep blank initially (Select item)
+    itemId: "",
     qtyUnits: 1,
     newUnitCost: "",
     newWholesalePerPiece: "",
     newRetailPerPiece: "",
   });
 
-  // Which NEW line is being edited (null = adding new)
   const [editingLineId, setEditingLineId] = useState(null);
 
-  // ✅ which SAVED DB line is being edited
   const [editingDbId, setEditingDbId] = useState(null);
   const [editingDbUiId, setEditingDbUiId] = useState(null);
 
-  // Which line is currently highlighted/selected (for both DB & new)
   const [selectedLineId, setSelectedLineId] = useState(null);
-
-  // Search term for the list
   const [searchTerm, setSearchTerm] = useState("");
 
   const [saving, setSaving] = useState(false);
   const [padSaving, setPadSaving] = useState(false);
   const [message, setMessage] = useState("");
 
-  // Refs
   const padRef = useRef(null);
-  const stickyHeaderRef = useRef(null);
+  const headerRef = useRef(null);
 
-  // Track sticky header height for accurate scroll offset (only needed when header is sticky)
   const [headerHeight, setHeaderHeight] = useState(180);
   useEffect(() => {
-    if (!HEADER_STICKY) return;
-
+    if (!HEADER_IS_STICKY) return;
     const calc = () => {
-      if (stickyHeaderRef.current) {
-        setHeaderHeight(stickyHeaderRef.current.offsetHeight || 180);
-      }
+      if (headerRef.current) setHeaderHeight(headerRef.current.offsetHeight || 180);
     };
     calc();
     window.addEventListener("resize", calc);
     return () => window.removeEventListener("resize", calc);
   }, []);
 
-  // ------------------------------------------------
-  // Helpers: reset/cancel pad mode
-  // ------------------------------------------------
   const resetPadToDefaults = () => {
     setPad({
       itemId: "",
@@ -298,9 +278,6 @@ function ShopPurchasesPage() {
     padRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
-  // ------------------------------------------------
-  // Load shop + stock for this shop
-  // ------------------------------------------------
   useEffect(() => {
     async function loadData() {
       setLoading(true);
@@ -329,28 +306,29 @@ function ShopPurchasesPage() {
     loadData();
   }, [shopId, authHeadersNoJson]);
 
-  // Map item_id -> stock row
   const stockByItemId = useMemo(() => {
     const map = {};
-    for (const s of stockRows) {
-      map[s.item_id] = s;
-    }
+    for (const s of stockRows) map[s.item_id] = s;
     return map;
   }, [stockRows]);
 
   const shopName = shop?.name || `Shop ${shopId}`;
 
-  // ------------------------------------------------
-  // Initialize pad when stock loads (DO NOT auto-select)
-  // ------------------------------------------------
+  // ✅ Items list for combobox (HOOK SAFE: defined before any early returns)
+  const pickerItems = useMemo(
+    () =>
+      (stockRows || []).map((s) => ({
+        id: s.item_id,
+        label: s.item_name,
+      })),
+    [stockRows]
+  );
+
   useEffect(() => {
     if (!stockRows.length) return;
     setPad((prev) => (prev.itemId ? prev : { ...prev, itemId: "" }));
   }, [stockRows]);
 
-  // ------------------------------------------------
-  // Load existing PURCHASE LINES from DB for this date
-  // ------------------------------------------------
   const loadExistingLines = async () => {
     if (!stockRows.length) {
       setLines([]);
@@ -360,10 +338,7 @@ function ShopPurchasesPage() {
     try {
       const url = `${API_BASE}/purchases/by-shop-date/?shop_id=${shopId}&purchase_date=${purchaseDate}`;
       const res = await fetch(url, { headers: authHeadersNoJson });
-      if (!res.ok) {
-        console.error("Failed to load purchase lines for date", purchaseDate);
-        return;
-      }
+      if (!res.ok) return;
       const data = await res.json();
 
       const mapped = data.map((pl) => ({
@@ -378,12 +353,6 @@ function ShopPurchasesPage() {
       }));
 
       setLines(mapped);
-
-      setSelectedLineId((prev) => {
-        if (!prev) return null;
-        const exists = mapped.some((m) => m.id === prev) || lines.some((l) => l.id === prev && !l.isFromDb);
-        return exists ? prev : null;
-      });
     } catch (err) {
       console.error("Error loading existing purchase lines:", err);
     }
@@ -399,9 +368,6 @@ function ShopPurchasesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [purchaseDate]);
 
-  // ------------------------------------------------
-  // PAD helpers
-  // ------------------------------------------------
   const updatePad = (field, rawValue) => {
     setPad((prev) => {
       if (field === "itemId") {
@@ -438,9 +404,6 @@ function ShopPurchasesPage() {
     });
   };
 
-  // ------------------------------------------------
-  // Start editing (NEW unsaved line)
-  // ------------------------------------------------
   const startEditNewLine = (lineId) => {
     const baseLine = lines.find((l) => l.id === lineId);
     if (!baseLine || baseLine.isFromDb) return;
@@ -450,6 +413,7 @@ function ShopPurchasesPage() {
 
     setEditingLineId(lineId);
     setSelectedLineId(lineId);
+
     setPad({
       itemId: baseLine.itemId,
       qtyUnits: baseLine.qtyUnits,
@@ -457,12 +421,10 @@ function ShopPurchasesPage() {
       newWholesalePerPiece: baseLine.newWholesalePerPiece,
       newRetailPerPiece: baseLine.newRetailPerPiece,
     });
+
     scrollPadIntoView();
   };
 
-  // ------------------------------------------------
-  // Start editing (SAVED DB line)
-  // ------------------------------------------------
   const startEditSavedLine = (line) => {
     setSelectedLineId(line.id);
 
@@ -477,26 +439,19 @@ function ShopPurchasesPage() {
       newWholesalePerPiece: line.newWholesalePerPiece,
       newRetailPerPiece: line.newRetailPerPiece,
     });
+
     scrollPadIntoView();
   };
 
-  // ------------------------------------------------
-  // Remove NEW line only
-  // ------------------------------------------------
   const removeLine = (id) => {
     setLines((prev) => prev.filter((l) => l.id !== id));
     if (editingLineId === id) {
       setEditingLineId(null);
       resetPadToDefaults();
     }
-    if (selectedLineId === id) {
-      setSelectedLineId(null);
-    }
+    if (selectedLineId === id) setSelectedLineId(null);
   };
 
-  // ------------------------------------------------
-  // Delete SAVED DB line
-  // ------------------------------------------------
   const deleteSavedLine = async (dbId) => {
     const ok = window.confirm(
       "Delete this saved purchase item?\n\nThis will reduce stock accordingly and cannot be undone."
@@ -515,27 +470,13 @@ function ShopPurchasesPage() {
 
       if (!res.ok) {
         const errData = await res.json().catch(() => null);
-        const detail = errData?.detail || `Failed to delete line. Status: ${res.status}`;
-        throw new Error(detail);
+        throw new Error(errData?.detail || `Failed to delete line. Status: ${res.status}`);
       }
 
       await res.json().catch(() => null);
-
       setMessage("Saved purchase line deleted and stock recalculated.");
-      setError("");
-
       cancelAnyEdit();
-
       await loadExistingLines();
-      try {
-        const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`, { headers: authHeadersNoJson });
-        if (stockRes.ok) {
-          const stockData = await stockRes.json();
-          setStockRows(stockData || []);
-        }
-      } catch (e) {
-        console.warn("Could not reload stock after delete:", e);
-      }
     } catch (err) {
       console.error(err);
       setError(err.message || "Failed to delete saved line.");
@@ -545,9 +486,6 @@ function ShopPurchasesPage() {
     }
   };
 
-  // ------------------------------------------------
-  // Submit pad
-  // ------------------------------------------------
   const handleSubmitPad = async () => {
     if (!stockRows.length) return;
 
@@ -557,7 +495,7 @@ function ShopPurchasesPage() {
       return;
     }
 
-    // ✅ Allow decimals like 0.5, only require > 0
+    // ✅ Allow 0.5 units etc (only require > 0)
     const qtyUnits = Number(pad.qtyUnits || 0);
     if (qtyUnits <= 0) {
       setError("Quantity (units) must be greater than zero.");
@@ -573,7 +511,6 @@ function ShopPurchasesPage() {
     setError("");
     setMessage("");
 
-    // Editing SAVED line => PUT backend
     if (editingDbId !== null) {
       setPadSaving(true);
       try {
@@ -598,26 +535,12 @@ function ShopPurchasesPage() {
 
         if (!res.ok) {
           const errData = await res.json().catch(() => null);
-          const detail = errData?.detail || `Failed to update saved line. Status: ${res.status}`;
-          throw new Error(detail);
+          throw new Error(errData?.detail || `Failed to update saved line. Status: ${res.status}`);
         }
 
         await res.json().catch(() => null);
-
         setMessage("Saved purchase line updated and stock recalculated.");
-        setError("");
-
         await loadExistingLines();
-        try {
-          const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`, { headers: authHeadersNoJson });
-          if (stockRes.ok) {
-            const stockData = await stockRes.json();
-            setStockRows(stockData || []);
-          }
-        } catch (e) {
-          console.warn("Could not reload stock after update:", e);
-        }
-
         cancelAnyEdit();
         scrollPadIntoView();
         return;
@@ -631,7 +554,6 @@ function ShopPurchasesPage() {
       }
     }
 
-    // Existing behavior: add/update NEW (unsaved) line locally
     if (editingLineId === null) {
       setLines((prev) => [
         ...prev,
@@ -664,14 +586,10 @@ function ShopPurchasesPage() {
 
     setEditingLineId(null);
     setSelectedLineId(null);
-
     resetPadToDefaults();
     scrollPadIntoView();
   };
 
-  // ------------------------------------------------
-  // Totals and computed fields
-  // ------------------------------------------------
   const linesWithComputed = useMemo(() => {
     return lines.map((line) => {
       const s = stockByItemId[line.itemId] || {};
@@ -687,7 +605,7 @@ function ShopPurchasesPage() {
       const newCostPerPiece = piecesPerUnit > 0 ? newUnitCost / piecesPerUnit : 0;
       const lineTotal = qtyUnits * newUnitCost;
 
-      // ✅ New computed column
+      // ✅ New column value
       const allPieces = qtyUnits * piecesPerUnit;
 
       return {
@@ -722,15 +640,11 @@ function ShopPurchasesPage() {
     return linesWithComputed.reduce((sum, line) => sum + (line.computed.lineTotal || 0), 0);
   }, [linesWithComputed]);
 
-  // Pad computed cost per piece (for display)
   const padStock = pad.itemId ? stockByItemId[pad.itemId] : null;
   const padPiecesPerUnit = padStock?.item_pieces_per_unit || 1;
   const padPurchaseCostPerPiece =
     pad.itemId && padPiecesPerUnit > 0 ? Number(pad.newUnitCost || 0) / padPiecesPerUnit : 0;
 
-  // ------------------------------------------------
-  // Save: calls backend /purchases/ with ONLY NEW lines
-  // ------------------------------------------------
   const handleSave = async () => {
     const newLinesForSave = linesWithComputed.filter((l) => !l.isFromDb);
 
@@ -752,7 +666,7 @@ function ShopPurchasesPage() {
         invoice_number: invoiceNumber || null,
         lines: newLinesForSave.map((l) => ({
           item_id: l.itemId,
-          quantity: Number(l.qtyUnits || 0), // ✅ now supports decimals
+          quantity: Number(l.qtyUnits || 0), // ✅ decimals allowed
           unit_cost_price: Number(l.newUnitCost || 0),
           wholesale_price_per_piece:
             l.newWholesalePerPiece === "" || l.newWholesalePerPiece == null ? null : Number(l.newWholesalePerPiece),
@@ -769,29 +683,16 @@ function ShopPurchasesPage() {
 
       if (!res.ok) {
         const errData = await res.json().catch(() => null);
-        const detail = errData?.detail || `Failed to save purchase. Status: ${res.status}`;
-        throw new Error(detail);
+        throw new Error(errData?.detail || `Failed to save purchase. Status: ${res.status}`);
       }
 
       await res.json();
-
       setMessage("Purchase saved and stock updated successfully.");
       setError("");
 
       setLines([]);
       setSelectedLineId(null);
       resetPadToDefaults();
-
-      // Reload stock
-      try {
-        const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`, { headers: authHeadersNoJson });
-        if (stockRes.ok) {
-          const stockData = await stockRes.json();
-          setStockRows(stockData || []);
-        }
-      } catch (e) {
-        console.warn("Could not reload stock after purchase:", e);
-      }
     } catch (err) {
       console.error(err);
       setError(err.message || "Failed to save purchase.");
@@ -801,9 +702,7 @@ function ShopPurchasesPage() {
     }
   };
 
-  // ------------------------------------------------
-  // Render
-  // ------------------------------------------------
+  // ✅ Early returns must come AFTER all hooks (we are safe now)
   if (loading) {
     return (
       <div style={{ padding: "32px" }}>
@@ -820,11 +719,12 @@ function ShopPurchasesPage() {
     );
   }
 
-  // ✅ Pad theme: WHITE
-  const padBg = "#ffffff";
-  const padText = "#111827";
-  const padMuted = "#6b7280";
-  const padBorder = "1px solid #e5e7eb";
+  // ✅ Purchase Pad white
+  const padDark = false;
+  const padBg = padDark ? "#0b1220" : "#ffffff";
+  const padText = padDark ? "#e5e7eb" : "#111827";
+  const padMuted = padDark ? "#9ca3af" : "#6b7280";
+  const padBorder = padDark ? "1px solid rgba(255,255,255,0.10)" : "1px solid #e5e7eb";
 
   const inputBase = {
     width: "100%",
@@ -867,39 +767,21 @@ function ShopPurchasesPage() {
 
   const padButtonText = isEditingSaved ? "Update saved item" : isEditingNew ? "Update item" : "+ Add to list";
 
-  const pickerItems = useMemo(
-    () =>
-      (stockRows || []).map((s) => ({
-        id: s.item_id,
-        label: s.item_name,
-      })),
-    [stockRows]
-  );
-
   return (
     <div style={{ padding: "16px 24px 24px" }}>
-      {/* Header (same format, just not sticky) */}
+      {/* Header (same format, not sticky now) */}
       <div
-        ref={stickyHeaderRef}
+        ref={headerRef}
         style={{
-          position: HEADER_STICKY ? "sticky" : "static",
-          top: 0,
+          position: HEADER_IS_STICKY ? "sticky" : "static",
+          top: HEADER_IS_STICKY ? 0 : undefined,
           zIndex: 15,
           paddingBottom: "8px",
           marginBottom: "8px",
           background: "linear-gradient(to bottom, #f3f4f6 0%, #f3f4f6 65%, rgba(243,244,246,0) 100%)",
         }}
       >
-        <div
-          style={{
-            display: "flex",
-            alignItems: "flex-start",
-            justifyContent: "space-between",
-            gap: "12px",
-            marginBottom: "6px",
-          }}
-        >
-          {/* Title */}
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px", marginBottom: "6px" }}>
           <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
             <button
               onClick={() => navigate(`/shops/${shopId}`)}
@@ -916,29 +798,10 @@ function ShopPurchasesPage() {
               ← Back to shop workspace
             </button>
 
-            <h1
-              style={{
-                fontSize: "30px",
-                fontWeight: 800,
-                letterSpacing: "0.03em",
-                margin: 0,
-              }}
-            >
-              Purchases
-            </h1>
-            <div
-              style={{
-                marginTop: "2px",
-                fontSize: "13px",
-                fontWeight: 600,
-                color: "#2563eb",
-              }}
-            >
-              {shopName}
-            </div>
+            <h1 style={{ fontSize: "30px", fontWeight: 800, letterSpacing: "0.03em", margin: 0 }}>Purchases</h1>
+            <div style={{ marginTop: "2px", fontSize: "13px", fontWeight: 600, color: "#2563eb" }}>{shopName}</div>
           </div>
 
-          {/* Summary card */}
           <div
             style={{
               minWidth: "260px",
@@ -952,93 +815,41 @@ function ShopPurchasesPage() {
               fontSize: "12px",
             }}
           >
-            <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827", marginBottom: "0" }}>
-              Purchase summary
-            </div>
-            <div
-              style={{
-                fontSize: "10px",
-                textTransform: "uppercase",
-                letterSpacing: "0.14em",
-                color: "#9ca3af",
-                marginBottom: "4px",
-              }}
-            >
+            <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>Purchase summary</div>
+            <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.14em", color: "#9ca3af", marginBottom: "4px" }}>
               All items on {purchaseDate}
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: "10px" }}>
-              <div>
-                <div
-                  style={{
-                    fontSize: "10px",
-                    textTransform: "uppercase",
-                    letterSpacing: "0.1em",
-                    color: "#6b7280",
-                  }}
-                >
-                  Total amount
-                </div>
-                <div style={{ fontSize: "18px", fontWeight: 800, color: "#111827" }}>
-                  {formatMoney(purchaseTotal)}
-                </div>
-              </div>
+            <div>
+              <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.1em", color: "#6b7280" }}>Total amount</div>
+              <div style={{ fontSize: "18px", fontWeight: 800, color: "#111827" }}>{formatMoney(purchaseTotal)}</div>
             </div>
           </div>
         </div>
 
-        {/* Date + Supplier + invoice */}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "160px minmax(0, 1fr) 220px",
-            gap: "12px",
-            marginBottom: "8px",
-          }}
-        >
+        <div style={{ display: "grid", gridTemplateColumns: "160px minmax(0, 1fr) 220px", gap: "12px", marginBottom: "8px" }}>
           <input
             type="date"
             value={purchaseDate}
             onChange={(e) => setPurchaseDate(e.target.value)}
-            style={{
-              padding: "8px 12px",
-              borderRadius: "999px",
-              border: "1px solid #d1d5db",
-              fontSize: "13px",
-              backgroundColor: "#ffffff",
-            }}
+            style={{ padding: "8px 12px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px", backgroundColor: "#ffffff" }}
           />
           <input
             type="text"
             placeholder="Supplier name (optional)"
             value={supplierName}
             onChange={(e) => setSupplierName(e.target.value)}
-            style={{
-              width: "100%",
-              padding: "8px 12px",
-              borderRadius: "999px",
-              border: "1px solid #d1d5db",
-              fontSize: "13px",
-              backgroundColor: "#ffffff",
-            }}
+            style={{ width: "100%", padding: "8px 12px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px", backgroundColor: "#ffffff" }}
           />
           <input
             type="text"
             placeholder="Invoice number (optional)"
             value={invoiceNumber}
             onChange={(e) => setInvoiceNumber(e.target.value)}
-            style={{
-              width: "100%",
-              padding: "8px 12px",
-              borderRadius: "999px",
-              border: "1px solid #d1d5db",
-              fontSize: "13px",
-              backgroundColor: "#ffffff",
-            }}
+            style={{ width: "100%", padding: "8px 12px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px", backgroundColor: "#ffffff" }}
           />
         </div>
       </div>
 
-      {/* Messages */}
       {(message || error) && (
         <div
           style={{
@@ -1054,7 +865,6 @@ function ShopPurchasesPage() {
         </div>
       )}
 
-      {/* MAIN CARD */}
       <div
         style={{
           backgroundColor: "#ffffff",
@@ -1063,14 +873,7 @@ function ShopPurchasesPage() {
           padding: "16px 18px 14px",
         }}
       >
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            marginBottom: "8px",
-          }}
-        >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
           <div>
             <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>Items purchased on {purchaseDate}</h2>
           </div>
@@ -1086,20 +889,10 @@ function ShopPurchasesPage() {
             background: padBg,
             border: padBorder,
             color: padText,
-            scrollMarginTop: HEADER_STICKY ? `${headerHeight + 12}px` : "12px",
+            scrollMarginTop: HEADER_IS_STICKY ? `${headerHeight + 12}px` : "12px",
           }}
         >
-          <div
-            style={{
-              fontSize: "13px",
-              fontWeight: 700,
-              marginBottom: "10px",
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              gap: "8px",
-            }}
-          >
+          <div style={{ fontSize: "13px", fontWeight: 700, marginBottom: "10px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
             <span>{padTitle}</span>
 
             <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
@@ -1148,24 +941,12 @@ function ShopPurchasesPage() {
           </div>
 
           {isEditingSaved && (
-            <div
-              style={{
-                marginBottom: "10px",
-                padding: "8px 10px",
-                borderRadius: "12px",
-                border: "1px solid #e5e7eb",
-                background: "#f9fafb",
-                color: "#6b7280",
-                fontSize: "12px",
-                lineHeight: 1.35,
-              }}
-            >
-              Note: Item cannot be changed when editing a saved line. If you need a different item, delete the saved line
-              and add a new one.
+            <div style={{ marginBottom: "10px", padding: "8px 10px", borderRadius: "12px", border: "1px solid #e5e7eb", background: "#f9fafb", color: "#6b7280", fontSize: "12px", lineHeight: 1.35 }}>
+              Note: Item cannot be changed when editing a saved line. If you need a different item, delete the saved line and add a new one.
             </div>
           )}
 
-          {/* Item picker */}
+          {/* ITEM (mobile friendly) */}
           <div>
             <label style={labelStyle}>Item</label>
             <ItemComboBox
@@ -1180,33 +961,22 @@ function ShopPurchasesPage() {
                 Pieces / unit: <strong style={{ color: padText }}>{padStock ? padPiecesPerUnit : "—"}</strong>
               </div>
               <div>
-                Recent unit cost:{" "}
-                <strong style={{ color: padText }}>
-                  {padStock ? formatMoney(padStock.last_purchase_unit_price || 0) : "—"}
-                </strong>
+                Recent unit cost: <strong style={{ color: padText }}>{padStock ? formatMoney(padStock.last_purchase_unit_price || 0) : "—"}</strong>
               </div>
               <div>
-                Recent wholesale / piece:{" "}
-                <strong style={{ color: padText }}>
-                  {padStock ? formatMoney(padStock.wholesale_price_per_piece || 0) : "—"}
-                </strong>
+                Recent wholesale / piece: <strong style={{ color: padText }}>{padStock ? formatMoney(padStock.wholesale_price_per_piece || 0) : "—"}</strong>
               </div>
               <div>
-                Recent retail / piece:{" "}
-                <strong style={{ color: padText }}>
-                  {padStock ? formatMoney(padStock.selling_price_per_piece || 0) : "—"}
-                </strong>
+                Recent retail / piece: <strong style={{ color: padText }}>{padStock ? formatMoney(padStock.selling_price_per_piece || 0) : "—"}</strong>
               </div>
             </div>
           </div>
 
-          {/* Inputs */}
           <div
             style={{
               marginTop: "12px",
               display: "grid",
-              gridTemplateColumns:
-                "140px minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr)",
+              gridTemplateColumns: "140px minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr)",
               gap: "12px",
               alignItems: "end",
             }}
@@ -1225,51 +995,22 @@ function ShopPurchasesPage() {
 
             <div>
               <label style={labelStyle}>Purchase cost (unit)</label>
-              <input
-                type="number"
-                value={pad.newUnitCost}
-                onChange={(e) => updatePad("newUnitCost", e.target.value)}
-                placeholder="0"
-                style={inputBase}
-              />
+              <input type="number" value={pad.newUnitCost} onChange={(e) => updatePad("newUnitCost", e.target.value)} placeholder="0" style={inputBase} />
             </div>
 
             <div>
               <label style={labelStyle}>Purchase cost / piece</label>
-              <input
-                type="text"
-                readOnly
-                value={pad.itemId ? formatMoney(padPurchaseCostPerPiece) : ""}
-                placeholder="—"
-                style={{
-                  ...inputBase,
-                  backgroundColor: "#f3f4f6",
-                  color: "#111827",
-                  fontWeight: 800,
-                }}
-              />
+              <input type="text" readOnly value={pad.itemId ? formatMoney(padPurchaseCostPerPiece) : ""} placeholder="—" style={{ ...inputBase, backgroundColor: "#f3f4f6", fontWeight: 800 }} />
             </div>
 
             <div>
               <label style={labelStyle}>New wholesale / piece</label>
-              <input
-                type="number"
-                value={pad.newWholesalePerPiece}
-                onChange={(e) => updatePad("newWholesalePerPiece", e.target.value)}
-                placeholder="0"
-                style={inputBase}
-              />
+              <input type="number" value={pad.newWholesalePerPiece} onChange={(e) => updatePad("newWholesalePerPiece", e.target.value)} placeholder="0" style={inputBase} />
             </div>
 
             <div>
               <label style={labelStyle}>New retail / piece</label>
-              <input
-                type="number"
-                value={pad.newRetailPerPiece}
-                onChange={(e) => updatePad("newRetailPerPiece", e.target.value)}
-                placeholder="0"
-                style={inputBase}
-              />
+              <input type="number" value={pad.newRetailPerPiece} onChange={(e) => updatePad("newRetailPerPiece", e.target.value)} placeholder="0" style={inputBase} />
             </div>
           </div>
         </div>
@@ -1281,45 +1022,20 @@ function ShopPurchasesPage() {
           </div>
         ) : (
           <>
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                marginBottom: "6px",
-                marginTop: "2px",
-              }}
-            >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px", marginTop: "2px" }}>
               <div style={{ fontSize: "12px", color: "#6b7280" }}>
-                Items for {purchaseDate}: {linesWithComputed.length}{" "}
-                {searchTerm ? `(showing ${filteredLinesWithComputed.length} after filter)` : ""}
+                Items for {purchaseDate}: {linesWithComputed.length} {searchTerm ? `(showing ${filteredLinesWithComputed.length} after filter)` : ""}
               </div>
               <input
                 type="text"
                 placeholder="Search in items..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                style={{
-                  width: "240px",
-                  padding: "6px 10px",
-                  borderRadius: "999px",
-                  border: "1px solid #d1d5db",
-                  fontSize: "12px",
-                }}
+                style={{ width: "240px", padding: "6px 10px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "12px" }}
               />
             </div>
 
-            <div
-              style={{
-                maxHeight: "420px",
-                overflowY: "auto",
-                overflowX: "auto",
-                borderRadius: "12px",
-                border: "1px solid #e5e7eb",
-                padding: "0 8px 4px 0",
-                backgroundColor: "#fcfcff",
-              }}
-            >
+            <div style={{ maxHeight: "420px", overflowY: "auto", overflowX: "auto", borderRadius: "12px", border: "1px solid #e5e7eb", padding: "0 8px 4px 0", backgroundColor: "#fcfcff" }}>
               <div
                 style={{
                   display: "grid",
@@ -1382,39 +1098,17 @@ function ShopPurchasesPage() {
                         <button
                           type="button"
                           onClick={() => startEditSavedLine(line)}
-                          style={{
-                            padding: 0,
-                            margin: 0,
-                            border: "none",
-                            background: "transparent",
-                            color: "#111827",
-                            fontWeight: 700,
-                            fontSize: "13px",
-                            cursor: "pointer",
-                            textAlign: "left",
-                          }}
+                          style={{ padding: 0, margin: 0, border: "none", background: "transparent", color: "#111827", fontWeight: 700, fontSize: "13px", cursor: "pointer", textAlign: "left" }}
                           title="Edit saved purchase line"
                         >
                           {itemName || "Unknown item"}{" "}
-                          {isEditingThisSaved ? (
-                            <span style={{ color: "#2563eb", fontWeight: 800, marginLeft: 6 }}>(editing)</span>
-                          ) : null}
+                          {isEditingThisSaved ? <span style={{ color: "#2563eb", fontWeight: 800, marginLeft: 6 }}>(editing)</span> : null}
                         </button>
                       ) : (
                         <button
                           type="button"
                           onClick={() => startEditNewLine(line.id)}
-                          style={{
-                            padding: 0,
-                            margin: 0,
-                            border: "none",
-                            background: "transparent",
-                            color: "#2563eb",
-                            fontWeight: 600,
-                            fontSize: "13px",
-                            cursor: "pointer",
-                            textAlign: "left",
-                          }}
+                          style={{ padding: 0, margin: 0, border: "none", background: "transparent", color: "#2563eb", fontWeight: 600, fontSize: "13px", cursor: "pointer", textAlign: "left" }}
                           title="Edit new (unsaved) line"
                         >
                           {itemName || "Unknown item"}
@@ -1432,7 +1126,6 @@ function ShopPurchasesPage() {
                     <div style={{ textAlign: "right" }}>{formatMoney(line.newWholesalePerPiece)}</div>
                     <div style={{ textAlign: "right" }}>{formatMoney(recentRetailPerPiece)}</div>
                     <div style={{ textAlign: "right" }}>{formatMoney(line.newRetailPerPiece)}</div>
-
                     <div style={{ textAlign: "right", fontWeight: 600 }}>{formatMoney(lineTotal)}</div>
 
                     <div style={{ textAlign: "center" }}>
@@ -1442,17 +1135,7 @@ function ShopPurchasesPage() {
                           onClick={() => deleteSavedLine(line.dbId)}
                           disabled={padSaving}
                           title="Delete saved line"
-                          style={{
-                            width: "28px",
-                            height: "28px",
-                            borderRadius: "9999px",
-                            border: "1px solid #fee2e2",
-                            backgroundColor: "#fef2f2",
-                            color: "#b91c1c",
-                            fontSize: "14px",
-                            cursor: padSaving ? "not-allowed" : "pointer",
-                            opacity: padSaving ? 0.7 : 1,
-                          }}
+                          style={{ width: "28px", height: "28px", borderRadius: "9999px", border: "1px solid #fee2e2", backgroundColor: "#fef2f2", color: "#b91c1c", fontSize: "14px", cursor: padSaving ? "not-allowed" : "pointer", opacity: padSaving ? 0.7 : 1 }}
                         >
                           🗑
                         </button>
@@ -1460,16 +1143,7 @@ function ShopPurchasesPage() {
                         <button
                           type="button"
                           onClick={() => removeLine(line.id)}
-                          style={{
-                            width: "28px",
-                            height: "28px",
-                            borderRadius: "9999px",
-                            border: "1px solid #fee2e2",
-                            backgroundColor: "#fef2f2",
-                            color: "#b91c1c",
-                            fontSize: "16px",
-                            cursor: "pointer",
-                          }}
+                          style={{ width: "28px", height: "28px", borderRadius: "9999px", border: "1px solid #fee2e2", backgroundColor: "#fef2f2", color: "#b91c1c", fontSize: "16px", cursor: "pointer" }}
                           title="Remove new line (not saved yet)"
                         >
                           ✕
@@ -1487,16 +1161,7 @@ function ShopPurchasesPage() {
           <button
             type="button"
             onClick={() => navigate(`/shops/${shopId}/stock`)}
-            style={{
-              padding: "0.6rem 1.4rem",
-              borderRadius: "999px",
-              border: "1px solid #d1d5db",
-              backgroundColor: "#ffffff",
-              color: "#111827",
-              fontWeight: 600,
-              fontSize: "0.95rem",
-              cursor: "pointer",
-            }}
+            style={{ padding: "0.6rem 1.4rem", borderRadius: "999px", border: "1px solid #d1d5db", backgroundColor: "#ffffff", color: "#111827", fontWeight: 600, fontSize: "0.95rem", cursor: "pointer" }}
           >
             View stock
           </button>
@@ -1504,16 +1169,7 @@ function ShopPurchasesPage() {
             type="button"
             onClick={handleSave}
             disabled={saving}
-            style={{
-              padding: "0.6rem 1.8rem",
-              borderRadius: "999px",
-              border: "none",
-              backgroundColor: saving ? "#2563eb99" : "#2563eb",
-              color: "white",
-              fontWeight: 700,
-              fontSize: "0.95rem",
-              cursor: saving ? "not-allowed" : "pointer",
-            }}
+            style={{ padding: "0.6rem 1.8rem", borderRadius: "999px", border: "none", backgroundColor: saving ? "#2563eb99" : "#2563eb", color: "white", fontWeight: 700, fontSize: "0.95rem", cursor: saving ? "not-allowed" : "pointer" }}
           >
             {saving ? "Saving..." : "Save purchase"}
           </button>
