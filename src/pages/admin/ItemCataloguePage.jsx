@@ -397,7 +397,7 @@ function ItemCataloguePage() {
   }, [items.length, filteredAndSortedItems.length, searchQuery]);
 
   // ------------------------------------------------
-  //  Assign item to shop (new backend endpoint)
+  //  Assign item to shop (backend endpoint)
   // ------------------------------------------------
   const handleAssignToShop = async (itemId, shopIdStr) => {
     if (!shopIdStr) return;
@@ -411,10 +411,9 @@ function ItemCataloguePage() {
       const payload = { shop_ids: [shopId] };
       await api.post(`/items/${itemId}/assign-to-shops`, payload);
 
-      const shopName = shops.find((s) => s.id === shopId)?.name || `Shop ${shopId}`;
-      setMessage(
-        `Item assigned to "${shopName}". It will now appear in that shop's stock.`
-      );
+      const shopName =
+        shops.find((s) => s.id === shopId)?.name || `Shop ${shopId}`;
+      setMessage(`Item assigned to "${shopName}".`);
 
       await loadItemShopUsage();
     } catch (err) {
@@ -425,6 +424,79 @@ function ItemCataloguePage() {
         "Failed to add item to shop.";
       setError(backendMsg);
     }
+  };
+
+  // ------------------------------------------------
+  // ✅ NEW: Remove item from shop (undo wrong selection)
+  // ------------------------------------------------
+  const removeUsageLocally = (itemId, shopId) => {
+    setItemShopUsage((prev) => {
+      const cur = prev[itemId];
+      if (!cur) return prev;
+
+      const ids = Array.isArray(cur.ids) ? cur.ids : [];
+      const names = Array.isArray(cur.names) ? cur.names : [];
+
+      const idx = ids.indexOf(shopId);
+      if (idx === -1) return prev;
+
+      const nextIds = ids.filter((id) => id !== shopId);
+      const nextNames = names.filter((_, i) => i !== idx);
+
+      return {
+        ...prev,
+        [itemId]: {
+          ids: nextIds,
+          names: nextNames,
+          count: nextIds.length,
+        },
+      };
+    });
+  };
+
+  const handleRemoveFromShop = async (itemId, shopIdStr) => {
+    if (!shopIdStr) return;
+    const shopId = Number(shopIdStr);
+    if (!shopId) return;
+
+    setError("");
+    setMessage("");
+
+    const shopName =
+      shops.find((s) => s.id === shopId)?.name || `Shop ${shopId}`;
+
+    // Optimistic UI update
+    removeUsageLocally(itemId, shopId);
+
+    // Try common backend endpoints (safe). If none exist, we warn.
+    const candidates = [
+      { method: "post", url: `/items/${itemId}/remove-from-shops`, data: { shop_ids: [shopId] } },
+      { method: "post", url: `/items/${itemId}/unassign-from-shops`, data: { shop_ids: [shopId] } },
+      { method: "delete", url: `/items/${itemId}/shops/${shopId}` },
+      { method: "delete", url: `/items/${itemId}/unassign/${shopId}` },
+    ];
+
+    let ok = false;
+    for (const c of candidates) {
+      try {
+        if (c.method === "post") await api.post(c.url, c.data);
+        else await api.delete(c.url);
+        ok = true;
+        break;
+      } catch {
+        // try next
+      }
+    }
+
+    if (ok) {
+      setMessage(`Removed item from "${shopName}".`);
+      await loadItemShopUsage();
+      return;
+    }
+
+    setMessage(
+      `Removed "${shopName}" in the UI. If it returns after refresh, your backend has no remove endpoint yet.`
+    );
   };
 
   // ------------------------------------------------
@@ -736,7 +808,7 @@ function ItemCataloguePage() {
                   />
                 </div>
 
-                {/* ✅ Reorder level */}
+                {/* Reorder level */}
                 <div>
                   <label
                     style={{
@@ -763,13 +835,7 @@ function ItemCataloguePage() {
                       fontSize: "0.95rem",
                     }}
                   />
-                  <div
-                    style={{
-                      marginTop: "0.35rem",
-                      fontSize: "0.8rem",
-                      color: "#6b7280",
-                    }}
-                  >
+                  <div style={{ marginTop: "0.35rem", fontSize: "0.8rem", color: "#6b7280" }}>
                     If remaining stock is ≤ this number, it appears in “To Buy”.
                   </div>
                 </div>
@@ -810,34 +876,15 @@ function ItemCataloguePage() {
               boxShadow: "0 10px 30px rgba(15,23,42,0.06)",
             }}
           >
-            <h2
-              style={{
-                fontSize: "1.5rem",
-                fontWeight: 700,
-                marginBottom: "1rem",
-              }}
-            >
+            <h2 style={{ fontSize: "1.5rem", fontWeight: 700, marginBottom: "1rem" }}>
               Bulk upload from CSV
             </h2>
 
-            <p
-              style={{
-                color: "#6b7280",
-                fontSize: "0.95rem",
-                marginBottom: "0.75rem",
-              }}
-            >
+            <p style={{ color: "#6b7280", fontSize: "0.95rem", marginBottom: "0.75rem" }}>
               Columns supported:
             </p>
 
-            <p
-              style={{
-                color: "#111827",
-                fontWeight: 600,
-                fontSize: "0.95rem",
-                marginBottom: "1rem",
-              }}
-            >
+            <p style={{ color: "#111827", fontWeight: 600, fontSize: "0.95rem", marginBottom: "1rem" }}>
               name, sku, unit, category, pieces_per_unit, reorder_level_pieces
             </p>
 
@@ -857,8 +904,7 @@ function ItemCataloguePage() {
                 padding: "0.6rem 1.5rem",
                 borderRadius: "9999px",
                 border: "none",
-                backgroundColor:
-                  bulkUploading || !bulkFile ? "#0f766e66" : "#0f766e",
+                backgroundColor: bulkUploading || !bulkFile ? "#0f766e66" : "#0f766e",
                 color: "white",
                 fontWeight: 600,
                 cursor: bulkUploading || !bulkFile ? "not-allowed" : "pointer",
@@ -893,14 +939,7 @@ function ItemCataloguePage() {
               marginBottom: "0.75rem",
             }}
           >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "0.6rem",
-                flexWrap: "wrap",
-              }}
-            >
+            <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", flexWrap: "wrap" }}>
               <span
                 style={{
                   display: "inline-flex",
@@ -932,13 +971,11 @@ function ItemCataloguePage() {
                   padding: "0.32rem 0.8rem",
                   borderRadius: "9999px",
                   border: "1px solid #e5e7eb",
-                  backgroundColor:
-                    loading || itemsProgress.fetching ? "#f3f4f6" : "#ffffff",
+                  backgroundColor: loading || itemsProgress.fetching ? "#f3f4f6" : "#ffffff",
                   color: "#111827",
                   fontSize: "0.85rem",
                   fontWeight: 700,
-                  cursor:
-                    loading || itemsProgress.fetching ? "not-allowed" : "pointer",
+                  cursor: loading || itemsProgress.fetching ? "not-allowed" : "pointer",
                 }}
                 title="Reload all items"
               >
@@ -990,10 +1027,7 @@ function ItemCataloguePage() {
                       color: "#6b7280",
                     }}
                   >
-                    {/* ✅ NEW: Row number column */}
-                    <th style={{ padding: "0.55rem 0.75rem", width: "64px" }}>
-                      #
-                    </th>
+                    <th style={{ padding: "0.55rem 0.75rem", width: "64px" }}>#</th>
 
                     <th style={{ padding: "0.55rem 0.75rem" }}>
                       <button
@@ -1013,9 +1047,7 @@ function ItemCataloguePage() {
                         }}
                       >
                         Name{" "}
-                        <span style={{ fontSize: "0.7rem" }}>
-                          {renderSortIcon("name")}
-                        </span>
+                        <span style={{ fontSize: "0.7rem" }}>{renderSortIcon("name")}</span>
                       </button>
                     </th>
 
@@ -1039,9 +1071,7 @@ function ItemCataloguePage() {
                         }}
                       >
                         Category{" "}
-                        <span style={{ fontSize: "0.7rem" }}>
-                          {renderSortIcon("category")}
-                        </span>
+                        <span style={{ fontSize: "0.7rem" }}>{renderSortIcon("category")}</span>
                       </button>
                     </th>
 
@@ -1063,13 +1093,10 @@ function ItemCataloguePage() {
                         }}
                       >
                         Pieces / unit{" "}
-                        <span style={{ fontSize: "0.7rem" }}>
-                          {renderSortIcon("pieces_per_unit")}
-                        </span>
+                        <span style={{ fontSize: "0.7rem" }}>{renderSortIcon("pieces_per_unit")}</span>
                       </button>
                     </th>
 
-                    {/* ✅ NEW: Reorder level */}
                     <th style={{ padding: "0.55rem 0.75rem" }}>
                       <button
                         type="button"
@@ -1095,18 +1122,14 @@ function ItemCataloguePage() {
                     </th>
 
                     <th style={{ padding: "0.55rem 0.75rem" }}>Status</th>
-                    <th style={{ padding: "0.55rem 0.75rem" }}>Add to shop</th>
+                    <th style={{ padding: "0.55rem 0.75rem" }}>Shops (Add / Remove)</th>
                     <th style={{ padding: "0.55rem 0.75rem" }}>Actions</th>
                   </tr>
                 </thead>
 
                 <tbody>
                   {filteredAndSortedItems.map((item, idx) => {
-                    const usage = itemShopUsage[item.id] || {
-                      names: [],
-                      ids: [],
-                      count: 0,
-                    };
+                    const usage = itemShopUsage[item.id] || { names: [], ids: [], count: 0 };
                     const names = usage.names || [];
                     const ids = usage.ids || [];
 
@@ -1116,6 +1139,7 @@ function ItemCataloguePage() {
                         : `${names.slice(0, 2).join(", ")} +${names.length - 2}`;
 
                     const availableShopsToAdd = shops.filter((s) => !ids.includes(s.id));
+                    const assignedShops = shops.filter((s) => ids.includes(s.id));
 
                     const isInactive = !item.is_active;
 
@@ -1128,7 +1152,6 @@ function ItemCataloguePage() {
                           opacity: isInactive ? 0.85 : 1,
                         }}
                       >
-                        {/* ✅ NEW: Row number cell */}
                         <td style={{ padding: "0.55rem 0.75rem", color: "#6b7280" }}>
                           {idx + 1}
                         </td>
@@ -1153,20 +1176,11 @@ function ItemCataloguePage() {
                           </button>
                         </td>
 
-                        <td style={{ padding: "0.55rem 0.75rem" }}>
-                          {item.unit || "—"}
-                        </td>
-                        <td style={{ padding: "0.55rem 0.75rem" }}>
-                          {item.category || "—"}
-                        </td>
-                        <td style={{ padding: "0.55rem 0.75rem" }}>
-                          {item.pieces_per_unit ?? 1}
-                        </td>
-                        <td style={{ padding: "0.55rem 0.75rem" }}>
-                          {item.reorder_level_pieces ?? 0}
-                        </td>
+                        <td style={{ padding: "0.55rem 0.75rem" }}>{item.unit || "—"}</td>
+                        <td style={{ padding: "0.55rem 0.75rem" }}>{item.category || "—"}</td>
+                        <td style={{ padding: "0.55rem 0.75rem" }}>{item.pieces_per_unit ?? 1}</td>
+                        <td style={{ padding: "0.55rem 0.75rem" }}>{item.reorder_level_pieces ?? 0}</td>
 
-                        {/* Status pill */}
                         <td style={{ padding: "0.55rem 0.75rem" }}>
                           <span
                             style={{
@@ -1193,12 +1207,9 @@ function ItemCataloguePage() {
                           </span>
                         </td>
 
-                        {/* Add to shop */}
                         <td style={{ padding: "0.55rem 0.75rem" }}>
                           {shops.length === 0 ? (
-                            <span style={{ fontSize: "0.8rem", color: "#9ca3af" }}>
-                              No shops yet
-                            </span>
+                            <span style={{ fontSize: "0.8rem", color: "#9ca3af" }}>No shops yet</span>
                           ) : (
                             <div
                               style={{
@@ -1206,7 +1217,7 @@ function ItemCataloguePage() {
                                 flexDirection: "column",
                                 gap: "0.35rem",
                                 alignItems: "flex-start",
-                                minWidth: "220px",
+                                minWidth: "240px",
                               }}
                             >
                               {names.length === 0 ? (
@@ -1234,16 +1245,16 @@ function ItemCataloguePage() {
                                 </span>
                               )}
 
+                              {/* Add */}
                               {availableShopsToAdd.length === 0 ? (
-                                <span style={{ fontSize: "0.78rem", color: "#9ca3af" }}>
-                                  In all shops
-                                </span>
+                                <span style={{ fontSize: "0.78rem", color: "#9ca3af" }}>In all shops</span>
                               ) : (
                                 <select
                                   defaultValue=""
-                                  onChange={(e) =>
-                                    handleAssignToShop(item.id, e.target.value)
-                                  }
+                                  onChange={(e) => {
+                                    handleAssignToShop(item.id, e.target.value);
+                                    e.target.value = "";
+                                  }}
                                   style={{
                                     padding: "0.28rem 0.55rem",
                                     borderRadius: "0.5rem",
@@ -1263,25 +1274,49 @@ function ItemCataloguePage() {
                                   ))}
                                 </select>
                               )}
+
+                              {/* ✅ Remove (Undo wrong assignment) */}
+                              {assignedShops.length > 0 && (
+                                <select
+                                  defaultValue=""
+                                  onChange={(e) => {
+                                    handleRemoveFromShop(item.id, e.target.value);
+                                    e.target.value = "";
+                                  }}
+                                  style={{
+                                    padding: "0.28rem 0.55rem",
+                                    borderRadius: "0.5rem",
+                                    border: "1px solid #fca5a5",
+                                    fontSize: "0.82rem",
+                                    backgroundColor: "#fff1f2",
+                                    cursor: "pointer",
+                                    color: "#991b1b",
+                                  }}
+                                >
+                                  <option value="" disabled>
+                                    – Remove from shop
+                                  </option>
+                                  {assignedShops.map((shop) => (
+                                    <option key={shop.id} value={String(shop.id)}>
+                                      {shop.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              )}
                             </div>
                           )}
                         </td>
 
-                        {/* Actions: Activate / Deactivate */}
                         <td style={{ padding: "0.55rem 0.75rem" }}>
                           <button
                             type="button"
                             onClick={() => handleDeleteClick(item)}
                             title={item.is_active ? "Deactivate item" : "Activate item"}
-                            aria-label={`${item.is_active ? "Deactivate" : "Activate"} ${
-                              item.name
-                            }`}
+                            aria-label={`${item.is_active ? "Deactivate" : "Activate"} ${item.name}`}
                             style={{
                               padding: "0.35rem 0.9rem",
                               borderRadius: "9999px",
-                              border: item.is_active
-                                ? "1px solid #fecaca"
-                                : "1px solid #bbf7d0",
+                              border: item.is_active ? "1px solid #fecaca" : "1px solid #bbf7d0",
                               backgroundColor: item.is_active ? "#fef2f2" : "#ecfdf5",
                               color: item.is_active ? "#b91c1c" : "#047857",
                               fontSize: "0.8rem",
