@@ -244,6 +244,7 @@ function ItemCataloguePage() {
   // ------------------------------------------------
   const handleDeleteClick = async (item) => {
     const desiredStatus = !item.is_active;
+
     const confirmText = desiredStatus
       ? `Do you want to ACTIVATE "${item.name}" again?`
       : `Are you sure you want to DEACTIVATE "${item.name}"?`;
@@ -537,12 +538,38 @@ function ItemCataloguePage() {
     top: "calc(100% + 8px)",
     right: 0,
     zIndex: 20,
-    width: "320px",
+    width: "340px",
     borderRadius: "14px",
     border: "1px solid #e5e7eb",
     backgroundColor: "#ffffff",
     boxShadow: "0 20px 40px rgba(15,23,42,0.12)",
     padding: "12px",
+  };
+
+  const shopRowStyle = {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: "10px",
+    padding: "8px 10px",
+    borderRadius: "12px",
+    border: "1px solid #e5e7eb",
+    backgroundColor: "#f9fafb",
+  };
+
+  const shopActionBtnBase = {
+    width: "34px",
+    height: "34px",
+    borderRadius: "9999px",
+    border: "1px solid #e5e7eb",
+    backgroundColor: "#ffffff",
+    cursor: "pointer",
+    fontWeight: 1000,
+    fontSize: "1.05rem",
+    lineHeight: 1,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
   };
 
   // ------------------------------------------------
@@ -576,10 +603,18 @@ function ItemCataloguePage() {
 
       <div style={{ marginBottom: "1.5rem" }}>
         <div style={tabsWrapperStyle}>
-          <button type="button" style={getTabButtonStyle("manage")} onClick={() => setActiveTab("manage")}>
+          <button
+            type="button"
+            style={getTabButtonStyle("manage")}
+            onClick={() => setActiveTab("manage")}
+          >
             Manage items
           </button>
-          <button type="button" style={getTabButtonStyle("list")} onClick={() => setActiveTab("list")}>
+          <button
+            type="button"
+            style={getTabButtonStyle("list")}
+            onClick={() => setActiveTab("list")}
+          >
             Items list ({items.length})
           </button>
         </div>
@@ -619,7 +654,15 @@ function ItemCataloguePage() {
               boxShadow: "0 10px 30px rgba(15,23,42,0.06)",
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1rem", gap: "0.75rem" }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: "1rem",
+                gap: "0.75rem",
+              }}
+            >
               <h2 style={{ fontSize: "1.5rem", fontWeight: 700 }}>Item</h2>
 
               <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
@@ -658,10 +701,24 @@ function ItemCataloguePage() {
             </div>
 
             <form onSubmit={handleSubmit}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem 1.5rem", marginBottom: "1.25rem" }}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: "1rem 1.5rem",
+                  marginBottom: "1.25rem",
+                }}
+              >
                 {/* Name */}
                 <div>
-                  <label style={{ display: "block", fontSize: "0.9rem", fontWeight: 600, marginBottom: "0.35rem" }}>
+                  <label
+                    style={{
+                      display: "block",
+                      fontSize: "0.9rem",
+                      fontWeight: 600,
+                      marginBottom: "0.35rem",
+                    }}
+                  >
                     Name <span style={{ color: "#b91c1c" }}>*</span>
                   </label>
                   <input
@@ -671,13 +728,26 @@ function ItemCataloguePage() {
                     onChange={handleChange}
                     placeholder="e.g. MUGURUSI 10KG"
                     required
-                    style={{ width: "100%", padding: "0.6rem 0.75rem", borderRadius: "0.6rem", border: "1px solid #d1d5db", fontSize: "0.95rem" }}
+                    style={{
+                      width: "100%",
+                      padding: "0.6rem 0.75rem",
+                      borderRadius: "0.6rem",
+                      border: "1px solid #d1d5db",
+                      fontSize: "0.95rem",
+                    }}
                   />
                 </div>
 
                 {/* SKU */}
                 <div>
-                  <label style={{ display: "block", fontSize: "0.9rem", fontWeight: 600, marginBottom: "0.35rem" }}>
+                  <label
+                    style={{
+                      display: "block",
+                      fontSize: "0.9rem",
+                      fontWeight: 600,
+                      marginBottom: "0.35rem",
+                    }}
+                  >
                     SKU
                   </label>
                   <input
@@ -686,13 +756,26 @@ function ItemCataloguePage() {
                     value={form.sku}
                     onChange={handleChange}
                     placeholder="Optional code"
-                    style={{ width: "100%", padding: "0.6rem 0.75rem", borderRadius: "0.6rem", border: "1px solid #d1d5db", fontSize: "0.95rem" }}
+                    style={{
+                      width: "100%",
+                      padding: "0.6rem 0.75rem",
+                      borderRadius: "0.6rem",
+                      border: "1px solid #d1d5db",
+                      fontSize: "0.95rem",
+                    }}
                   />
                 </div>
 
                 {/* Unit */}
                 <div>
-                  <label style={{ display: "block", fontSize: "0.9rem", fontWeight: 600, marginBottom: "0.35rem" }}>
+                  <label
+                    style={{
+                      display: "block",
+                      fontSize: "0.9rem",
+                      fontWeight: 600,
+                      marginBottom: "0.35rem",
+                    }}
+                  >
                     Unit <span style={{ color: "#b91c1c" }}>*</span>
                   </label>
                   <input
@@ -702,13 +785,26 @@ function ItemCataloguePage() {
                     onChange={handleChange}
                     placeholder="e.g. 10 Kg, Box, Crate"
                     required
-                    style={{ width: "100%", padding: "0.6rem 0.75rem", borderRadius: "0.6rem", border: "1px solid #d1d5db", fontSize: "0.95rem" }}
+                    style={{
+                      width: "100%",
+                      padding: "0.6rem 0.75rem",
+                      borderRadius: "0.6rem",
+                      border: "1px solid #d1d5db",
+                      fontSize: "0.95rem",
+                    }}
                   />
                 </div>
 
                 {/* Category */}
                 <div>
-                  <label style={{ display: "block", fontSize: "0.9rem", fontWeight: 600, marginBottom: "0.35rem" }}>
+                  <label
+                    style={{
+                      display: "block",
+                      fontSize: "0.9rem",
+                      fontWeight: 600,
+                      marginBottom: "0.35rem",
+                    }}
+                  >
                     Category
                   </label>
                   <input
@@ -717,13 +813,26 @@ function ItemCataloguePage() {
                     value={form.category}
                     onChange={handleChange}
                     placeholder="e.g. Sugar, Cooking Oil"
-                    style={{ width: "100%", padding: "0.6rem 0.75rem", borderRadius: "0.6rem", border: "1px solid #d1d5db", fontSize: "0.95rem" }}
+                    style={{
+                      width: "100%",
+                      padding: "0.6rem 0.75rem",
+                      borderRadius: "0.6rem",
+                      border: "1px solid #d1d5db",
+                      fontSize: "0.95rem",
+                    }}
                   />
                 </div>
 
                 {/* Pieces per unit */}
                 <div>
-                  <label style={{ display: "block", fontSize: "0.9rem", fontWeight: 600, marginBottom: "0.35rem" }}>
+                  <label
+                    style={{
+                      display: "block",
+                      fontSize: "0.9rem",
+                      fontWeight: 600,
+                      marginBottom: "0.35rem",
+                    }}
+                  >
                     Pieces per unit
                   </label>
                   <input
@@ -732,13 +841,26 @@ function ItemCataloguePage() {
                     value={form.pieces_per_unit}
                     onChange={handleChange}
                     min={1}
-                    style={{ width: "100%", padding: "0.6rem 0.75rem", borderRadius: "0.6rem", border: "1px solid #d1d5db", fontSize: "0.95rem" }}
+                    style={{
+                      width: "100%",
+                      padding: "0.6rem 0.75rem",
+                      borderRadius: "0.6rem",
+                      border: "1px solid #d1d5db",
+                      fontSize: "0.95rem",
+                    }}
                   />
                 </div>
 
                 {/* Reorder */}
                 <div>
-                  <label style={{ display: "block", fontSize: "0.9rem", fontWeight: 600, marginBottom: "0.35rem" }}>
+                  <label
+                    style={{
+                      display: "block",
+                      fontSize: "0.9rem",
+                      fontWeight: 600,
+                      marginBottom: "0.35rem",
+                    }}
+                  >
                     Reorder level (pieces)
                   </label>
                   <input
@@ -748,7 +870,13 @@ function ItemCataloguePage() {
                     onChange={handleChange}
                     min={0}
                     placeholder="0 = no alert"
-                    style={{ width: "100%", padding: "0.6rem 0.75rem", borderRadius: "0.6rem", border: "1px solid #d1d5db", fontSize: "0.95rem" }}
+                    style={{
+                      width: "100%",
+                      padding: "0.6rem 0.75rem",
+                      borderRadius: "0.6rem",
+                      border: "1px solid #d1d5db",
+                      fontSize: "0.95rem",
+                    }}
                   />
                   <div style={{ marginTop: "0.35rem", fontSize: "0.8rem", color: "#6b7280" }}>
                     If remaining stock is ≤ this number, it appears in “To Buy”.
@@ -792,11 +920,30 @@ function ItemCataloguePage() {
             <p style={{ color: "#6b7280", fontSize: "0.95rem", marginBottom: "0.75rem" }}>
               Columns supported:
             </p>
-            <p style={{ color: "#111827", fontWeight: 600, fontSize: "0.95rem", marginBottom: "1rem" }}>
-              name, sku, unit, category, pieces_per_unit, reorder_level_pieces
+
+            <p style={{ color: "#111827", fontWeight: 700, fontSize: "0.95rem", marginBottom: "0.5rem" }}>
+              name, sku, unit, category, pieces_per_unit, reorder_level_pieces, shops
             </p>
 
-            <input ref={fileInputRef} type="file" accept=".csv" onChange={handleFileChange} style={{ marginBottom: "0.75rem" }} />
+            <div style={{ color: "#6b7280", fontSize: "0.86rem", marginBottom: "1rem", lineHeight: 1.35 }}>
+              <div>
+                <b>shops</b>: optional — auto-assign item to shops during upload.
+              </div>
+              <div>
+                Example: <b>Mulindi; Downtown</b> (separate by semicolon) or <b>ALL</b>.
+              </div>
+              <div style={{ marginTop: "6px" }}>
+                If your backend is not yet updated to process <b>shops</b>, upload will still work (items only).
+              </div>
+            </div>
+
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".csv"
+              onChange={handleFileChange}
+              style={{ marginBottom: "0.75rem" }}
+            />
 
             <button
               type="button"
@@ -1013,15 +1160,14 @@ function ItemCataloguePage() {
                     const names = usage.names || [];
                     const ids = usage.ids || [];
 
-                    const assignedShops = shops.filter((s) => ids.includes(s.id));
-                    const availableShopsToAdd = shops.filter((s) => !ids.includes(s.id));
-
                     // Show only ONE selected shop by default:
                     const primaryName = names?.[0] || null;
                     const extraCount = Math.max(0, (names?.length || 0) - 1);
 
                     const isInactive = !item.is_active;
                     const panelOpen = openShopPanelForItemId === item.id;
+
+                    const assignedSet = new Set((ids || []).map((x) => Number(x)));
 
                     return (
                       <tr
@@ -1085,7 +1231,7 @@ function ItemCataloguePage() {
                           </span>
                         </td>
 
-                        {/* ✅ Clean “Shop” cell: show only selected, hide actions under ˅ */}
+                        {/* ✅ Shops: no search bar, just a list with + and X */}
                         <td style={{ padding: "0.55rem 0.75rem" }}>
                           <div
                             data-shop-panel-root="true"
@@ -1132,7 +1278,9 @@ function ItemCataloguePage() {
 
                             <button
                               type="button"
-                              onClick={() => setOpenShopPanelForItemId((cur) => (cur === item.id ? null : item.id))}
+                              onClick={() =>
+                                setOpenShopPanelForItemId((cur) => (cur === item.id ? null : item.id))
+                              }
                               style={manageBtnStyle}
                               title="Manage shops"
                             >
@@ -1142,8 +1290,17 @@ function ItemCataloguePage() {
 
                             {panelOpen && (
                               <div style={panelStyle}>
-                                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
-                                  <div style={{ fontWeight: 800, color: "#111827", fontSize: "0.9rem" }}>Shops for this item</div>
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "space-between",
+                                    marginBottom: "8px",
+                                  }}
+                                >
+                                  <div style={{ fontWeight: 800, color: "#111827", fontSize: "0.9rem" }}>
+                                    Shops for this item
+                                  </div>
                                   <button
                                     type="button"
                                     onClick={() => setOpenShopPanelForItemId(null)}
@@ -1162,91 +1319,62 @@ function ItemCataloguePage() {
                                   </button>
                                 </div>
 
-                                {/* Assigned list */}
-                                {assignedShops.length === 0 ? (
+                                {shops.length === 0 ? (
                                   <div style={{ fontSize: "0.85rem", color: "#6b7280", padding: "8px 0" }}>
-                                    Not assigned to any shop yet.
+                                    No shops found.
                                   </div>
                                 ) : (
-                                  <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "10px" }}>
-                                    {assignedShops.map((s) => (
-                                      <div
-                                        key={s.id}
-                                        style={{
-                                          display: "flex",
-                                          alignItems: "center",
-                                          justifyContent: "space-between",
-                                          gap: "10px",
-                                          padding: "8px 10px",
-                                          borderRadius: "12px",
-                                          border: "1px solid #e5e7eb",
-                                          backgroundColor: "#f9fafb",
-                                        }}
-                                      >
-                                        <span style={{ fontSize: "0.86rem", fontWeight: 800, color: "#111827" }}>{s.name}</span>
-                                        <button
-                                          type="button"
-                                          onClick={() => handleRemoveFromShop(item.id, s.id)}
-                                          style={{
-                                            padding: "6px 10px",
-                                            borderRadius: "9999px",
+                                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                                    {shops.map((s) => {
+                                      const assigned = assignedSet.has(Number(s.id));
+                                      const btnStyle = assigned
+                                        ? {
+                                            ...shopActionBtnBase,
                                             border: "1px solid #fca5a5",
                                             backgroundColor: "#fff1f2",
                                             color: "#991b1b",
-                                            fontSize: "0.78rem",
-                                            fontWeight: 900,
-                                            cursor: "pointer",
-                                          }}
-                                          title={`Remove from ${s.name}`}
-                                        >
-                                          Remove
-                                        </button>
-                                      </div>
-                                    ))}
+                                          }
+                                        : {
+                                            ...shopActionBtnBase,
+                                            border: "1px solid #bbf7d0",
+                                            backgroundColor: "#ecfdf5",
+                                            color: "#047857",
+                                          };
+
+                                      return (
+                                        <div key={s.id} style={shopRowStyle}>
+                                          <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                                            <span style={{ fontSize: "0.86rem", fontWeight: 900, color: "#111827" }}>
+                                              {s.name}
+                                            </span>
+                                            <span style={{ fontSize: "0.78rem", color: "#6b7280" }}>
+                                              {assigned ? "Assigned" : "Not assigned"}
+                                            </span>
+                                          </div>
+
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              if (assigned) handleRemoveFromShop(item.id, s.id);
+                                              else handleAssignToShop(item.id, String(s.id));
+                                            }}
+                                            style={btnStyle}
+                                            aria-label={assigned ? `Remove from ${s.name}` : `Add to ${s.name}`}
+                                            title={assigned ? `Remove from ${s.name}` : `Add to ${s.name}`}
+                                          >
+                                            {assigned ? "✕" : "+"}
+                                          </button>
+                                        </div>
+                                      );
+                                    })}
                                   </div>
                                 )}
-
-                                {/* Add dropdown */}
-                                <div style={{ borderTop: "1px solid #f3f4f6", paddingTop: "10px" }}>
-                                  <div style={{ fontSize: "0.82rem", fontWeight: 900, color: "#374151", marginBottom: "6px" }}>
-                                    Add to shop
-                                  </div>
-
-                                  {availableShopsToAdd.length === 0 ? (
-                                    <div style={{ fontSize: "0.85rem", color: "#6b7280" }}>Already in all shops.</div>
-                                  ) : (
-                                    <select
-                                      defaultValue=""
-                                      onChange={(e) => {
-                                        handleAssignToShop(item.id, e.target.value);
-                                        e.target.value = "";
-                                      }}
-                                      style={{
-                                        width: "100%",
-                                        padding: "10px 10px",
-                                        borderRadius: "12px",
-                                        border: "1px solid #d1d5db",
-                                        backgroundColor: "#ffffff",
-                                        fontSize: "0.9rem",
-                                        cursor: "pointer",
-                                      }}
-                                    >
-                                      <option value="" disabled>
-                                        Select shop…
-                                      </option>
-                                      {availableShopsToAdd.map((s) => (
-                                        <option key={s.id} value={String(s.id)}>
-                                          {s.name}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  )}
-                                </div>
                               </div>
                             )}
                           </div>
                         </td>
 
+                        {/* ✅ Deactivate = X only (and Reactivate = ↺) */}
                         <td style={{ padding: "0.55rem 0.75rem" }}>
                           <button
                             type="button"
@@ -1254,21 +1382,21 @@ function ItemCataloguePage() {
                             title={item.is_active ? "Deactivate item" : "Activate item"}
                             aria-label={`${item.is_active ? "Deactivate" : "Activate"} ${item.name}`}
                             style={{
-                              padding: "0.35rem 0.9rem",
+                              width: "38px",
+                              height: "38px",
                               borderRadius: "9999px",
                               border: item.is_active ? "1px solid #fecaca" : "1px solid #bbf7d0",
                               backgroundColor: item.is_active ? "#fef2f2" : "#ecfdf5",
                               color: item.is_active ? "#b91c1c" : "#047857",
-                              fontSize: "0.8rem",
-                              fontWeight: 700,
+                              fontSize: "1.05rem",
+                              fontWeight: 1000,
                               cursor: "pointer",
                               display: "inline-flex",
                               alignItems: "center",
-                              gap: "0.35rem",
+                              justifyContent: "center",
                             }}
                           >
-                            <span aria-hidden="true">{item.is_active ? "⛔" : "✅"}</span>
-                            {item.is_active ? "Deactivate" : "Activate"}
+                            {item.is_active ? "✕" : "↺"}
                           </button>
                         </td>
                       </tr>
