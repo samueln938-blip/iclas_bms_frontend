@@ -45,20 +45,51 @@ function ItemCataloguePage() {
   // "list"   = Items table
   const [activeTab, setActiveTab] = useState("manage");
 
+  // ✅ Pagination/progress (backend default is limit=200)
+  const ITEMS_PAGE_LIMIT = 200;
+  const [itemsProgress, setItemsProgress] = useState({
+    fetching: false,
+    fetched: 0,
+  });
+
   // ------------------------------------------------
-  //  Load items from backend
+  //  Load items from backend (FETCH ALL PAGES)
   // ------------------------------------------------
   const loadItems = async () => {
     setLoading(true);
     setError("");
+    setItemsProgress({ fetching: true, fetched: 0 });
+
     try {
-      const res = await api.get("/items/");
-      setItems(res.data || []);
+      let all = [];
+      let skip = 0;
+
+      // Safety guard to avoid infinite loops if backend misbehaves
+      const MAX_PAGES = 2000;
+
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const res = await api.get("/items/", {
+          params: { skip, limit: ITEMS_PAGE_LIMIT },
+        });
+
+        const chunk = Array.isArray(res.data) ? res.data : [];
+        all = all.concat(chunk);
+
+        setItemsProgress({ fetching: true, fetched: all.length });
+
+        // If backend returns fewer than the limit, we reached the end
+        if (chunk.length < ITEMS_PAGE_LIMIT) break;
+
+        skip += ITEMS_PAGE_LIMIT;
+      }
+
+      setItems(all);
     } catch (err) {
       console.error("Error loading items", err);
       setError("Failed to load items from server.");
     } finally {
       setLoading(false);
+      setItemsProgress((p) => ({ ...p, fetching: false }));
     }
   };
 
@@ -100,6 +131,7 @@ function ItemCataloguePage() {
     loadItems();
     loadShops();
     loadItemShopUsage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ------------------------------------------------
@@ -355,6 +387,14 @@ function ItemCataloguePage() {
 
     return sorted;
   }, [items, searchQuery, sortField, sortDirection]);
+
+  const listSummaryText = useMemo(() => {
+    const total = items.length;
+    const shown = filteredAndSortedItems.length;
+    const q = searchQuery.trim();
+    if (!q) return `Total items: ${total}`;
+    return `Showing ${shown} of ${total} (filter: "${q}")`;
+  }, [items.length, filteredAndSortedItems.length, searchQuery]);
 
   // ------------------------------------------------
   //  Assign item to shop (new backend endpoint)
@@ -842,19 +882,72 @@ function ItemCataloguePage() {
             marginBottom: "3rem",
           }}
         >
+          {/* Summary + Search row */}
           <div
             style={{
               display: "flex",
-              justifyContent: "flex-end",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: "1rem",
+              flexWrap: "wrap",
               marginBottom: "0.75rem",
             }}
           >
             <div
-              style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "0.6rem",
+                flexWrap: "wrap",
+              }}
             >
-              <span style={{ fontSize: "0.9rem", color: "#4b5563" }}>
-                Search:
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "0.4rem",
+                  padding: "0.28rem 0.75rem",
+                  borderRadius: "9999px",
+                  backgroundColor: "#f3f4f6",
+                  border: "1px solid #e5e7eb",
+                  color: "#111827",
+                  fontSize: "0.85rem",
+                  fontWeight: 700,
+                }}
+              >
+                {listSummaryText}
               </span>
+
+              {(loading || itemsProgress.fetching) && (
+                <span style={{ fontSize: "0.85rem", color: "#6b7280" }}>
+                  Loading… fetched {itemsProgress.fetched}
+                </span>
+              )}
+
+              <button
+                type="button"
+                onClick={() => loadItems()}
+                disabled={loading || itemsProgress.fetching}
+                style={{
+                  padding: "0.32rem 0.8rem",
+                  borderRadius: "9999px",
+                  border: "1px solid #e5e7eb",
+                  backgroundColor:
+                    loading || itemsProgress.fetching ? "#f3f4f6" : "#ffffff",
+                  color: "#111827",
+                  fontSize: "0.85rem",
+                  fontWeight: 700,
+                  cursor:
+                    loading || itemsProgress.fetching ? "not-allowed" : "pointer",
+                }}
+                title="Reload all items"
+              >
+                ↻ Refresh
+              </button>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+              <span style={{ fontSize: "0.9rem", color: "#4b5563" }}>Search:</span>
               <input
                 type="text"
                 value={searchQuery}
@@ -871,13 +964,7 @@ function ItemCataloguePage() {
             </div>
           </div>
 
-          <h2
-            style={{
-              fontSize: "1.3rem",
-              fontWeight: 700,
-              marginBottom: "1rem",
-            }}
-          >
+          <h2 style={{ fontSize: "1.3rem", fontWeight: 700, marginBottom: "1rem" }}>
             Items
           </h2>
 
@@ -903,6 +990,11 @@ function ItemCataloguePage() {
                       color: "#6b7280",
                     }}
                   >
+                    {/* ✅ NEW: Row number column */}
+                    <th style={{ padding: "0.55rem 0.75rem", width: "64px" }}>
+                      #
+                    </th>
+
                     <th style={{ padding: "0.55rem 0.75rem" }}>
                       <button
                         type="button"
@@ -981,9 +1073,7 @@ function ItemCataloguePage() {
                     <th style={{ padding: "0.55rem 0.75rem" }}>
                       <button
                         type="button"
-                        onClick={() =>
-                          handleSortChange("reorder_level_pieces")
-                        }
+                        onClick={() => handleSortChange("reorder_level_pieces")}
                         style={{
                           background: "none",
                           border: "none",
@@ -1011,7 +1101,7 @@ function ItemCataloguePage() {
                 </thead>
 
                 <tbody>
-                  {filteredAndSortedItems.map((item) => {
+                  {filteredAndSortedItems.map((item, idx) => {
                     const usage = itemShopUsage[item.id] || {
                       names: [],
                       ids: [],
@@ -1023,13 +1113,9 @@ function ItemCataloguePage() {
                     const displayNames =
                       names.length <= 2
                         ? names.join(", ")
-                        : `${names.slice(0, 2).join(", ")} +${
-                            names.length - 2
-                          }`;
+                        : `${names.slice(0, 2).join(", ")} +${names.length - 2}`;
 
-                    const availableShopsToAdd = shops.filter(
-                      (s) => !ids.includes(s.id)
-                    );
+                    const availableShopsToAdd = shops.filter((s) => !ids.includes(s.id));
 
                     const isInactive = !item.is_active;
 
@@ -1042,6 +1128,11 @@ function ItemCataloguePage() {
                           opacity: isInactive ? 0.85 : 1,
                         }}
                       >
+                        {/* ✅ NEW: Row number cell */}
+                        <td style={{ padding: "0.55rem 0.75rem", color: "#6b7280" }}>
+                          {idx + 1}
+                        </td>
+
                         <td style={{ padding: "0.55rem 0.75rem" }}>
                           <button
                             type="button"
@@ -1086,9 +1177,7 @@ function ItemCataloguePage() {
                               borderRadius: "9999px",
                               fontSize: "0.78rem",
                               fontWeight: 600,
-                              backgroundColor: item.is_active
-                                ? "#dcfce7"
-                                : "#fee2e2",
+                              backgroundColor: item.is_active ? "#dcfce7" : "#fee2e2",
                               color: item.is_active ? "#166534" : "#b91c1c",
                             }}
                           >
@@ -1097,9 +1186,7 @@ function ItemCataloguePage() {
                                 width: "7px",
                                 height: "7px",
                                 borderRadius: "9999px",
-                                backgroundColor: item.is_active
-                                  ? "#16a34a"
-                                  : "#ef4444",
+                                backgroundColor: item.is_active ? "#16a34a" : "#ef4444",
                               }}
                             />
                             {item.is_active ? "Active" : "Inactive"}
@@ -1109,9 +1196,7 @@ function ItemCataloguePage() {
                         {/* Add to shop */}
                         <td style={{ padding: "0.55rem 0.75rem" }}>
                           {shops.length === 0 ? (
-                            <span
-                              style={{ fontSize: "0.8rem", color: "#9ca3af" }}
-                            >
+                            <span style={{ fontSize: "0.8rem", color: "#9ca3af" }}>
                               No shops yet
                             </span>
                           ) : (
@@ -1125,12 +1210,7 @@ function ItemCataloguePage() {
                               }}
                             >
                               {names.length === 0 ? (
-                                <span
-                                  style={{
-                                    fontSize: "0.8rem",
-                                    color: "#9ca3af",
-                                  }}
-                                >
+                                <span style={{ fontSize: "0.8rem", color: "#9ca3af" }}>
                                   Not in any shop yet
                                 </span>
                               ) : (
@@ -1155,22 +1235,14 @@ function ItemCataloguePage() {
                               )}
 
                               {availableShopsToAdd.length === 0 ? (
-                                <span
-                                  style={{
-                                    fontSize: "0.78rem",
-                                    color: "#9ca3af",
-                                  }}
-                                >
+                                <span style={{ fontSize: "0.78rem", color: "#9ca3af" }}>
                                   In all shops
                                 </span>
                               ) : (
                                 <select
                                   defaultValue=""
                                   onChange={(e) =>
-                                    handleAssignToShop(
-                                      item.id,
-                                      e.target.value
-                                    )
+                                    handleAssignToShop(item.id, e.target.value)
                                   }
                                   style={{
                                     padding: "0.28rem 0.55rem",
@@ -1185,10 +1257,7 @@ function ItemCataloguePage() {
                                     + Add to shop
                                   </option>
                                   {availableShopsToAdd.map((shop) => (
-                                    <option
-                                      key={shop.id}
-                                      value={String(shop.id)}
-                                    >
+                                    <option key={shop.id} value={String(shop.id)}>
                                       {shop.name}
                                     </option>
                                   ))}
@@ -1203,23 +1272,17 @@ function ItemCataloguePage() {
                           <button
                             type="button"
                             onClick={() => handleDeleteClick(item)}
-                            title={
-                              item.is_active
-                                ? "Deactivate item"
-                                : "Activate item"
-                            }
-                            aria-label={`${
-                              item.is_active ? "Deactivate" : "Activate"
-                            } ${item.name}`}
+                            title={item.is_active ? "Deactivate item" : "Activate item"}
+                            aria-label={`${item.is_active ? "Deactivate" : "Activate"} ${
+                              item.name
+                            }`}
                             style={{
                               padding: "0.35rem 0.9rem",
                               borderRadius: "9999px",
                               border: item.is_active
                                 ? "1px solid #fecaca"
                                 : "1px solid #bbf7d0",
-                              backgroundColor: item.is_active
-                                ? "#fef2f2"
-                                : "#ecfdf5",
+                              backgroundColor: item.is_active ? "#fef2f2" : "#ecfdf5",
                               color: item.is_active ? "#b91c1c" : "#047857",
                               fontSize: "0.8rem",
                               fontWeight: 700,
@@ -1229,9 +1292,7 @@ function ItemCataloguePage() {
                               gap: "0.35rem",
                             }}
                           >
-                            <span aria-hidden="true">
-                              {item.is_active ? "⛔" : "✅"}
-                            </span>
+                            <span aria-hidden="true">{item.is_active ? "⛔" : "✅"}</span>
                             {item.is_active ? "Deactivate" : "Activate"}
                           </button>
                         </td>
