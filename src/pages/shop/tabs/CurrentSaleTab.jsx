@@ -1,4 +1,4 @@
-// src/pages/shop/tabs/CurrentSaleTab.jsx
+// FILE: src/pages/shop/tabs/CurrentSaleTab.jsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   buildPaymentMap,
@@ -39,6 +39,7 @@ function CustomerModal({ open, onClose, onSave }) {
       <div
         style={{
           width: 360,
+          maxWidth: "95vw",
           backgroundColor: "#ffffff",
           borderRadius: "16px",
           boxShadow: "0 20px 50px rgba(15,23,42,0.4)",
@@ -46,23 +47,12 @@ function CustomerModal({ open, onClose, onSave }) {
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-          }}
-        >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontSize: "14px", fontWeight: 800 }}>Add customer</div>
           <button
             type="button"
             onClick={onClose}
-            style={{
-              border: "none",
-              background: "transparent",
-              fontSize: "16px",
-              cursor: "pointer",
-            }}
+            style={{ border: "none", background: "transparent", fontSize: "16px", cursor: "pointer" }}
           >
             ✕
           </button>
@@ -70,11 +60,7 @@ function CustomerModal({ open, onClose, onSave }) {
 
         <div style={{ marginTop: "10px", display: "grid", gap: "10px" }}>
           <div>
-            <div
-              style={{ fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}
-            >
-              Customer name
-            </div>
+            <div style={{ fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>Customer name</div>
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -90,11 +76,7 @@ function CustomerModal({ open, onClose, onSave }) {
           </div>
 
           <div>
-            <div
-              style={{ fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}
-            >
-              Phone (optional)
-            </div>
+            <div style={{ fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>Phone (optional)</div>
             <input
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
@@ -149,59 +131,28 @@ export default function CurrentSaleTab({
   editSaleId,
   onEditDone,
 }) {
-  // ------------------ Small helpers (decimals) ------------------
-  const EPS = 1e-9;
-
-  const toNum = (v) => {
-    if (v === null || v === undefined) return 0;
+  // ------------------ small helpers ------------------
+  const num = (v) => {
     if (typeof v === "number") return Number.isFinite(v) ? v : 0;
-    const n = parseAmount(v);
-    return Number.isFinite(n) ? n : 0;
+    return parseAmount(v);
   };
 
-  const clampQty = (raw, min = 0) => {
-    const n = toNum(raw);
-    if (!Number.isFinite(n)) return min;
-    return Math.max(min, n);
-  };
-
-  const clampMoneyInt = (v, min = 1) => {
-    const n = Number(v);
-    if (!Number.isFinite(n)) return min;
-    return Math.max(min, Math.round(n));
-  };
-
-  const formatQty = (value) => {
-    const n = Number(value);
-    if (!Number.isFinite(n)) return "0";
-    // show up to 3 decimals, trim trailing zeros
-    return n.toLocaleString("en-RW", {
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 3,
-    });
-  };
-
-  const getRemainingPiecesFromRow = (row) => {
-    if (!row || typeof row !== "object") return 0;
-    // common keys seen across your app/routers
-    const v =
-      row.remaining_pieces ??
-      row.remainingPieces ??
-      row.remaining ??
-      row.pieces_remaining ??
-      0;
-    return toNum(v);
+  const formatQty = (v) => {
+    const n = num(v);
+    return n.toLocaleString("en-RW", { minimumFractionDigits: 0, maximumFractionDigits: 3 });
   };
 
   // Pad + cart
-  const [padSearch, setPadSearch] = useState("");
-  const [pad, setPad] = useState({
-    itemId: "",
-    qtyPieces: "1", // ✅ keep as string so decimals type naturally (0.5, 0.25…)
-    agreedPricePerPiece: "",
-  });
+  const [pad, setPad] = useState({ itemId: "", qtyPieces: "", agreedPricePerPiece: "" });
   const [saleLines, setSaleLines] = useState([]);
   const [editingLineId, setEditingLineId] = useState(null);
+
+  // ✅ Item quick-search (cursor) + dropdown
+  const [itemQuery, setItemQuery] = useState("");
+  const [itemListOpen, setItemListOpen] = useState(false);
+  const [itemHi, setItemHi] = useState(0);
+  const itemWrapRef = useRef(null);
+  const qtyInputRef = useRef(null);
 
   // Customers
   const [customers, setCustomers] = useState([]);
@@ -244,16 +195,11 @@ export default function CurrentSaleTab({
     flashTimerRef.current = window.setTimeout(() => setFlash(null), 2500);
 
     try {
-      window.dispatchEvent(
-        new CustomEvent("iclas:flash", { detail: { message: text } })
-      );
+      window.dispatchEvent(new CustomEvent("iclas:flash", { detail: { message: text } }));
     } catch {
       // ignore
     }
   };
-
-  // ✅ focus/keyboard helper for mobile quick search
-  const padSearchRef = useRef(null);
 
   // -------------- Helpers for reset / cancel edit --------------
   const clearEditHandoffStorage = () => {
@@ -268,8 +214,11 @@ export default function CurrentSaleTab({
   const resetCurrentSaleState = () => {
     setSaleLines([]);
     setEditingLineId(null);
-    setPad({ itemId: "", qtyPieces: "1", agreedPricePerPiece: "" });
-    setPadSearch("");
+    setPad({ itemId: "", qtyPieces: "", agreedPricePerPiece: "" });
+
+    setItemQuery("");
+    setItemListOpen(false);
+    setItemHi(0);
 
     setIsCreditSale(false);
     setPaymentMode(null);
@@ -329,9 +278,7 @@ export default function CurrentSaleTab({
       }
 
       const list = (data || []).map(normalizeCustomer).filter(Boolean);
-      const filtered = list.filter(
-        (c) => !c.shop_id || Number(c.shop_id) === Number(shopId)
-      );
+      const filtered = list.filter((c) => !c.shop_id || Number(c.shop_id) === Number(shopId));
       setCustomers(filtered);
     } catch {
       setCustomers([]);
@@ -358,10 +305,7 @@ export default function CurrentSaleTab({
           try {
             const errData = await res.json();
             if (errData?.detail) {
-              detail =
-                typeof errData.detail === "string"
-                  ? errData.detail
-                  : JSON.stringify(errData.detail);
+              detail = typeof errData.detail === "string" ? errData.detail : JSON.stringify(errData.detail);
             }
           } catch {}
           lastErr = new Error(detail);
@@ -421,28 +365,18 @@ export default function CurrentSaleTab({
         const props = resolved?.properties || {};
 
         const candidates = ["due_date", "credit_due_date", "customer_due_date"];
-        const found =
-          candidates.find((k) =>
-            Object.prototype.hasOwnProperty.call(props, k)
-          ) || null;
+        const found = candidates.find((k) => Object.prototype.hasOwnProperty.call(props, k)) || null;
 
         let paymentEnum = null;
         try {
-          const paymentSchema =
-            resolveSchema(props?.payment_type, openapi?.components) ||
-            props?.payment_type;
+          const paymentSchema = resolveSchema(props?.payment_type, openapi?.components) || props?.payment_type;
           if (Array.isArray(paymentSchema?.enum)) paymentEnum = paymentSchema.enum;
         } catch {}
 
         const paymentMap = buildPaymentMap(paymentEnum);
 
         if (!cancelled) {
-          setSalesCaps((prev) => ({
-            ...prev,
-            dueDateKey: found,
-            paymentEnum,
-            paymentMap,
-          }));
+          setSalesCaps((prev) => ({ ...prev, dueDateKey: found, paymentEnum, paymentMap }));
         }
       } catch {}
     }
@@ -459,90 +393,48 @@ export default function CurrentSaleTab({
       if (field === "itemId") {
         const itemId = rawValue === "" ? "" : Number(rawValue);
         const row = itemId ? stockByItemId[itemId] : null;
-        const autoPrice =
-          row?.selling_price_per_piece != null
-            ? Number(row.selling_price_per_piece)
-            : "";
-        return { ...prev, itemId, qtyPieces: "1", agreedPricePerPiece: autoPrice };
+        const autoPrice = row?.selling_price_per_piece != null ? String(row.selling_price_per_piece) : "";
+        return { ...prev, itemId, qtyPieces: prev.qtyPieces || "1", agreedPricePerPiece: autoPrice };
       }
-      if (field === "qtyPieces") {
-        // ✅ keep raw text so "0.5" types naturally
-        return { ...prev, qtyPieces: rawValue };
-      }
-      if (field === "agreedPricePerPiece") {
-        return {
-          ...prev,
-          agreedPricePerPiece: rawValue === "" ? "" : Number(rawValue),
-        };
-      }
+      if (field === "qtyPieces") return { ...prev, qtyPieces: rawValue };
+      if (field === "agreedPricePerPiece") return { ...prev, agreedPricePerPiece: rawValue };
       return prev;
     });
   };
 
-  // ✅ ONLY show items that are in stock (remaining pieces > 0)
-  const inStockRowsForPad = useMemo(() => {
-    const base = (stockRows || []).filter((r) => getRemainingPiecesFromRow(r) > EPS);
-    return base;
+  // ✅ only items with remaining_pieces > 0 (decimals safe)
+  const inStockOptions = useMemo(() => {
+    const rows = stockRows || [];
+    return rows
+      .filter((r) => num(r?.remaining_pieces) > 0)
+      .slice()
+      .sort((a, b) => String(a?.item_name || "").localeCompare(String(b?.item_name || "")));
   }, [stockRows]);
 
-  // ✅ instant typing filter (no button)
-  const filteredStockForPad = useMemo(() => {
-    const q = String(padSearch || "").trim().toLowerCase();
-    const base = inStockRowsForPad || [];
-    if (!q) return base;
+  // ✅ filter by typing initials / name / sku
+  const filteredOptions = useMemo(() => {
+    const q = String(itemQuery || "").trim().toLowerCase();
+    if (!q) return inStockOptions;
 
-    const tokens = q.split(/\s+/).filter(Boolean);
-
-    return base.filter((r) => {
-      const nameRaw = String(r.item_name || "");
-      const name = nameRaw.toLowerCase();
+    return inStockOptions.filter((r) => {
+      const name = String(r.item_name || "").toLowerCase();
       const sku = String(r.item_sku || r.sku || "").toLowerCase();
-
-      const compact = name.replace(/\s+/g, "");
-      const words = name.split(/\s+/).filter(Boolean);
-      const initials = words.map((w) => w[0] || "").join("");
-
-      // tokens must all match somewhere
-      const ok = tokens.every((t) => {
-        if (!t) return true;
-        if (name.includes(t)) return true;
-        if (sku.includes(t)) return true;
-        if (compact.includes(t)) return true;
-        if (initials.startsWith(t)) return true;
-        if (words.some((w) => w.startsWith(t))) return true;
-        return false;
-      });
-
-      return ok;
+      return name.includes(q) || sku.includes(q);
     });
-  }, [padSearch, inStockRowsForPad]);
+  }, [itemQuery, inStockOptions]);
 
   const selectedStockForPad = pad.itemId ? stockByItemId[pad.itemId] : null;
 
   const padPiecesPerUnit =
-    selectedStockForPad?.item_pieces_per_unit != null
-      ? selectedStockForPad.item_pieces_per_unit
-      : 1;
-
+    selectedStockForPad?.item_pieces_per_unit != null ? selectedStockForPad.item_pieces_per_unit : 1;
   const padRemainingPieces =
-    selectedStockForPad?.remaining_pieces != null
-      ? toNum(selectedStockForPad.remaining_pieces)
-      : 0;
-
+    selectedStockForPad?.remaining_pieces != null ? num(selectedStockForPad.remaining_pieces) : 0;
   const padPurchaseCostPerPiece =
-    selectedStockForPad?.purchase_cost_per_piece != null
-      ? Number(selectedStockForPad.purchase_cost_per_piece)
-      : 0;
-
+    selectedStockForPad?.purchase_cost_per_piece != null ? num(selectedStockForPad.purchase_cost_per_piece) : 0;
   const padWholesalePerPiece =
-    selectedStockForPad?.wholesale_price_per_piece != null
-      ? Number(selectedStockForPad.wholesale_price_per_piece)
-      : 0;
-
+    selectedStockForPad?.wholesale_price_per_piece != null ? num(selectedStockForPad.wholesale_price_per_piece) : 0;
   const padSellingPerPiece =
-    selectedStockForPad?.selling_price_per_piece != null
-      ? Number(selectedStockForPad.selling_price_per_piece)
-      : 0;
+    selectedStockForPad?.selling_price_per_piece != null ? num(selectedStockForPad.selling_price_per_piece) : 0;
 
   const agreedPricePlaceholder = padSellingPerPiece
     ? `Ex: ${formatPlainNumber(padSellingPerPiece)}`
@@ -552,26 +444,58 @@ export default function CurrentSaleTab({
     const itemId = pad.itemId ? Number(pad.itemId) : null;
     if (!itemId) return 0;
     return saleLines.reduce(
-      (sum, l) =>
-        sum + (Number(l.itemId) === itemId ? toNum(l.qtyPieces || 0) : 0),
+      (sum, l) => sum + (Number(l.itemId) === itemId ? num(l.qtyPieces || 0) : 0),
       0
     );
   }, [pad.itemId, saleLines]);
 
   const padAvailablePieces = useMemo(() => {
-    const remaining = toNum(padRemainingPieces || 0);
-    const already = toNum(piecesAlreadyInSaleForPadItem || 0);
+    const remaining = num(padRemainingPieces || 0);
+    const already = num(piecesAlreadyInSaleForPadItem || 0);
     return Math.max(0, remaining - already);
   }, [padRemainingPieces, piecesAlreadyInSaleForPadItem]);
 
   const padPreview = useMemo(() => {
-    const qty = toNum(pad.qtyPieces || 0);
-    const price = Number(pad.agreedPricePerPiece || 0);
+    const qty = num(pad.qtyPieces || 0);
+    const price = num(pad.agreedPricePerPiece || 0);
     const total = qty > 0 && price > 0 ? qty * price : 0;
     const profitPerPiece = price > 0 ? price - padPurchaseCostPerPiece : 0;
     const profitTotal = qty > 0 && price > 0 ? profitPerPiece * qty : 0;
     return { total, profitPerPiece, profitTotal };
   }, [pad.qtyPieces, pad.agreedPricePerPiece, padPurchaseCostPerPiece]);
+
+  // ✅ close dropdown on outside click
+  useEffect(() => {
+    const onDown = (e) => {
+      const wrap = itemWrapRef.current;
+      if (!wrap) return;
+      if (!wrap.contains(e.target)) setItemListOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("touchstart", onDown, { passive: true });
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("touchstart", onDown);
+    };
+  }, []);
+
+  const selectItemFromList = (row) => {
+    updatePad("itemId", row?.item_id);
+    setItemQuery(String(row?.item_name || ""));
+    setItemListOpen(false);
+    setItemHi(0);
+    // focus qty
+    try {
+      qtyInputRef.current?.focus?.();
+    } catch {}
+  };
+
+  const clearItemSelection = () => {
+    setItemQuery("");
+    setItemListOpen(false);
+    setItemHi(0);
+    setPad((prev) => ({ ...prev, itemId: "", qtyPieces: "", agreedPricePerPiece: "" }));
+  };
 
   // ------------------ Cart actions ------------------
   const handleAddItemToSale = () => {
@@ -579,17 +503,14 @@ export default function CurrentSaleTab({
 
     if (!pad.itemId) return setError?.("Select an item before adding to the sale.");
 
-    const qtyPieces = clampQty(pad.qtyPieces, 0);
-    if (!(qtyPieces > 0)) return setError?.("Quantity (pieces) must be greater than zero.");
+    const qtyPieces = num(pad.qtyPieces || 0);
+    if (qtyPieces <= 0) return setError?.("Quantity (pieces) must be greater than zero.");
 
-    const agreedPricePerPiece = Number(pad.agreedPricePerPiece || 0);
-    if (agreedPricePerPiece <= 0)
-      return setError?.("Enter the agreed price per piece (e.g. 6500).");
+    const agreedPricePerPiece = num(pad.agreedPricePerPiece || 0);
+    if (agreedPricePerPiece <= 0) return setError?.("Enter the agreed price per piece (e.g. 6500).");
 
-    if (qtyPieces - padAvailablePieces > EPS) {
-      return setError?.(
-        `Not enough stock for this sale. Available pieces: ${formatQty(padAvailablePieces)}.`
-      );
+    if (qtyPieces > padAvailablePieces) {
+      return setError?.(`Not enough stock for this sale. Available pieces: ${formatQty(padAvailablePieces)}.`);
     }
 
     const purchaseCostPerPiece = padPurchaseCostPerPiece || 0;
@@ -602,14 +523,18 @@ export default function CurrentSaleTab({
       {
         id: Date.now().toString() + Math.random().toString(16),
         itemId: pad.itemId,
-        qtyPieces, // ✅ store as number (can be decimal)
-        unitPrice: agreedPricePerPiece,
+        qtyPieces, // store as number
+        unitPrice: agreedPricePerPiece, // store as number
         total,
         profit: totalProfit,
       },
     ]);
 
     setPad((prev) => ({ ...prev, qtyPieces: "1" }));
+    try {
+      qtyInputRef.current?.focus?.();
+      qtyInputRef.current?.select?.();
+    } catch {}
   };
 
   const removeSaleLine = (id) => {
@@ -619,26 +544,19 @@ export default function CurrentSaleTab({
 
   const beginEditLine = (id) => setEditingLineId(id);
 
+  // ✅ allow decimals & do not force rounding while typing
   const updateSaleLine = (id, patch) => {
     setSaleLines((prev) =>
       prev.map((l) => {
         if (l.id !== id) return l;
-
         const next = { ...l, ...patch };
 
-        // ✅ qty supports decimals
-        next.qtyPieces = clampQty(next.qtyPieces, 0);
+        const qty = num(next.qtyPieces || 0);
+        const price = num(next.unitPrice || 0);
 
-        // money stays integer
-        next.unitPrice = clampMoneyInt(next.unitPrice, 1);
-
-        const qty = toNum(next.qtyPieces || 0);
-        const price = Number(next.unitPrice || 0);
         next.total = qty * price;
 
-        const purchaseCost = Number(
-          stockByItemId[next.itemId]?.purchase_cost_per_piece || 0
-        );
+        const purchaseCost = num(stockByItemId[next.itemId]?.purchase_cost_per_piece || 0);
         next.profit = (price - purchaseCost) * qty;
 
         return next;
@@ -649,18 +567,17 @@ export default function CurrentSaleTab({
   const saleLinesWithMeta = useMemo(() => {
     return saleLines.map((line) => {
       const stockRow = stockByItemId[line.itemId] || {};
-      const purchaseCostPerPiece = Number(stockRow.purchase_cost_per_piece || 0);
-      const qty = toNum(line.qtyPieces || 0);
-      const price = Number(line.unitPrice || 0);
-
+      const purchaseCostPerPiece = num(stockRow.purchase_cost_per_piece || 0);
+      const qty = num(line.qtyPieces || 0);
+      const price = num(line.unitPrice || 0);
       const profitPerPiece = price - purchaseCostPerPiece;
       const total = qty * price;
       const totalProfit = profitPerPiece * qty;
 
       return {
         ...line,
-        meta: { itemName: stockRow.item_name || "Unknown item" },
         computed: { total, profit: totalProfit },
+        meta: { itemName: stockRow.item_name || "Unknown item" },
       };
     });
   }, [saleLines, stockByItemId]);
@@ -669,7 +586,6 @@ export default function CurrentSaleTab({
     () => saleLinesWithMeta.reduce((sum, line) => sum + (line.computed.total || 0), 0),
     [saleLinesWithMeta]
   );
-
   const saleTotalProfit = useMemo(
     () => saleLinesWithMeta.reduce((sum, line) => sum + (line.computed.profit || 0), 0),
     [saleLinesWithMeta]
@@ -698,7 +614,7 @@ export default function CurrentSaleTab({
     const byItem = new Map();
     for (const l of saleLines) {
       const itemId = Number(l.itemId);
-      const qty = toNum(l.qtyPieces || 0);
+      const qty = num(l.qtyPieces || 0);
       byItem.set(itemId, (byItem.get(itemId) || 0) + qty);
     }
 
@@ -707,25 +623,19 @@ export default function CurrentSaleTab({
     if (editSourceSale && editingSaleId) {
       for (const ln of editSourceSale.lines || []) {
         const itemId = Number(ln.item_id ?? ln.itemId);
-        const qty = toNum(
-          ln.quantity_pieces ?? ln.quantity ?? ln.qty_pieces ?? 0
-        );
+        const qty = num(ln.quantity_pieces ?? ln.quantity ?? ln.qty_pieces ?? 0);
         originalByItem.set(itemId, (originalByItem.get(itemId) || 0) + qty);
       }
     }
 
     for (const [itemId, newQty] of byItem.entries()) {
-      const remaining = toNum(stockByItemId[itemId]?.remaining_pieces || 0);
+      const remaining = num(stockByItemId[itemId]?.remaining_pieces || 0);
       const originalQty = originalByItem.get(itemId) || 0;
       const maxAllowed = remaining + originalQty;
 
-      if (newQty - maxAllowed > EPS) {
+      if (newQty > maxAllowed) {
         const name = stockByItemId[itemId]?.item_name || `Item #${itemId}`;
-        return `Not enough stock for "${name}". You are trying to sell ${formatQty(
-          newQty
-        )} pieces but maximum allowed (including original sale) is ${formatQty(
-          maxAllowed
-        )}.`;
+        return `Not enough stock for "${name}". You are trying to sell ${formatQty(newQty)} pieces but maximum allowed (including original sale) is ${formatQty(maxAllowed)}.`;
       }
     }
     return null;
@@ -739,7 +649,7 @@ export default function CurrentSaleTab({
   const computedCreditBalance = useMemo(() => {
     if (!isCreditSale) return 0;
     const bal = Number(saleTotal) - Number(computedCollectedNow);
-    return Math.max(0, Math.round(bal));
+    return Math.max(0, bal);
   }, [computedCollectedNow, isCreditSale, saleTotal]);
 
   // ------------------ Load sale for editing ------------------
@@ -769,16 +679,13 @@ export default function CurrentSaleTab({
       const lines = (sale.lines || []).map((ln) => {
         const itemId = ln.item_id ?? ln.itemId;
         const qty = ln.quantity_pieces ?? ln.quantity ?? ln.qty_pieces ?? 0;
-        const price =
-          ln.sale_price_per_piece ?? ln.unit_sale_price ?? ln.unit_price ?? 0;
+        const price = ln.sale_price_per_piece ?? ln.unit_sale_price ?? ln.unit_price ?? 0;
 
         return {
-          id: `edit-${sale.id}-${ln.id ?? itemId}-${Math.random()
-            .toString(16)
-            .slice(2)}`,
+          id: `edit-${sale.id}-${ln.id ?? itemId}-${Math.random().toString(16).slice(2)}`,
           itemId: Number(itemId),
-          qtyPieces: toNum(qty), // ✅ can be decimal
-          unitPrice: Number(price),
+          qtyPieces: num(qty),
+          unitPrice: num(price),
           serverLineId: ln.id ?? null,
         };
       });
@@ -799,15 +706,16 @@ export default function CurrentSaleTab({
       const due = sale.due_date || sale.credit_due_date || sale.customer_due_date || null;
 
       const collectedNowForCredit =
-        isCredit && sale.amount_collected_now != null
-          ? String(Math.round(sale.amount_collected_now))
-          : "0";
+        isCredit && sale.amount_collected_now != null ? String(sale.amount_collected_now) : "0";
 
       const hasCustomer = !!(name || phone);
 
       setSaleLines(lines);
-      setPad({ itemId: "", qtyPieces: "1", agreedPricePerPiece: "" });
-      setPadSearch("");
+      setPad({ itemId: "", qtyPieces: "", agreedPricePerPiece: "" });
+
+      setItemQuery("");
+      setItemListOpen(false);
+      setItemHi(0);
 
       setIsCreditSale(isCredit);
       setPaymentMode(uiPaymentMode);
@@ -823,9 +731,7 @@ export default function CurrentSaleTab({
       setEditSourceSale(sale);
 
       if (focusServerLineId != null) {
-        const match = lines.find(
-          (l) => Number(l.serverLineId) === Number(focusServerLineId)
-        );
+        const match = lines.find((l) => Number(l.serverLineId) === Number(focusServerLineId));
         setEditingLineId(match?.id || null);
       } else {
         setEditingLineId(null);
@@ -846,9 +752,7 @@ export default function CurrentSaleTab({
 
   const focusLineIfSameSale = (focusServerLineId) => {
     if (!focusServerLineId) return;
-    const match = (saleLines || []).find(
-      (l) => Number(l.serverLineId) === Number(focusServerLineId)
-    );
+    const match = (saleLines || []).find((l) => Number(l.serverLineId) === Number(focusServerLineId));
     if (match) setEditingLineId(match.id);
   };
 
@@ -895,11 +799,7 @@ export default function CurrentSaleTab({
 
     if (saleIdNum && Number(saleIdNum) !== Number(editingSaleId)) {
       loadSaleForEdit(saleIdNum, lineIdNum);
-    } else if (
-      saleIdNum &&
-      Number(saleIdNum) === Number(editingSaleId) &&
-      lineIdNum != null
-    ) {
+    } else if (saleIdNum && Number(saleIdNum) === Number(editingSaleId) && lineIdNum != null) {
       focusLineIfSameSale(lineIdNum);
       clearEditHandoffStorage();
     }
@@ -912,8 +812,7 @@ export default function CurrentSaleTab({
     clearAlerts?.();
 
     if (!saleLines.length) return setError?.("No items in the current sale.");
-    if (!isCreditSale && !paymentMode)
-      return setError?.("Please select a payment mode (Cash / POS / MoMo).");
+    if (!isCreditSale && !paymentMode) return setError?.("Please select a payment mode (Cash / POS / MoMo).");
 
     if (isCreditSale && (!customerName || !String(customerName).trim())) {
       return setError?.("For credit sale, select or enter a customer.");
@@ -930,9 +829,7 @@ export default function CurrentSaleTab({
 
     try {
       const saleDate =
-        isEditingExistingSale && editSourceSale?.sale_date
-          ? editSourceSale.sale_date
-          : new Date().toISOString();
+        isEditingExistingSale && editSourceSale?.sale_date ? editSourceSale.sale_date : new Date().toISOString();
 
       const shouldSendCustomer = isCreditSale || attachCustomer;
 
@@ -940,32 +837,27 @@ export default function CurrentSaleTab({
         shop_id: Number(shopId),
         sale_date: saleDate,
         is_credit_sale: isCreditSale,
-        amount_collected_now: isCreditSale
-          ? Math.round(computedCollectedNow)
-          : Math.round(saleTotal),
-        credit_balance: isCreditSale ? Math.round(computedCreditBalance) : 0,
+        amount_collected_now: isCreditSale ? num(computedCollectedNow) : num(saleTotal),
+        credit_balance: isCreditSale ? num(computedCreditBalance) : 0,
         customer_name: shouldSendCustomer ? (customerName || null) : null,
         customer_phone: shouldSendCustomer ? (customerPhone || null) : null,
         lines: saleLines.map((l) => {
+          const q = num(l.qtyPieces);
+          const p = num(l.unitPrice);
           const base = {
             item_id: l.itemId,
-            quantity_pieces: clampQty(l.qtyPieces, 0), // ✅ DECIMALS SENT
-            sale_price_per_piece: clampMoneyInt(l.unitPrice, 1),
+            quantity_pieces: q,
+            sale_price_per_piece: p,
           };
           if (isEditingExistingSale && l.serverLineId) base.id = l.serverLineId;
           return base;
         }),
       };
 
-      if (!isCreditSale)
-        payload.payment_type = salesCaps.paymentMap?.[paymentMode] || paymentMode;
+      if (!isCreditSale) payload.payment_type = salesCaps.paymentMap?.[paymentMode] || paymentMode;
+      if (isCreditSale && customerDueDate && salesCaps.dueDateKey) payload[salesCaps.dueDateKey] = customerDueDate;
 
-      if (isCreditSale && customerDueDate && salesCaps.dueDateKey)
-        payload[salesCaps.dueDateKey] = customerDueDate;
-
-      const url = isEditingExistingSale
-        ? `${API_BASE}/sales/${editingSaleId}`
-        : `${API_BASE}/sales/`;
+      const url = isEditingExistingSale ? `${API_BASE}/sales/${editingSaleId}` : `${API_BASE}/sales/`;
       const method = isEditingExistingSale ? "PUT" : "POST";
 
       const res = await fetch(url, {
@@ -982,9 +874,7 @@ export default function CurrentSaleTab({
           const errData = await res.json();
           if (errData?.detail) {
             if (Array.isArray(errData.detail))
-              detailMessage = errData.detail
-                .map((d) => d.msg || JSON.stringify(d))
-                .join(" | ");
+              detailMessage = errData.detail.map((d) => d.msg || JSON.stringify(d)).join(" | ");
             else if (typeof errData.detail === "string") detailMessage = errData.detail;
             else detailMessage = JSON.stringify(errData.detail);
           }
@@ -1012,13 +902,18 @@ export default function CurrentSaleTab({
     }
   };
 
-  const canCompleteSale =
-    saleLines.length > 0 && (isCreditSale || !!paymentMode) && !saving;
-  const primaryButtonLabel = saving
-    ? "Saving..."
-    : isEditingExistingSale
-    ? "Save changes"
-    : "Complete sale";
+  const canCompleteSale = saleLines.length > 0 && (isCreditSale || !!paymentMode) && !saving;
+  const primaryButtonLabel = saving ? "Saving..." : isEditingExistingSale ? "Save changes" : "Complete sale";
+
+  // ✅ keep itemQuery aligned when itemId changes via selection
+  useEffect(() => {
+    if (!pad.itemId) return;
+    const row = stockByItemId[pad.itemId];
+    if (row?.item_name && itemQuery !== row.item_name) {
+      setItemQuery(String(row.item_name));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pad.itemId]);
 
   return (
     <div
@@ -1030,6 +925,14 @@ export default function CurrentSaleTab({
         padding: "18px 20px 18px",
       }}
     >
+      {/* tiny responsive style (only for pad layout) */}
+      <style>{`
+        @media (max-width: 640px) {
+          .iclas-pad-grid { grid-template-columns: 1fr !important; }
+          .iclas-pad-btn { width: 100% !important; }
+        }
+      `}</style>
+
       {/* Local flash toast (<3s) */}
       {flash && (
         <div
@@ -1053,14 +956,7 @@ export default function CurrentSaleTab({
 
       {/* ✅ Minimal edit indicator (no long sentence) */}
       {isEditingExistingSale && (
-        <div
-          style={{
-            marginBottom: 10,
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-          }}
-        >
+        <div style={{ marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div
             style={{
               display: "inline-flex",
@@ -1106,99 +1002,143 @@ export default function CurrentSaleTab({
         }}
       >
         <div style={{ fontSize: "12px", fontWeight: 600, marginBottom: "8px" }}>
-          Pad: Type item → select item in stock → enter pieces & price → add to cart
-        </div>
-
-        {/* ✅ Cursor quick search (mobile keyboard) + Clear (no Search button) */}
-        <div style={{ display: "flex", gap: "10px", marginBottom: "10px" }}>
-          <input
-            ref={padSearchRef}
-            value={padSearch}
-            onChange={(e) => setPadSearch(e.target.value)}
-            onFocus={() => {
-              // helps some mobile browsers show keyboard reliably
-              try {
-                padSearchRef.current?.scrollIntoView?.({ block: "nearest" });
-              } catch {}
-            }}
-            inputMode="text"
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="none"
-            spellCheck={false}
-            placeholder="Type item name / initials (ex: oo for Olive Oil)…"
-            style={{
-              flex: 1,
-              padding: "10px 14px",
-              borderRadius: "999px",
-              border: "1px solid #d1d5db",
-              fontSize: "14px",
-            }}
-          />
-          <button
-            type="button"
-            onClick={() => {
-              setPadSearch("");
-              setPad({ itemId: "", qtyPieces: "1", agreedPricePerPiece: "" });
-              // keep keyboard quick
-              setTimeout(() => padSearchRef.current?.focus?.(), 0);
-            }}
-            style={{
-              padding: "10px 14px",
-              borderRadius: "999px",
-              border: "1px solid #e5e7eb",
-              backgroundColor: "#fff",
-              cursor: "pointer",
-              fontSize: "13px",
-            }}
-            title="Clear"
-          >
-            Clear
-          </button>
+          Pad: type item name → select from list → enter pieces & price → add to cart
         </div>
 
         <div
+          className="iclas-pad-grid"
           style={{
             display: "grid",
-            gridTemplateColumns: "minmax(260px, 3.2fr) 140px 200px 140px",
+            gridTemplateColumns: "minmax(260px, 3.2fr) 120px 200px 140px",
             gap: "10px",
             alignItems: "center",
           }}
         >
-          {/* ✅ Dropdown list: ONLY items with remaining pieces > 0 */}
-          <select
-            value={pad.itemId === "" ? "" : pad.itemId}
-            onChange={(e) => updatePad("itemId", e.target.value)}
-            disabled={!filteredStockForPad.length}
-            style={{
-              width: "100%",
-              padding: "10px 14px",
-              borderRadius: "999px",
-              border: "1px solid #d1d5db",
-              fontSize: "14px",
-              backgroundColor: filteredStockForPad.length ? "#ffffff" : "#f3f4f6",
-            }}
-          >
-            <option value="">
-              {filteredStockForPad.length
-                ? "Select item in stock…"
-                : "No stock available"}
-            </option>
-            {(filteredStockForPad || []).map((row) => (
-              <option key={row.item_id} value={row.item_id}>
-                {row.item_name}
-              </option>
-            ))}
-          </select>
+          {/* ✅ Item cursor input + dropdown */}
+          <div ref={itemWrapRef} style={{ position: "relative", width: "100%" }}>
+            <input
+              value={itemQuery}
+              onChange={(e) => {
+                setItemQuery(e.target.value);
+                setItemListOpen(true);
+                setItemHi(0);
+                if (!String(e.target.value || "").trim()) {
+                  // if user clears typing, clear selection too
+                  setPad((prev) => ({ ...prev, itemId: "", qtyPieces: "", agreedPricePerPiece: "" }));
+                }
+              }}
+              onFocus={() => setItemListOpen(true)}
+              placeholder={inStockOptions.length ? "Type item name (e.g. suga)..." : "No stock available"}
+              disabled={!inStockOptions.length}
+              inputMode="search"
+              style={{
+                width: "100%",
+                padding: "10px 38px 10px 14px",
+                borderRadius: "999px",
+                border: "1px solid #d1d5db",
+                fontSize: "14px",
+                backgroundColor: inStockOptions.length ? "#ffffff" : "#f3f4f6",
+              }}
+            />
 
-          {/* ✅ Pieces supports decimals */}
+            {/* small clear X inside the input */}
+            {itemQuery ? (
+              <button
+                type="button"
+                onClick={clearItemSelection}
+                title="Clear item"
+                style={{
+                  position: "absolute",
+                  right: 8,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  width: 26,
+                  height: 26,
+                  borderRadius: 999,
+                  border: "1px solid #e5e7eb",
+                  background: "#fff",
+                  cursor: "pointer",
+                  fontWeight: 900,
+                  lineHeight: "24px",
+                }}
+              >
+                ✕
+              </button>
+            ) : null}
+
+            {itemListOpen && inStockOptions.length ? (
+              <div
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  right: 0,
+                  top: "calc(100% + 6px)",
+                  zIndex: 50,
+                  background: "#ffffff",
+                  border: "1px solid #e5e7eb",
+                  borderRadius: 16,
+                  boxShadow: "0 12px 30px rgba(0,0,0,0.08)",
+                  maxHeight: 280,
+                  overflowY: "auto",
+                  padding: 6,
+                }}
+              >
+                {filteredOptions.length ? (
+                  filteredOptions.slice(0, 80).map((row, idx) => {
+                    const isHi = idx === itemHi;
+                    const remaining = num(row?.remaining_pieces || 0);
+                    return (
+                      <button
+                        key={row.item_id}
+                        type="button"
+                        onClick={() => selectItemFromList(row)}
+                        onMouseEnter={() => setItemHi(idx)}
+                        style={{
+                          width: "100%",
+                          textAlign: "left",
+                          border: "none",
+                          background: isHi ? "#eff6ff" : "#ffffff",
+                          cursor: "pointer",
+                          padding: "10px 10px",
+                          borderRadius: 12,
+                          display: "flex",
+                          justifyContent: "space-between",
+                          gap: 10,
+                          alignItems: "center",
+                        }}
+                        title="Tap to select"
+                      >
+                        <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>
+                          {row.item_name}
+                          <span style={{ fontSize: 11, color: "#9ca3af", marginLeft: 8 }}>
+                            (ID: {row.item_id})
+                          </span>
+                        </div>
+                        <div style={{ fontSize: 12, fontWeight: 800, color: "#2563eb" }}>
+                          {formatQty(remaining)} pcs
+                        </div>
+                      </button>
+                    );
+                  })
+                ) : (
+                  <div style={{ padding: "10px 10px", fontSize: 13, color: "#6b7280" }}>
+                    No matching items.
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
+
+          {/* qty pieces (decimals) */}
           <input
+            ref={qtyInputRef}
             type="number"
             inputMode="decimal"
-            step="0.01"
+            step="0.001"
             min="0"
             value={pad.qtyPieces}
             onChange={(e) => updatePad("qtyPieces", e.target.value)}
+            placeholder="Pieces"
             style={{
               width: "100%",
               padding: "10px 12px",
@@ -1209,6 +1149,7 @@ export default function CurrentSaleTab({
             }}
           />
 
+          {/* agreed price */}
           <div style={{ position: "relative", width: "100%" }}>
             <input
               type="number"
@@ -1227,9 +1168,7 @@ export default function CurrentSaleTab({
             <button
               type="button"
               onClick={() =>
-                openCalculator(pad.agreedPricePerPiece, (amt) =>
-                  updatePad("agreedPricePerPiece", amt)
-                )
+                openCalculator(pad.agreedPricePerPiece, (amt) => updatePad("agreedPricePerPiece", String(amt)))
               }
               title="Open calculator"
               style={{
@@ -1255,19 +1194,20 @@ export default function CurrentSaleTab({
           </div>
 
           <button
+            className="iclas-pad-btn"
             type="button"
             onClick={handleAddItemToSale}
-            disabled={!filteredStockForPad.length}
+            disabled={!inStockOptions.length}
             style={{
               width: "100%",
               padding: "10px 18px",
               borderRadius: "999px",
               border: "none",
-              backgroundColor: filteredStockForPad.length ? "#2563eb" : "#9ca3af",
+              backgroundColor: inStockOptions.length ? "#2563eb" : "#9ca3af",
               color: "white",
               fontWeight: 700,
               fontSize: "14px",
-              cursor: filteredStockForPad.length ? "pointer" : "not-allowed",
+              cursor: inStockOptions.length ? "pointer" : "not-allowed",
             }}
           >
             Add item
@@ -1286,21 +1226,19 @@ export default function CurrentSaleTab({
             }}
           >
             <div>
-              Pieces / unit: <strong>{formatQty(padPiecesPerUnit)}</strong>
+              Pieces / unit: <strong>{formatMoney(padPiecesPerUnit)}</strong>
             </div>
             <div>
               Remaining pieces: <strong>{formatQty(padRemainingPieces)}</strong>
             </div>
             <div>
-              ✅ Available for this sale:{" "}
-              <strong>{formatQty(padAvailablePieces)}</strong>
+              ✅ Available for this sale: <strong>{formatQty(padAvailablePieces)}</strong>
             </div>
             <div>
               Cost / piece: <strong>{formatMoney(padPurchaseCostPerPiece)}</strong>
             </div>
             <div>
-              Wholesale / piece:{" "}
-              <strong>{formatMoney(padWholesalePerPiece)}</strong>
+              Wholesale / piece: <strong>{formatMoney(padWholesalePerPiece)}</strong>
             </div>
             <div>
               Selling / piece: <strong>{formatMoney(padSellingPerPiece)}</strong>
@@ -1309,14 +1247,11 @@ export default function CurrentSaleTab({
               Preview total: <strong>{formatMoney(padPreview.total)}</strong>
             </div>
             <div>
-              Interest/profit per piece:{" "}
-              <strong>{formatMoney(padPreview.profitPerPiece)}</strong>
+              Interest/profit per piece: <strong>{formatMoney(padPreview.profitPerPiece)}</strong>
             </div>
             <div>
               Total interest/profit:{" "}
-              <strong style={{ color: "#16a34a" }}>
-                {formatMoney(padPreview.profitTotal)}
-              </strong>
+              <strong style={{ color: "#16a34a" }}>{formatMoney(padPreview.profitTotal)}</strong>
             </div>
           </div>
         )}
@@ -1325,18 +1260,10 @@ export default function CurrentSaleTab({
       {/* CART */}
       {saleLinesWithMeta.length === 0 ? (
         <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
-          No items in the current sale yet. Use the pad above and click{" "}
-          <strong>Add item</strong>.
+          No items in the current sale yet. Use the pad above and click <strong>Add item</strong>.
         </div>
       ) : (
-        <table
-          style={{
-            width: "100%",
-            borderCollapse: "collapse",
-            fontSize: "14px",
-            marginBottom: "12px",
-          }}
-        >
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "14px", marginBottom: "12px" }}>
           <thead>
             <tr
               style={{
@@ -1372,9 +1299,7 @@ export default function CurrentSaleTab({
                   title="Click to edit qty/price"
                 >
                   <td style={{ padding: "8px 4px" }}>
-                    <span style={{ color: "#2563eb", fontWeight: 600 }}>
-                      {line.meta.itemName}
-                    </span>
+                    <span style={{ color: "#2563eb", fontWeight: 600 }}>{line.meta.itemName}</span>
                   </td>
 
                   <td style={{ padding: "8px 4px", textAlign: "right" }}>
@@ -1382,12 +1307,10 @@ export default function CurrentSaleTab({
                       <input
                         type="number"
                         inputMode="decimal"
-                        step="0.01"
+                        step="0.001"
                         min="0"
                         value={line.qtyPieces}
-                        onChange={(e) =>
-                          updateSaleLine(line.id, { qtyPieces: e.target.value })
-                        }
+                        onChange={(e) => updateSaleLine(line.id, { qtyPieces: e.target.value })}
                         style={{
                           width: 110,
                           padding: "6px 10px",
@@ -1406,13 +1329,12 @@ export default function CurrentSaleTab({
                     {isEditingLine ? (
                       <input
                         type="number"
-                        min={1}
+                        inputMode="decimal"
+                        min="0"
                         value={line.unitPrice}
-                        onChange={(e) =>
-                          updateSaleLine(line.id, { unitPrice: e.target.value })
-                        }
+                        onChange={(e) => updateSaleLine(line.id, { unitPrice: e.target.value })}
                         style={{
-                          width: 110,
+                          width: 120,
                           padding: "6px 10px",
                           borderRadius: "999px",
                           border: "1px solid #d1d5db",
@@ -1428,14 +1350,9 @@ export default function CurrentSaleTab({
                   <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600 }}>
                     {formatMoney(line.computed.total)}
                   </td>
-                  <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                    {formatMoney(line.computed.profit)}
-                  </td>
+                  <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(line.computed.profit)}</td>
 
-                  <td
-                    style={{ padding: "8px 4px", textAlign: "center" }}
-                    onClick={(e) => e.stopPropagation()}
-                  >
+                  <td style={{ padding: "8px 4px", textAlign: "center" }} onClick={(e) => e.stopPropagation()}>
                     <button
                       type="button"
                       onClick={() => removeSaleLine(line.id)}
@@ -1462,17 +1379,8 @@ export default function CurrentSaleTab({
               <td style={{ padding: "8px 4px", fontWeight: 700 }}>Total</td>
               <td></td>
               <td></td>
-              <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 800 }}>
-                {formatMoney(saleTotal)}
-              </td>
-              <td
-                style={{
-                  padding: "8px 4px",
-                  textAlign: "right",
-                  fontWeight: 600,
-                  color: "#16a34a",
-                }}
-              >
+              <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 800 }}>{formatMoney(saleTotal)}</td>
+              <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600, color: "#16a34a" }}>
                 {formatMoney(saleTotalProfit)}
               </td>
               <td></td>
@@ -1481,7 +1389,7 @@ export default function CurrentSaleTab({
         </table>
       )}
 
-      {/* CUSTOMER + PAYMENT */}
+      {/* CUSTOMER + PAYMENT (UNCHANGED) */}
       <div style={{ borderTop: "1px solid #e5e7eb", marginTop: "10px", paddingTop: "10px" }}>
         <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 320px", gap: "14px", alignItems: "start" }}>
           {/* Left side: customer */}
@@ -1689,27 +1597,13 @@ export default function CurrentSaleTab({
                     value={amountCollectedNow}
                     onChange={(e) => setAmountCollectedNow(e.target.value)}
                     placeholder="Amount collected now (optional)"
-                    style={{
-                      width: "100%",
-                      padding: "10px 12px",
-                      borderRadius: "999px",
-                      border: "1px solid #d1d5db",
-                      fontSize: "13px",
-                    }}
+                    style={{ width: "100%", padding: "10px 12px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px" }}
                   />
                   <button
                     type="button"
                     onClick={() => openCalculator(amountCollectedNow, (amt) => setAmountCollectedNow(String(amt)))}
                     title="Calculator"
-                    style={{
-                      width: "44px",
-                      height: "44px",
-                      borderRadius: "14px",
-                      border: "1px solid #e5e7eb",
-                      backgroundColor: "#fff",
-                      cursor: "pointer",
-                      fontSize: "16px",
-                    }}
+                    style={{ width: "44px", height: "44px", borderRadius: "14px", border: "1px solid #e5e7eb", backgroundColor: "#fff", cursor: "pointer", fontSize: "16px" }}
                   >
                     🧮
                   </button>
@@ -1719,44 +1613,21 @@ export default function CurrentSaleTab({
                   <button
                     type="button"
                     onClick={() => setAmountCollectedNow("0")}
-                    style={{
-                      padding: "6px 10px",
-                      borderRadius: "999px",
-                      border: "1px solid #e5e7eb",
-                      backgroundColor: "#fff",
-                      cursor: "pointer",
-                      fontSize: "12px",
-                    }}
+                    style={{ padding: "6px 10px", borderRadius: "999px", border: "1px solid #e5e7eb", backgroundColor: "#fff", cursor: "pointer", fontSize: "12px" }}
                   >
                     Collect 0
                   </button>
                   <button
                     type="button"
                     onClick={() => setAmountCollectedNow(String(Math.round(saleTotal / 2)))}
-                    style={{
-                      padding: "6px 10px",
-                      borderRadius: "999px",
-                      border: "1px solid #e5e7eb",
-                      backgroundColor: "#fff",
-                      cursor: "pointer",
-                      fontSize: "12px",
-                    }}
+                    style={{ padding: "6px 10px", borderRadius: "999px", border: "1px solid #e5e7eb", backgroundColor: "#fff", cursor: "pointer", fontSize: "12px" }}
                   >
                     Half
                   </button>
                   <button
                     type="button"
                     onClick={() => setAmountCollectedNow(String(Math.round(saleTotal)))}
-                    style={{
-                      padding: "6px 10px",
-                      borderRadius: "999px",
-                      border: "1px solid #dcfce7",
-                      backgroundColor: "#ecfdf3",
-                      cursor: "pointer",
-                      fontSize: "12px",
-                      fontWeight: 700,
-                      color: "#166534",
-                    }}
+                    style={{ padding: "6px 10px", borderRadius: "999px", border: "1px solid #dcfce7", backgroundColor: "#ecfdf3", cursor: "pointer", fontSize: "12px", fontWeight: 700, color: "#166534" }}
                   >
                     Collect All
                   </button>
