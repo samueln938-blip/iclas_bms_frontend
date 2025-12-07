@@ -1,5 +1,9 @@
 // src/pages/shop/posUtils.js
 
+// =========================
+// Money & number formatting
+// =========================
+
 export function formatMoney(value) {
   if (value === null || value === undefined || value === "") return "0";
   const num = Number(value) || 0;
@@ -9,20 +13,65 @@ export function formatMoney(value) {
   });
 }
 
+/**
+ * Keep existing behaviour: integer-style plain number.
+ * (Used where you want a rounded whole number.)
+ */
 export function formatPlainNumber(value) {
   if (value === null || value === undefined || value === "") return "";
   const num = Number(value) || 0;
   return String(Math.round(num));
 }
 
-export function parseAmount(raw) {
-  if (raw === null || raw === undefined) return 0;
-  const s = String(raw).trim();
-  if (!s) return 0;
-  const cleaned = s.replace(/[, ]+/g, "").replace(/[^\d.-]/g, "");
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : 0;
+/**
+ * Normalizes a numeric string coming from inputs:
+ * - strips commas & spaces
+ * - trims
+ */
+export function normalizeNumberString(raw) {
+  return String(raw ?? "").replace(/[, ]+/g, "").trim();
 }
+
+/**
+ * Parse a decimal quantity (or amount) from user input.
+ * Safe for values like "0.5", "1,200.25", "  3 ".
+ * Used especially for quantities in POS.
+ */
+export function parseDecimal(raw, fallback = 0) {
+  return parseAmount(raw, fallback);
+}
+
+/**
+ * Parse an amount (money) from user input or API strings.
+ * Backwards compatible with old behaviour, but now uses
+ * normalizeNumberString and supports an optional fallback.
+ */
+export function parseAmount(raw, fallback = 0) {
+  if (raw === null || raw === undefined) return fallback;
+  const s = normalizeNumberString(raw);
+  if (!s) return fallback;
+  const cleaned = s.replace(/[^\d.-]/g, "");
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * Format quantities with up to 2 decimal places (for 0.25, 0.5, 1.75, etc.)
+ * Used for stock, purchase and sales quantities.
+ */
+export function formatQty(value, maxFractionDigits = 2) {
+  if (value === null || value === undefined || value === "") return "0";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "0";
+  return n.toLocaleString("en-RW", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits,
+  });
+}
+
+// =========================
+// Time helpers
+// =========================
 
 export function formatTimeHM(isoString) {
   if (!isoString) return "";
@@ -38,6 +87,10 @@ export function todayDateString() {
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
+
+// =========================
+// Payments helpers
+// =========================
 
 // backend → UI canonical
 export function normalizePaymentType(raw) {
@@ -79,7 +132,8 @@ export function parseCreditPaymentsSummary(raw) {
     return { cash, card, mobile, total, count, breakdownAvailable };
   }
 
-  const obj = raw?.summary && typeof raw.summary === "object" ? raw.summary : raw;
+  const obj =
+    raw?.summary && typeof raw.summary === "object" ? raw.summary : raw;
 
   const byMethod =
     obj?.by_method ||
@@ -148,7 +202,9 @@ export function parseCreditPaymentsSummary(raw) {
   total = coerceNum(
     obj?.total ?? obj?.total_amount ?? obj?.total_paid ?? obj?.paid_amount ?? 0
   );
-  count = coerceNum(obj?.count ?? obj?.payments_count ?? obj?.credits_count ?? 0);
+  count = coerceNum(
+    obj?.count ?? obj?.payments_count ?? obj?.credits_count ?? 0
+  );
 
   if (!total || total <= 0) total = cash + card + mobile;
   breakdownAvailable = cash + card + mobile > 0;
@@ -182,10 +238,14 @@ export function resolveSchema(schema, components, visited = new Set()) {
   return schema;
 }
 
-// Expenses local storage (today)
+// =========================
+// Expenses local storage
+// =========================
+
 export function expensesStorageKey(shopId, dateStr) {
   return `iclas_expenses:${shopId}:${dateStr}`;
 }
+
 export function readExpenses(shopId, dateStr) {
   try {
     const raw = localStorage.getItem(expensesStorageKey(shopId, dateStr));
@@ -196,6 +256,7 @@ export function readExpenses(shopId, dateStr) {
     return [];
   }
 }
+
 export function writeExpenses(shopId, dateStr, list) {
   try {
     localStorage.setItem(
