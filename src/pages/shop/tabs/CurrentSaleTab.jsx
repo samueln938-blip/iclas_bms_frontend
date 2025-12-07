@@ -152,7 +152,7 @@ export default function CurrentSaleTab({
   const [itemListOpen, setItemListOpen] = useState(false);
   const [itemHi, setItemHi] = useState(0);
   const itemWrapRef = useRef(null);
-  const itemInputRef = useRef(null); // ✅ NEW: to refocus after add
+  const itemInputRef = useRef(null); // ✅ to refocus after add
   const qtyInputRef = useRef(null);
 
   // Customers
@@ -235,13 +235,12 @@ export default function CurrentSaleTab({
     setEditSourceSale(null);
   };
 
-  // ✅ NEW: reset only the PAD after a successful add (prevents accidental double-add)
+  // ✅ reset only the PAD after a successful add (prevents accidental double-add)
   const resetPadAfterAdd = () => {
     setPad({ itemId: "", qtyPieces: "", agreedPricePerPiece: "" });
     setItemQuery("");
     setItemListOpen(false);
     setItemHi(0);
-    // focus back to item search so cashier continues safely
     try {
       itemInputRef.current?.focus?.();
     } catch {}
@@ -456,10 +455,7 @@ export default function CurrentSaleTab({
   const piecesAlreadyInSaleForPadItem = useMemo(() => {
     const itemId = pad.itemId ? Number(pad.itemId) : null;
     if (!itemId) return 0;
-    return saleLines.reduce(
-      (sum, l) => sum + (Number(l.itemId) === itemId ? num(l.qtyPieces || 0) : 0),
-      0
-    );
+    return saleLines.reduce((sum, l) => sum + (Number(l.itemId) === itemId ? num(l.qtyPieces || 0) : 0), 0);
   }, [pad.itemId, saleLines]);
 
   const padAvailablePieces = useMemo(() => {
@@ -497,7 +493,6 @@ export default function CurrentSaleTab({
     setItemQuery(String(row?.item_name || ""));
     setItemListOpen(false);
     setItemHi(0);
-    // focus qty
     try {
       qtyInputRef.current?.focus?.();
     } catch {}
@@ -539,14 +534,14 @@ export default function CurrentSaleTab({
       {
         id: Date.now().toString() + Math.random().toString(16),
         itemId: pad.itemId,
-        qtyPieces, // store as number
-        unitPrice: agreedPricePerPiece, // store as number
+        qtyPieces,
+        unitPrice: agreedPricePerPiece,
         total,
         profit: totalProfit,
       },
     ]);
 
-    // ✅ CHANGE: clear the whole pad immediately after adding (prevents double-add)
+    // ✅ clear the whole pad immediately after adding (prevents double-add)
     resetPadAfterAdd();
   };
 
@@ -557,7 +552,6 @@ export default function CurrentSaleTab({
 
   const beginEditLine = (id) => setEditingLineId(id);
 
-  // ✅ allow decimals & do not force rounding while typing
   const updateSaleLine = (id, patch) => {
     setSaleLines((prev) =>
       prev.map((l) => {
@@ -631,7 +625,6 @@ export default function CurrentSaleTab({
       byItem.set(itemId, (byItem.get(itemId) || 0) + qty);
     }
 
-    // ✅ When editing, allow original quantity + remaining stock
     const originalByItem = new Map();
     if (editSourceSale && editingSaleId) {
       for (const ln of editSourceSale.lines || []) {
@@ -707,7 +700,6 @@ export default function CurrentSaleTab({
 
       const isCredit = !!sale.is_credit_sale;
 
-      // Map backend payment_type to UI mode (only for non-credit)
       let uiPaymentMode = null;
       if (!isCredit) {
         const raw = String(sale.payment_type || "").toLowerCase();
@@ -771,7 +763,6 @@ export default function CurrentSaleTab({
     if (match) setEditingLineId(match.id);
   };
 
-  // ✅ Legacy prop: SalesPOS can pass editSaleId and we load it here
   useEffect(() => {
     if (!editSaleId) return;
     if (Number(editSaleId) === Number(editingSaleId)) return;
@@ -779,7 +770,6 @@ export default function CurrentSaleTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editSaleId]);
 
-  // ✅ Event-based edit: from MySalesTodayTab (fallback path)
   useEffect(() => {
     const handler = (e) => {
       const sid = e?.detail?.saleId;
@@ -798,7 +788,6 @@ export default function CurrentSaleTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editingSaleId, saleLines]);
 
-  // ✅ localStorage edit handoff (survives tab change)
   useEffect(() => {
     let sid = null;
     let slid = null;
@@ -920,7 +909,6 @@ export default function CurrentSaleTab({
   const canCompleteSale = saleLines.length > 0 && (isCreditSale || !!paymentMode) && !saving;
   const primaryButtonLabel = saving ? "Saving..." : isEditingExistingSale ? "Save changes" : "Complete sale";
 
-  // ✅ keep itemQuery aligned when itemId changes via selection
   useEffect(() => {
     if (!pad.itemId) return;
     const row = stockByItemId[pad.itemId];
@@ -929,6 +917,134 @@ export default function CurrentSaleTab({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pad.itemId]);
+
+  // ------------------ MOBILE customer view + profit hiding + sticky bar ------------------
+  const [customerViewOpen, setCustomerViewOpen] = useState(false);
+  const [hideProfit, setHideProfit] = useState(false);
+
+  const amountToPay = saleTotal;
+
+  const CustomerViewOverlay = ({ open, onClose }) => {
+    if (!open) return null;
+
+    return (
+      <div
+        style={{
+          position: "fixed",
+          inset: 0,
+          zIndex: 9998,
+          background: "rgba(15,23,42,0.55)",
+          display: "flex",
+          alignItems: "flex-end",
+          justifyContent: "center",
+          padding: "10px",
+        }}
+        onClick={onClose}
+      >
+        <div
+          style={{
+            width: "100%",
+            maxWidth: 520,
+            background: "#fff",
+            borderRadius: "20px",
+            boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+            padding: "14px 14px 16px",
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+            <div style={{ fontWeight: 900, fontSize: 14 }}>
+              Customer view
+              <div style={{ fontWeight: 700, fontSize: 11, color: "#6b7280" }}>
+                Show this to customer (no profit)
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                cursor: "pointer",
+                fontSize: 16,
+                fontWeight: 900,
+              }}
+              title="Close"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div
+            style={{
+              marginTop: 12,
+              padding: "12px 12px",
+              borderRadius: 16,
+              border: "1px solid #e5e7eb",
+              background: "#f9fafb",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "baseline",
+              gap: 10,
+            }}
+          >
+            <div style={{ fontSize: 12, color: "#6b7280", letterSpacing: "0.08em", textTransform: "uppercase" }}>
+              Amount to pay
+            </div>
+            <div style={{ fontSize: 26, fontWeight: 950, color: "#111827" }}>{formatMoney(amountToPay)}</div>
+          </div>
+
+          <div style={{ marginTop: 12, maxHeight: "55vh", overflowY: "auto", paddingRight: 4 }}>
+            {(saleLinesWithMeta || []).length ? (
+              (saleLinesWithMeta || []).map((line) => (
+                <div
+                  key={`cust-${line.id}`}
+                  style={{
+                    border: "1px solid #e5e7eb",
+                    borderRadius: 16,
+                    padding: "10px 12px",
+                    marginBottom: 10,
+                    background: "#fff",
+                  }}
+                >
+                  <div style={{ fontWeight: 900, fontSize: 13, color: "#111827" }}>{line.meta.itemName}</div>
+                  <div style={{ marginTop: 6, display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12 }}>
+                    <div style={{ color: "#6b7280" }}>
+                      {formatQty(line.qtyPieces)} × {formatMoney(line.unitPrice)}
+                    </div>
+                    <div style={{ fontWeight: 900 }}>{formatMoney(line.computed.total)}</div>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div style={{ padding: "10px 0", fontSize: 13, color: "#6b7280" }}>No items yet.</div>
+            )}
+          </div>
+
+          <div style={{ marginTop: 10, display: "flex", gap: 10 }}>
+            <button
+              type="button"
+              onClick={onClose}
+              style={{
+                width: "100%",
+                padding: "12px 14px",
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                fontWeight: 900,
+                cursor: "pointer",
+              }}
+            >
+              Back to cashier
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div
@@ -940,11 +1056,30 @@ export default function CurrentSaleTab({
         padding: "18px 20px 18px",
       }}
     >
-      {/* tiny responsive style (only for pad layout) */}
+      {/* responsive styles */}
       <style>{`
         @media (max-width: 640px) {
           .iclas-pad-grid { grid-template-columns: 1fr !important; }
           .iclas-pad-btn { width: 100% !important; }
+
+          .iclas-desktop-table { display: none !important; }
+          .iclas-mobile-cards { display: block !important; }
+
+          .iclas-mobile-stickybar {
+            position: sticky;
+            bottom: 0;
+            z-index: 60;
+            background: white;
+            padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+            border-top: 1px solid #e5e7eb;
+            border-radius: 16px 16px 0 0;
+            box-shadow: 0 -10px 30px rgba(0,0,0,0.06);
+            margin-top: 12px;
+          }
+        }
+
+        @media (min-width: 641px) {
+          .iclas-mobile-cards { display: none !important; }
         }
       `}</style>
 
@@ -968,6 +1103,65 @@ export default function CurrentSaleTab({
           {flash}
         </div>
       )}
+
+      {/* TOP (desktop): actions + amount to pay */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          gap: 10,
+          alignItems: "center",
+          flexWrap: "wrap",
+          marginBottom: 12,
+        }}
+      >
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            onClick={() => setCustomerViewOpen(true)}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 999,
+              border: "1px solid #e5e7eb",
+              background: "#fff",
+              cursor: "pointer",
+              fontWeight: 900,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+            }}
+            title="Customer display (hide profit)"
+          >
+            👁️ Customer display
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setHideProfit((v) => !v)}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 999,
+              border: hideProfit ? "1px solid #fde68a" : "1px solid #e5e7eb",
+              background: hideProfit ? "#fffbeb" : "#fff",
+              cursor: "pointer",
+              fontWeight: 900,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+            }}
+            title="Hide profit columns for customer"
+          >
+            {hideProfit ? "🔒 Profit hidden" : "🔓 Hide profit"}
+          </button>
+        </div>
+
+        <div style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
+          <div style={{ fontSize: 12, color: "#6b7280", letterSpacing: "0.10em", textTransform: "uppercase" }}>
+            Amount to pay
+          </div>
+          <div style={{ fontSize: 26, fontWeight: 950, color: "#111827" }}>{formatMoney(amountToPay)}</div>
+        </div>
+      </div>
 
       {/* ✅ Minimal edit indicator (no long sentence) */}
       {isEditingExistingSale && (
@@ -1032,14 +1226,13 @@ export default function CurrentSaleTab({
           {/* ✅ Item cursor input + dropdown */}
           <div ref={itemWrapRef} style={{ position: "relative", width: "100%" }}>
             <input
-              ref={itemInputRef} // ✅ NEW
+              ref={itemInputRef}
               value={itemQuery}
               onChange={(e) => {
                 setItemQuery(e.target.value);
                 setItemListOpen(true);
                 setItemHi(0);
                 if (!String(e.target.value || "").trim()) {
-                  // if user clears typing, clear selection too
                   setPad((prev) => ({ ...prev, itemId: "", qtyPieces: "", agreedPricePerPiece: "" }));
                 }
               }}
@@ -1057,7 +1250,6 @@ export default function CurrentSaleTab({
               }}
             />
 
-            {/* small clear X inside the input */}
             {itemQuery ? (
               <button
                 type="button"
@@ -1126,13 +1318,9 @@ export default function CurrentSaleTab({
                       >
                         <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>
                           {row.item_name}
-                          <span style={{ fontSize: 11, color: "#9ca3af", marginLeft: 8 }}>
-                            (ID: {row.item_id})
-                          </span>
+                          <span style={{ fontSize: 11, color: "#9ca3af", marginLeft: 8 }}>(ID: {row.item_id})</span>
                         </div>
-                        <div style={{ fontSize: 12, fontWeight: 800, color: "#2563eb" }}>
-                          {formatQty(remaining)} pcs
-                        </div>
+                        <div style={{ fontSize: 12, fontWeight: 800, color: "#2563eb" }}>{formatQty(remaining)} pcs</div>
                       </button>
                     );
                   })
@@ -1228,6 +1416,7 @@ export default function CurrentSaleTab({
           </button>
         </div>
 
+        {/* pad meta: keep as-is (profit hiding handled in cart views) */}
         {selectedStockForPad && (
           <div
             style={{
@@ -1271,136 +1460,308 @@ export default function CurrentSaleTab({
         )}
       </div>
 
-      {/* CART */}
+      {/* CART - desktop table */}
       {saleLinesWithMeta.length === 0 ? (
         <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
           No items in the current sale yet. Use the pad above and click <strong>Add item</strong>.
         </div>
       ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "14px", marginBottom: "12px" }}>
-          <thead>
-            <tr
-              style={{
-                textAlign: "left",
-                borderBottom: "1px solid #e5e7eb",
-                fontSize: "11px",
-                textTransform: "uppercase",
-                letterSpacing: "0.08em",
-                color: "#6b7280",
-              }}
-            >
-              <th style={{ padding: "6px 4px" }}>Item</th>
-              <th style={{ padding: "6px 4px", textAlign: "right" }}>Qty</th>
-              <th style={{ padding: "6px 4px", textAlign: "right" }}>Unit price</th>
-              <th style={{ padding: "6px 4px", textAlign: "right" }}>Total</th>
-              <th style={{ padding: "6px 4px", textAlign: "right" }}>Profit</th>
-              <th style={{ padding: "6px 4px" }}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {saleLinesWithMeta.map((line) => {
-              const isEditingLine = editingLineId === line.id;
+        <>
+          <table
+            className="iclas-desktop-table"
+            style={{ width: "100%", borderCollapse: "collapse", fontSize: "14px", marginBottom: "12px" }}
+          >
+            <thead>
+              <tr
+                style={{
+                  textAlign: "left",
+                  borderBottom: "1px solid #e5e7eb",
+                  fontSize: "11px",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.08em",
+                  color: "#6b7280",
+                }}
+              >
+                <th style={{ padding: "6px 4px" }}>Item</th>
+                <th style={{ padding: "6px 4px", textAlign: "right" }}>Qty</th>
+                <th style={{ padding: "6px 4px", textAlign: "right" }}>Unit price</th>
+                <th style={{ padding: "6px 4px", textAlign: "right" }}>Total</th>
+                {!hideProfit && <th style={{ padding: "6px 4px", textAlign: "right" }}>Profit</th>}
+                <th style={{ padding: "6px 4px" }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {saleLinesWithMeta.map((line) => {
+                const isEditingLine = editingLineId === line.id;
 
+                return (
+                  <tr
+                    key={line.id}
+                    style={{
+                      borderBottom: "1px solid #f3f4f6",
+                      cursor: "pointer",
+                      backgroundColor: isEditingLine ? "#f8fafc" : "transparent",
+                    }}
+                    onClick={() => beginEditLine(line.id)}
+                    title="Click to edit qty/price"
+                  >
+                    <td style={{ padding: "8px 4px" }}>
+                      <span style={{ color: "#2563eb", fontWeight: 600 }}>{line.meta.itemName}</span>
+                    </td>
+
+                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                      {isEditingLine ? (
+                        <input
+                          type="number"
+                          inputMode="decimal"
+                          step="0.001"
+                          min="0"
+                          value={line.qtyPieces}
+                          onChange={(e) => updateSaleLine(line.id, { qtyPieces: e.target.value })}
+                          style={{
+                            width: 110,
+                            padding: "6px 10px",
+                            borderRadius: "999px",
+                            border: "1px solid #d1d5db",
+                            textAlign: "right",
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      ) : (
+                        formatQty(line.qtyPieces)
+                      )}
+                    </td>
+
+                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                      {isEditingLine ? (
+                        <input
+                          type="number"
+                          inputMode="decimal"
+                          min="0"
+                          value={line.unitPrice}
+                          onChange={(e) => updateSaleLine(line.id, { unitPrice: e.target.value })}
+                          style={{
+                            width: 120,
+                            padding: "6px 10px",
+                            borderRadius: "999px",
+                            border: "1px solid #d1d5db",
+                            textAlign: "right",
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      ) : (
+                        formatMoney(line.unitPrice)
+                      )}
+                    </td>
+
+                    <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600 }}>
+                      {formatMoney(line.computed.total)}
+                    </td>
+
+                    {!hideProfit && (
+                      <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(line.computed.profit)}</td>
+                    )}
+
+                    <td style={{ padding: "8px 4px", textAlign: "center" }} onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        onClick={() => removeSaleLine(line.id)}
+                        style={{
+                          width: "28px",
+                          height: "28px",
+                          borderRadius: "9999px",
+                          border: "1px solid #fee2e2",
+                          backgroundColor: "#fef2f2",
+                          color: "#b91c1c",
+                          fontSize: "16px",
+                          cursor: "pointer",
+                        }}
+                        title="Remove from cart"
+                      >
+                        ✕
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+
+              <tr>
+                <td style={{ padding: "8px 4px", fontWeight: 700 }}>Total</td>
+                <td></td>
+                <td></td>
+                <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 800 }}>{formatMoney(saleTotal)}</td>
+                {!hideProfit && (
+                  <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600, color: "#16a34a" }}>
+                    {formatMoney(saleTotalProfit)}
+                  </td>
+                )}
+                <td></td>
+              </tr>
+            </tbody>
+          </table>
+
+          {/* CART - mobile cards */}
+          <div className="iclas-mobile-cards" style={{ display: "none" }}>
+            {(saleLinesWithMeta || []).map((line) => {
+              const isEditingLine = editingLineId === line.id;
               return (
-                <tr
-                  key={line.id}
+                <div
+                  key={`mob-${line.id}`}
                   style={{
-                    borderBottom: "1px solid #f3f4f6",
-                    cursor: "pointer",
-                    backgroundColor: isEditingLine ? "#f8fafc" : "transparent",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: 18,
+                    padding: "10px 12px",
+                    background: "#fff",
+                    marginBottom: 10,
                   }}
                   onClick={() => beginEditLine(line.id)}
-                  title="Click to edit qty/price"
                 >
-                  <td style={{ padding: "8px 4px" }}>
-                    <span style={{ color: "#2563eb", fontWeight: 600 }}>{line.meta.itemName}</span>
-                  </td>
+                  <div style={{ fontWeight: 950, color: "#111827", fontSize: 14 }}>{line.meta.itemName}</div>
 
-                  <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                    {isEditingLine ? (
-                      <input
-                        type="number"
-                        inputMode="decimal"
-                        step="0.001"
-                        min="0"
-                        value={line.qtyPieces}
-                        onChange={(e) => updateSaleLine(line.id, { qtyPieces: e.target.value })}
-                        style={{
-                          width: 110,
-                          padding: "6px 10px",
-                          borderRadius: "999px",
-                          border: "1px solid #d1d5db",
-                          textAlign: "right",
-                        }}
-                        onClick={(e) => e.stopPropagation()}
-                      />
-                    ) : (
-                      formatQty(line.qtyPieces)
-                    )}
-                  </td>
+                  <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    <div>
+                      <div style={{ fontSize: 11, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                        Qty
+                      </div>
+                      {isEditingLine ? (
+                        <input
+                          type="number"
+                          inputMode="decimal"
+                          step="0.001"
+                          min="0"
+                          value={line.qtyPieces}
+                          onChange={(e) => updateSaleLine(line.id, { qtyPieces: e.target.value })}
+                          style={{
+                            width: "100%",
+                            padding: "10px 12px",
+                            borderRadius: 999,
+                            border: "1px solid #d1d5db",
+                            textAlign: "right",
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      ) : (
+                        <div style={{ marginTop: 4, fontWeight: 900 }}>{formatQty(line.qtyPieces)}</div>
+                      )}
+                    </div>
 
-                  <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                    {isEditingLine ? (
-                      <input
-                        type="number"
-                        inputMode="decimal"
-                        min="0"
-                        value={line.unitPrice}
-                        onChange={(e) => updateSaleLine(line.id, { unitPrice: e.target.value })}
-                        style={{
-                          width: 120,
-                          padding: "6px 10px",
-                          borderRadius: "999px",
-                          border: "1px solid #d1d5db",
-                          textAlign: "right",
-                        }}
-                        onClick={(e) => e.stopPropagation()}
-                      />
-                    ) : (
-                      formatMoney(line.unitPrice)
-                    )}
-                  </td>
+                    <div>
+                      <div style={{ fontSize: 11, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                        Unit price
+                      </div>
+                      {isEditingLine ? (
+                        <input
+                          type="number"
+                          inputMode="decimal"
+                          min="0"
+                          value={line.unitPrice}
+                          onChange={(e) => updateSaleLine(line.id, { unitPrice: e.target.value })}
+                          style={{
+                            width: "100%",
+                            padding: "10px 12px",
+                            borderRadius: 999,
+                            border: "1px solid #d1d5db",
+                            textAlign: "right",
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      ) : (
+                        <div style={{ marginTop: 4, fontWeight: 900 }}>{formatMoney(line.unitPrice)}</div>
+                      )}
+                    </div>
+                  </div>
 
-                  <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600 }}>
-                    {formatMoney(line.computed.total)}
-                  </td>
-                  <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(line.computed.profit)}</td>
+                  <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                    <div style={{ fontSize: 12, color: "#6b7280" }}>Total</div>
+                    <div style={{ fontWeight: 950 }}>{formatMoney(line.computed.total)}</div>
+                  </div>
 
-                  <td style={{ padding: "8px 4px", textAlign: "center" }} onClick={(e) => e.stopPropagation()}>
+                  {!hideProfit && (
+                    <div style={{ marginTop: 6, display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                      <div style={{ fontSize: 12, color: "#6b7280" }}>Profit</div>
+                      <div style={{ fontWeight: 900, color: "#16a34a" }}>{formatMoney(line.computed.profit)}</div>
+                    </div>
+                  )}
+
+                  <div style={{ marginTop: 10, display: "flex", justifyContent: "flex-end" }} onClick={(e) => e.stopPropagation()}>
                     <button
                       type="button"
                       onClick={() => removeSaleLine(line.id)}
                       style={{
-                        width: "28px",
-                        height: "28px",
-                        borderRadius: "9999px",
+                        padding: "10px 12px",
+                        borderRadius: 999,
                         border: "1px solid #fee2e2",
                         backgroundColor: "#fef2f2",
                         color: "#b91c1c",
-                        fontSize: "16px",
+                        fontWeight: 900,
                         cursor: "pointer",
                       }}
-                      title="Remove from cart"
                     >
-                      ✕
+                      Remove ✕
                     </button>
-                  </td>
-                </tr>
+                  </div>
+                </div>
               );
             })}
 
-            <tr>
-              <td style={{ padding: "8px 4px", fontWeight: 700 }}>Total</td>
-              <td></td>
-              <td></td>
-              <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 800 }}>{formatMoney(saleTotal)}</td>
-              <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600, color: "#16a34a" }}>
-                {formatMoney(saleTotalProfit)}
-              </td>
-              <td></td>
-            </tr>
-          </tbody>
-        </table>
+            <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: 10, marginTop: 6 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 950, fontSize: 14 }}>
+                <div>Total</div>
+                <div>{formatMoney(saleTotal)}</div>
+              </div>
+              {!hideProfit && (
+                <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 13 }}>
+                  <div style={{ color: "#6b7280" }}>Profit</div>
+                  <div style={{ color: "#16a34a", fontWeight: 900 }}>{formatMoney(saleTotalProfit)}</div>
+                </div>
+              )}
+            </div>
+
+            {/* mobile sticky bar */}
+            <div className="iclas-mobile-stickybar">
+              <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between" }}>
+                <button
+                  type="button"
+                  onClick={() => setCustomerViewOpen(true)}
+                  style={{
+                    padding: "10px 12px",
+                    borderRadius: 999,
+                    border: "1px solid #e5e7eb",
+                    background: "#fff",
+                    fontWeight: 900,
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  👁️ Customer
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setHideProfit((v) => !v)}
+                  style={{
+                    padding: "10px 12px",
+                    borderRadius: 999,
+                    border: hideProfit ? "1px solid #fde68a" : "1px solid #e5e7eb",
+                    background: hideProfit ? "#fffbeb" : "#fff",
+                    fontWeight: 900,
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {hideProfit ? "🔒 Profit" : "Hide profit"}
+                </button>
+
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 10, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.12em" }}>
+                    Pay
+                  </div>
+                  <div style={{ fontWeight: 950 }}>{formatMoney(amountToPay)}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </>
       )}
 
       {/* CUSTOMER + PAYMENT (UNCHANGED) */}
@@ -1529,9 +1890,7 @@ export default function CurrentSaleTab({
                       }}
                     />
                     <div style={{ fontSize: "11px", color: "#9ca3af" }}>
-                      {salesCaps.dueDateKey
-                        ? `Will be sent as: ${salesCaps.dueDateKey}`
-                        : "Backend due-date field not detected (won't be sent)."}
+                      {salesCaps.dueDateKey ? `Will be sent as: ${salesCaps.dueDateKey}` : "Backend due-date field not detected (won't be sent)."}
                     </div>
                   </div>
                 )}
@@ -1694,6 +2053,9 @@ export default function CurrentSaleTab({
           }
         }}
       />
+
+      {/* Customer view overlay (mobile + desktop) */}
+      <CustomerViewOverlay open={customerViewOpen} onClose={() => setCustomerViewOpen(false)} />
     </div>
   );
 }
