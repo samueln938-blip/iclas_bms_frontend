@@ -31,20 +31,6 @@ function formatQty(value) {
   return n.toLocaleString("en-RW", { maximumFractionDigits: 2 });
 }
 
-// ✅ Display-only date format: DD / MM / YY (keeps inputs + API as YYYY-MM-DD)
-function formatDateDMY(iso) {
-  if (!iso) return "";
-  const s = String(iso);
-  // Accept YYYY-MM-DD or YYYY-MM-DDTHH:mm...
-  const base = s.includes("T") ? s.split("T")[0] : s;
-  const m = base.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return s;
-  const yy = m[1].slice(-2);
-  const mm = m[2];
-  const dd = m[3];
-  return `${dd} / ${mm} / ${yy}`;
-}
-
 /**
  * ✅ Mobile-friendly searchable dropdown:
  * - type to search (keyboard appears on phone)
@@ -263,6 +249,7 @@ function _enumerateISODateRange(fromISO, toISO, maxDays = 62) {
   let start = from;
   let end = to;
   if (start.getTime() > end.getTime()) {
+    // swap
     const tmp = start;
     start = end;
     end = tmp;
@@ -300,6 +287,7 @@ function ShopPurchasesPage() {
     return h;
   }, [token]);
 
+  // ✅ Tabs
   const [activeTab, setActiveTab] = useState("entry"); // "entry" | "supplier" | "date"
 
   const [shop, setShop] = useState(null);
@@ -307,6 +295,7 @@ function ShopPurchasesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
+  // ✅ Tab 1 (entry) state
   const [purchaseDate, setPurchaseDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [supplierName, setSupplierName] = useState("");
   const [invoiceNumber, setInvoiceNumber] = useState("");
@@ -346,10 +335,10 @@ function ShopPurchasesPage() {
     return () => window.removeEventListener("resize", calc);
   }, []);
 
-  // Tab 2 (supplier) uses a single date
+  // ✅ Tab 2 (supplier) uses a single date
   const [viewDate, setViewDate] = useState(() => new Date().toISOString().slice(0, 10));
 
-  // Tab 3 (date) uses a date range
+  // ✅ Tab 3 (date) uses a date range
   const [viewFromDate, setViewFromDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [viewToDate, setViewToDate] = useState(() => new Date().toISOString().slice(0, 10));
 
@@ -534,10 +523,12 @@ function ShopPurchasesPage() {
 
     try {
       const all = [];
+      // sequential to avoid hammering server
       for (const d of dates) {
         const url = `${API_BASE}/purchases/by-shop-date/?shop_id=${shopId}&purchase_date=${d}`;
         const res = await fetch(url, { headers: authHeadersNoJson });
         if (!res.ok) {
+          // If one day fails, stop with a clear error
           const errData = await res.json().catch(() => null);
           throw new Error(errData?.detail || `Failed to load purchases for ${d}. Status: ${res.status}`);
         }
@@ -567,6 +558,7 @@ function ShopPurchasesPage() {
     }
   };
 
+  // When switching tabs, load appropriate view data
   useEffect(() => {
     if (activeTab === "supplier") {
       loadViewLinesForDate(viewDate);
@@ -1066,11 +1058,8 @@ function ShopPurchasesPage() {
 
   const padButtonText = isEditingSaved ? "Update saved item" : isEditingNew ? "Update item" : "+ Add to list";
 
-  // ✅ Display-only label for summary card
   const rangeLabel =
-    activeTab === "date"
-      ? `${formatDateDMY(viewFromDate)} → ${formatDateDMY(viewToDate)}`
-      : formatDateDMY(viewDate);
+    activeTab === "date" ? `${viewFromDate} → ${viewToDate}` : `${viewDate}`;
 
   const TabsBar = (
     <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginTop: "10px", marginBottom: "8px" }}>
@@ -1089,6 +1078,7 @@ function ShopPurchasesPage() {
               setMessage("");
               setError("");
               setViewError("");
+              // helpful defaults when opening view tabs
               if (t.id === "supplier") setViewDate((v) => v || purchaseDate);
               if (t.id === "date") {
                 setViewFromDate((v) => v || purchaseDate);
@@ -1195,15 +1185,15 @@ function ShopPurchasesPage() {
               <div style={{ textAlign: "right" }}>{formatMoney(newCostPerPiece)}</div>
               <div style={{ textAlign: "right" }}>{formatMoney(recentWholesalePerPiece)}</div>
               <div style={{ textAlign: "right" }}>
-                line.newWholesalePerPiece != null && line.newWholesalePerPiece !== ""
+                {line.newWholesalePerPiece != null && line.newWholesalePerPiece !== ""
                   ? formatMoney(line.newWholesalePerPiece)
-                  : "—"
+                  : "—"}
               </div>
               <div style={{ textAlign: "right" }}>{formatMoney(recentRetailPerPiece)}</div>
               <div style={{ textAlign: "right" }}>
-                line.newRetailPerPiece != null && line.newRetailPerPiece !== ""
+                {line.newRetailPerPiece != null && line.newRetailPerPiece !== ""
                   ? formatMoney(line.newRetailPerPiece)
-                  : "—"
+                  : "—"}
               </div>
               <div style={{ textAlign: "right", fontWeight: 600 }}>{formatMoney(lineTotal)}</div>
 
@@ -1292,9 +1282,7 @@ function ShopPurchasesPage() {
               {activeTab === "entry" ? "Purchase summary" : "View summary"}
             </div>
             <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.14em", color: "#9ca3af", marginBottom: "4px" }}>
-              {activeTab === "entry"
-                ? `All items on ${formatDateDMY(purchaseDate)}`
-                : `All items on ${rangeLabel}`}
+              {activeTab === "entry" ? `All items on ${purchaseDate}` : `All items on ${rangeLabel}`}
             </div>
             <div>
               <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.1em", color: "#6b7280" }}>Total amount</div>
@@ -1400,9 +1388,7 @@ function ShopPurchasesPage() {
           <>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
               <div>
-                <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>
-                  Items purchased on {formatDateDMY(purchaseDate)}
-                </h2>
+                <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>Items purchased on {purchaseDate}</h2>
               </div>
             </div>
 
@@ -1534,6 +1520,7 @@ function ShopPurchasesPage() {
               </div>
             </div>
 
+            {/* LIST */}
             {linesWithComputed.length === 0 ? (
               <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
                 No items in this purchase date yet. Use the pad above and click <strong>{padButtonText}</strong>.
@@ -1542,7 +1529,7 @@ function ShopPurchasesPage() {
               <>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px", marginTop: "2px" }}>
                   <div style={{ fontSize: "12px", color: "#6b7280" }}>
-                    Items for {formatDateDMY(purchaseDate)}: {linesWithComputed.length} {searchTerm ? `(showing ${filteredLinesWithComputed.length} after filter)` : ""}
+                    Items for {purchaseDate}: {linesWithComputed.length} {searchTerm ? `(showing ${filteredLinesWithComputed.length} after filter)` : ""}
                   </div>
                   <input
                     type="text"
@@ -1582,9 +1569,7 @@ function ShopPurchasesPage() {
           <>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", marginBottom: "10px" }}>
               <div>
-                <h2 style={{ fontSize: "18px", fontWeight: 800, margin: 0 }}>
-                  Purchases grouped by supplier — {formatDateDMY(viewDate)}
-                </h2>
+                <h2 style={{ fontSize: "18px", fontWeight: 800, margin: 0 }}>Purchases grouped by supplier — {viewDate}</h2>
                 <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "2px" }}>
                   Showing {viewFiltered.length} item lines
                   {apiSeemsMissingSupplier ? (
@@ -1618,9 +1603,7 @@ function ShopPurchasesPage() {
             {viewLoading ? (
               <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>Loading purchases…</div>
             ) : groupedBySupplier.length === 0 ? (
-              <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
-                No purchases found for {formatDateDMY(viewDate)}.
-              </div>
+              <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>No purchases found for {viewDate}.</div>
             ) : (
               <div style={{ display: "grid", rowGap: "14px" }}>
                 {groupedBySupplier.map((g) => (
@@ -1645,9 +1628,7 @@ function ShopPurchasesPage() {
           <>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", marginBottom: "10px" }}>
               <div>
-                <h2 style={{ fontSize: "18px", fontWeight: 800, margin: 0 }}>
-                  All purchased items — {formatDateDMY(viewFromDate)} → {formatDateDMY(viewToDate)}
-                </h2>
+                <h2 style={{ fontSize: "18px", fontWeight: 800, margin: 0 }}>All purchased items — {viewFromDate} → {viewToDate}</h2>
                 <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "2px" }}>
                   Showing {viewFiltered.length} item lines
                 </div>
