@@ -40,27 +40,23 @@ function todayISO() {
   return `${y}-${m}-${day}`;
 }
 
-// ✅ Normalize "YYYY-MM-DD" or "DD/MM/YYYY" (some browsers display dd/mm)
+// ✅ Normalize "YYYY-MM-DD" or "DD/MM/YYYY"
 function toISODate(raw) {
   const s = String(raw || "").trim();
   if (!s) return "";
 
-  // already ISO
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
 
-  // dd/mm/yyyy
   if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
     const [dd, mm, yyyy] = s.split("/");
     return `${yyyy}-${mm}-${dd}`;
   }
 
-  // dd-mm-yyyy
   if (/^\d{2}-\d{2}-\d{4}$/.test(s)) {
     const [dd, mm, yyyy] = s.split("-");
     return `${yyyy}-${mm}-${dd}`;
   }
 
-  // last resort: Date parse
   const dt = new Date(s);
   if (!Number.isFinite(dt.getTime())) return "";
   const y = dt.getFullYear();
@@ -74,7 +70,6 @@ function parseISOToDate(iso) {
   if (!v) return null;
   const [y, m, d] = v.split("-").map((x) => Number(x));
   if (!y || !m || !d) return null;
-  // local date at noon to avoid DST issues
   return new Date(y, m - 1, d, 12, 0, 0, 0);
 }
 
@@ -92,12 +87,24 @@ function addDaysISO(iso, deltaDays) {
   return fmtDateLocal(dt);
 }
 
-// ✅ Return list of ISO dates inclusive (safe + robust)
+// ✅ Return list of ISO dates inclusive
 function listDaysInclusive(fromISO, toISO, maxDaysHard = 366) {
   const f = parseISOToDate(fromISO);
   const t = parseISOToDate(toISO);
-  if (!f || !t) return { ok: false, error: "Choose valid From and To dates.", days: [], daysCount: 0 };
-  if (f.getTime() > t.getTime()) return { ok: false, error: '"From" date must be <= "To" date.', days: [], daysCount: 0 };
+  if (!f || !t)
+    return {
+      ok: false,
+      error: "Choose valid From and To dates.",
+      days: [],
+      daysCount: 0,
+    };
+  if (f.getTime() > t.getTime())
+    return {
+      ok: false,
+      error: '"From" date must be <= "To" date.',
+      days: [],
+      daysCount: 0,
+    };
 
   const msPerDay = 24 * 60 * 60 * 1000;
   const diffDays = Math.floor((t.getTime() - f.getTime()) / msPerDay) + 1;
@@ -121,10 +128,7 @@ function listDaysInclusive(fromISO, toISO, maxDaysHard = 366) {
 }
 
 /**
- * ✅ Mobile-friendly searchable dropdown:
- * - type to search (keyboard appears on phone)
- * - scroll list below
- * - click to select
+ * ✅ Mobile-friendly searchable dropdown
  */
 function ItemComboBox({ items, valueId, onChangeId, disabled }) {
   const wrapRef = useRef(null);
@@ -136,7 +140,6 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
     return items.find((it) => String(it.id) === String(valueId)) || null;
   }, [items, valueId]);
 
-  // Keep input text aligned with selected item when dropdown closes
   useEffect(() => {
     if (!open) setQ(selected ? selected.label : "");
   }, [selected, open]);
@@ -149,7 +152,6 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
       .slice(0, 500);
   }, [items, q]);
 
-  // Close on outside click
   useEffect(() => {
     const onDown = (e) => {
       if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
@@ -168,7 +170,7 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
     <div ref={wrapRef} style={{ position: "relative", width: "100%" }}>
       <div style={{ position: "relative" }}>
         <input
-          value={disabled ? (selected?.label || "") : q}
+          value={disabled ? selected?.label || "" : q}
           onChange={(e) => {
             setQ(e.target.value);
             setOpen(true);
@@ -282,6 +284,25 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
   );
 }
 
+// --- helper: pick prices from purchase line if backend returns them ---
+function pickLineWholesale(pl, fallback) {
+  const v =
+    pl?.wholesale_price_per_piece ??
+    pl?.wholesale_per_piece ??
+    pl?.wholesale_price ??
+    null;
+  return v === null || v === undefined || v === "" ? fallback : v;
+}
+function pickLineRetail(pl, fallback) {
+  const v =
+    pl?.retail_price_per_piece ??
+    pl?.selling_price_per_piece ??
+    pl?.retail_per_piece ??
+    pl?.retail_price ??
+    null;
+  return v === null || v === undefined || v === "" ? fallback : v;
+}
+
 function ShopPurchasesPage() {
   const { shopId } = useParams();
   const navigate = useNavigate();
@@ -324,7 +345,6 @@ function ShopPurchasesPage() {
   });
 
   const [editingLineId, setEditingLineId] = useState(null);
-
   const [editingDbId, setEditingDbId] = useState(null);
   const [editingDbUiId, setEditingDbUiId] = useState(null);
 
@@ -358,6 +378,17 @@ function ShopPurchasesPage() {
   const [historyHint, setHistoryHint] = useState("");
   const [historySearchTerm, setHistorySearchTerm] = useState("");
   const [historyLines, setHistoryLines] = useState([]);
+  const [historyProgress, setHistoryProgress] = useState({ done: 0, total: 0 });
+
+  // ✅ best practice: cache + abort for history fetch
+  const historyCacheRef = useRef(new Map()); // key: `${shopId}|${date}`
+  const historyAbortRef = useRef(null);
+  const historyReqSeqRef = useRef(0);
+
+  useEffect(() => {
+    // clear cache when switching shop
+    historyCacheRef.current = new Map();
+  }, [shopId]);
 
   const resetPadToDefaults = () => {
     setPad({
@@ -382,6 +413,20 @@ function ShopPurchasesPage() {
     padRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
+  const reloadStockRows = async () => {
+    try {
+      const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`, {
+        headers: authHeadersNoJson,
+      });
+      if (!stockRes.ok) return;
+      const stockData = await stockRes.json();
+      setStockRows(stockData || []);
+    } catch (e) {
+      // silent: stock is supportive data; don't break UX
+      console.error("reloadStockRows failed:", e);
+    }
+  };
+
   useEffect(() => {
     async function loadData() {
       setLoading(true);
@@ -389,11 +434,15 @@ function ShopPurchasesPage() {
       setMessage("");
 
       try {
-        const shopRes = await fetch(`${API_BASE}/shops/${shopId}`, { headers: authHeadersNoJson });
+        const shopRes = await fetch(`${API_BASE}/shops/${shopId}`, {
+          headers: authHeadersNoJson,
+        });
         if (!shopRes.ok) throw new Error("Failed to load shop.");
         const shopData = await shopRes.json();
 
-        const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`, { headers: authHeadersNoJson });
+        const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`, {
+          headers: authHeadersNoJson,
+        });
         if (!stockRes.ok) throw new Error("Failed to load stock.");
         const stockData = await stockRes.json();
 
@@ -418,7 +467,7 @@ function ShopPurchasesPage() {
 
   const shopName = shop?.name || `Shop ${shopId}`;
 
-  // ✅ Items list for combobox (HOOK SAFE)
+  // ✅ Items list for combobox
   const pickerItems = useMemo(
     () =>
       (stockRows || []).map((s) => ({
@@ -434,39 +483,52 @@ function ShopPurchasesPage() {
   }, [stockRows]);
 
   const loadExistingLines = async () => {
-    if (!stockRows.length) {
-      setLines([]);
-      return;
-    }
-
+    // ✅ IMPORTANT FIX: do NOT depend on stockRows length
+    // (history items may exist even if stock endpoint doesn't return them)
     try {
       const iso = toISODate(purchaseDate);
+      if (!iso) {
+        setLines([]);
+        return;
+      }
+
       const url = `${API_BASE}/purchases/by-shop-date/?shop_id=${shopId}&purchase_date=${iso}`;
       const res = await fetch(url, { headers: authHeadersNoJson });
-      if (!res.ok) return;
+      if (!res.ok) {
+        setLines([]);
+        return;
+      }
       const data = await res.json();
 
-      const mapped = (data || []).map((pl) => ({
-        id: `db-${pl.id}`,
-        isFromDb: true,
-        dbId: pl.id,
-        itemId: pl.item_id,
-        qtyUnits: pl.quantity,
-        newUnitCost: pl.unit_cost_price,
-        newWholesalePerPiece: stockByItemId[pl.item_id]?.wholesale_price_per_piece || "",
-        newRetailPerPiece: stockByItemId[pl.item_id]?.selling_price_per_piece || "",
-      }));
+      const mapped = (data || []).map((pl) => {
+        const fallbackWholesale = stockByItemId[pl.item_id]?.wholesale_price_per_piece || "";
+        const fallbackRetail = stockByItemId[pl.item_id]?.selling_price_per_piece || "";
+        return {
+          id: `db-${pl.id}`,
+          isFromDb: true,
+          dbId: pl.id,
+          itemId: pl.item_id,
+          qtyUnits: pl.quantity,
+          newUnitCost: pl.unit_cost_price,
+          // ✅ prefer values from purchase line if backend provides them
+          newWholesalePerPiece: pickLineWholesale(pl, fallbackWholesale),
+          newRetailPerPiece: pickLineRetail(pl, fallbackRetail),
+          purchaseDate: iso,
+        };
+      });
 
       setLines(mapped);
     } catch (err) {
       console.error("Error loading existing purchase lines:", err);
+      // don't hard-fail UI
+      setLines([]);
     }
   };
 
   useEffect(() => {
     loadExistingLines();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shopId, purchaseDate, stockRows, stockByItemId]);
+  }, [shopId, purchaseDate, stockByItemId, authHeadersNoJson]);
 
   useEffect(() => {
     cancelAnyEdit();
@@ -566,6 +628,7 @@ function ShopPurchasesPage() {
     setPadSaving(true);
     setError("");
     setMessage("");
+    setHistoryError("");
 
     try {
       const res = await fetch(`${API_BASE}/purchases/lines/${dbId}`, {
@@ -579,9 +642,15 @@ function ShopPurchasesPage() {
       }
 
       await res.json().catch(() => null);
+
+      // ✅ sync UI from backend after delete
       setMessage("Saved purchase line deleted and stock recalculated.");
       cancelAnyEdit();
+
+      await reloadStockRows();
       await loadExistingLines();
+
+      // refresh history
       setHistoryRefreshToken((x) => x + 1);
     } catch (err) {
       console.error(err);
@@ -593,15 +662,12 @@ function ShopPurchasesPage() {
   };
 
   const handleSubmitPad = async () => {
-    if (!stockRows.length) return;
-
     const itemId = Number(pad.itemId || 0);
     if (!itemId) {
       setError("Select an item in the pad before saving.");
       return;
     }
 
-    // ✅ Allow 0.5 units etc (only require > 0)
     const qtyUnits = Number(pad.qtyUnits || 0);
     if (qtyUnits <= 0) {
       setError("Quantity (units) must be greater than zero.");
@@ -645,8 +711,12 @@ function ShopPurchasesPage() {
         }
 
         await res.json().catch(() => null);
+
+        // ✅ reload after update
         setMessage("Saved purchase line updated and stock recalculated.");
+        await reloadStockRows();
         await loadExistingLines();
+
         cancelAnyEdit();
         scrollPadIntoView();
 
@@ -662,6 +732,7 @@ function ShopPurchasesPage() {
       }
     }
 
+    // new (unsaved) list item
     if (editingLineId === null) {
       setLines((prev) => [
         ...prev,
@@ -712,8 +783,6 @@ function ShopPurchasesPage() {
 
       const newCostPerPiece = piecesPerUnit > 0 ? newUnitCost / piecesPerUnit : 0;
       const lineTotal = qtyUnits * newUnitCost;
-
-      // ✅ New column value
       const allPieces = qtyUnits * piecesPerUnit;
 
       return {
@@ -755,9 +824,21 @@ function ShopPurchasesPage() {
 
   // -------------------- TAB 2: HISTORY LOADER --------------------
   const loadHistoryRangeLines = async () => {
+    // abort previous
+    if (historyAbortRef.current) {
+      try {
+        historyAbortRef.current.abort();
+      } catch {}
+    }
+    const controller = new AbortController();
+    historyAbortRef.current = controller;
+
+    const mySeq = ++historyReqSeqRef.current;
+
     setHistoryLoading(true);
     setHistoryError("");
     setHistoryHint("");
+    setHistoryProgress({ done: 0, total: 0 });
 
     try {
       const fromISO = toISODate(historyFrom);
@@ -771,46 +852,70 @@ function ShopPurchasesPage() {
       }
 
       if (chk.daysCount > 93) {
-        setHistoryHint(
-          `Large range (${chk.daysCount} days). It may be slower. Tip: use Last 30d.`
-        );
+        setHistoryHint(`Large range (${chk.daysCount} days). It may be slower. Tip: use Last 30d.`);
       }
 
-      // ✅ Always use the endpoint we KNOW works for you (same as Tab 1):
-      // /purchases/by-shop-date/?shop_id=...&purchase_date=YYYY-MM-DD
       const days = chk.days;
+      setHistoryProgress({ done: 0, total: days.length });
 
-      // ✅ small concurrency for speed (doesn't overload server)
       const CONCURRENCY = 8;
       const collected = [];
 
       for (let i = 0; i < days.length; i += CONCURRENCY) {
+        if (controller.signal.aborted) return;
+        if (historyReqSeqRef.current !== mySeq) return;
+
         const chunk = days.slice(i, i + CONCURRENCY);
 
         // eslint-disable-next-line no-await-in-loop
         const results = await Promise.all(
           chunk.map(async (d) => {
-            const url = `${API_BASE}/purchases/by-shop-date/?shop_id=${shopId}&purchase_date=${d}`;
-            const res = await fetch(url, { headers: authHeadersNoJson });
-            if (!res.ok) return [];
-            const data = await res.json().catch(() => []);
-            if (!Array.isArray(data)) return [];
+            const cacheKey = `${shopId}|${d}`;
+            const cached = historyCacheRef.current.get(cacheKey);
+            if (cached) return cached;
 
-            return data.map((pl) => ({
-              id: `h-db-${pl.id}`,
-              isFromDb: true,
-              dbId: pl.id,
-              itemId: pl.item_id,
-              qtyUnits: pl.quantity,
-              newUnitCost: pl.unit_cost_price,
-              newWholesalePerPiece: stockByItemId[pl.item_id]?.wholesale_price_per_piece || "",
-              newRetailPerPiece: stockByItemId[pl.item_id]?.selling_price_per_piece || "",
-              purchaseDate: d,
-            }));
+            const url = `${API_BASE}/purchases/by-shop-date/?shop_id=${shopId}&purchase_date=${d}`;
+            const res = await fetch(url, {
+              headers: authHeadersNoJson,
+              signal: controller.signal,
+            });
+            if (!res.ok) {
+              historyCacheRef.current.set(cacheKey, []);
+              return [];
+            }
+            const data = await res.json().catch(() => []);
+            if (!Array.isArray(data)) {
+              historyCacheRef.current.set(cacheKey, []);
+              return [];
+            }
+
+            const mapped = data.map((pl) => {
+              const fallbackWholesale = stockByItemId[pl.item_id]?.wholesale_price_per_piece || "";
+              const fallbackRetail = stockByItemId[pl.item_id]?.selling_price_per_piece || "";
+              return {
+                id: `h-db-${pl.id}`,
+                isFromDb: true,
+                dbId: pl.id,
+                itemId: pl.item_id,
+                qtyUnits: pl.quantity,
+                newUnitCost: pl.unit_cost_price,
+                newWholesalePerPiece: pickLineWholesale(pl, fallbackWholesale),
+                newRetailPerPiece: pickLineRetail(pl, fallbackRetail),
+                purchaseDate: d,
+              };
+            });
+
+            historyCacheRef.current.set(cacheKey, mapped);
+            return mapped;
           })
         );
 
         for (const arr of results) collected.push(...arr);
+
+        setHistoryProgress((p) => ({
+          done: Math.min(p.total, p.done + chunk.length),
+          total: p.total,
+        }));
       }
 
       collected.sort((a, b) => {
@@ -820,22 +925,28 @@ function ShopPurchasesPage() {
         return Number(b.dbId || 0) - Number(a.dbId || 0);
       });
 
+      if (controller.signal.aborted) return;
+      if (historyReqSeqRef.current !== mySeq) return;
+
       setHistoryLines(collected);
     } catch (e) {
+      if (String(e?.name || "") === "AbortError") return;
       console.error(e);
       setHistoryLines([]);
       setHistoryError(e?.message || "Failed to load history.");
     } finally {
-      setHistoryLoading(false);
+      if (historyReqSeqRef.current === mySeq) {
+        setHistoryLoading(false);
+      }
     }
   };
 
   useEffect(() => {
     if (activeTab !== 2) return;
-    if (!stockRows.length) return;
+    // ✅ IMPORTANT FIX: do NOT block history when stockRows is empty
     loadHistoryRangeLines();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, historyRunToken, historyRefreshToken, stockRows]);
+  }, [activeTab, historyRunToken, historyRefreshToken]);
 
   const historyLinesWithComputed = useMemo(() => {
     return historyLines.map((line) => {
@@ -888,7 +999,6 @@ function ShopPurchasesPage() {
     setMessage("");
     setError("");
     setHistoryError("");
-    // LoadExistingLines will run after purchaseDate changes. Then user clicks the line to edit.
   };
 
   const handleSave = async () => {
@@ -912,7 +1022,7 @@ function ShopPurchasesPage() {
         invoice_number: invoiceNumber || null,
         lines: newLinesForSave.map((l) => ({
           item_id: l.itemId,
-          quantity: Number(l.qtyUnits || 0), // ✅ decimals allowed
+          quantity: Number(l.qtyUnits || 0),
           unit_cost_price: Number(l.newUnitCost || 0),
           wholesale_price_per_piece:
             l.newWholesalePerPiece === "" || l.newWholesalePerPiece == null ? null : Number(l.newWholesalePerPiece),
@@ -932,21 +1042,25 @@ function ShopPurchasesPage() {
         throw new Error(errData?.detail || `Failed to save purchase. Status: ${res.status}`);
       }
 
-      await res.json();
+      await res.json().catch(() => null);
+
       setMessage("Purchase saved and stock updated successfully.");
       setError("");
 
-      // ✅ KEY FIX: don't clear UI; reload saved lines so Tab 1 shows DB lines immediately
+      // ✅ KEY FIX: reload from backend (Tab 1 shows DB lines immediately)
       cancelAnyEdit();
       resetPadToDefaults();
+
+      await reloadStockRows();
       await loadExistingLines();
 
-      // ✅ Refresh Tab 2
+      // refresh history (Tab2)
       setHistoryRefreshToken((x) => x + 1);
 
-      // ✅ also keep Tab2 "connected" to this purchaseDate by default
-      setHistoryFrom(addDaysISO(purchaseDate, -30));
-      setHistoryTo(toISODate(purchaseDate));
+      // keep Tab2 aligned
+      const base = toISODate(purchaseDate) || todayISO();
+      setHistoryFrom(addDaysISO(base, -30));
+      setHistoryTo(base);
     } catch (err) {
       console.error(err);
       setError(err.message || "Failed to save purchase.");
@@ -956,7 +1070,6 @@ function ShopPurchasesPage() {
     }
   };
 
-  // ✅ Early returns
   if (loading) {
     return (
       <div style={{ padding: "32px" }}>
@@ -973,7 +1086,6 @@ function ShopPurchasesPage() {
     );
   }
 
-  // ✅ Purchase Pad white
   const padDark = false;
   const padBg = padDark ? "#0b1220" : "#ffffff";
   const padText = padDark ? "#e5e7eb" : "#111827";
@@ -1034,7 +1146,7 @@ function ShopPurchasesPage() {
 
   return (
     <div style={{ padding: "16px 24px 24px" }}>
-      {/* Header (same format, not sticky now) */}
+      {/* Header */}
       <div
         ref={headerRef}
         style={{
@@ -1089,7 +1201,6 @@ function ShopPurchasesPage() {
                   setHistoryError("");
                   setHistoryHint("");
 
-                  // ✅ Connect Tab2 to Tab1 (first time only)
                   if (!historyInitialized) {
                     const base = toISODate(purchaseDate) || todayISO();
                     setHistoryFrom(addDaysISO(base, -30));
@@ -1158,8 +1269,8 @@ function ShopPurchasesPage() {
             marginBottom: "1rem",
             padding: "0.6rem 0.8rem",
             borderRadius: "0.75rem",
-            backgroundColor: (error || historyError) ? "#fef2f2" : historyHint ? "#fffbeb" : "#ecfdf3",
-            color: (error || historyError) ? "#b91c1c" : historyHint ? "#92400e" : "#166534",
+            backgroundColor: error || historyError ? "#fef2f2" : historyHint ? "#fffbeb" : "#ecfdf3",
+            color: error || historyError ? "#b91c1c" : historyHint ? "#92400e" : "#166534",
             fontSize: "0.9rem",
           }}
         >
@@ -1167,7 +1278,7 @@ function ShopPurchasesPage() {
         </div>
       )}
 
-      {/* ======================= TAB 1 (your existing UI preserved) ======================= */}
+      {/* ======================= TAB 1 (unchanged UI) ======================= */}
       {activeTab === 1 && (
         <div
           style={{
@@ -1228,16 +1339,16 @@ function ShopPurchasesPage() {
                 <button
                   type="button"
                   onClick={handleSubmitPad}
-                  disabled={!stockRows.length || padSaving}
+                  disabled={padSaving}
                   style={{
                     padding: "0.55rem 1.3rem",
                     borderRadius: "9999px",
                     border: "none",
-                    backgroundColor: stockRows.length ? "#2563eb" : "#9ca3af",
+                    backgroundColor: "#2563eb",
                     color: "white",
                     fontWeight: 800,
                     fontSize: "0.9rem",
-                    cursor: !stockRows.length || padSaving ? "not-allowed" : "pointer",
+                    cursor: padSaving ? "not-allowed" : "pointer",
                     opacity: padSaving ? 0.8 : 1,
                   }}
                 >
@@ -1259,7 +1370,7 @@ function ShopPurchasesPage() {
                 items={pickerItems}
                 valueId={pad.itemId === "" ? "" : String(pad.itemId)}
                 onChangeId={(idStr) => updatePad("itemId", idStr)}
-                disabled={!stockRows.length || isEditingSaved}
+                disabled={isEditingSaved}
               />
 
               <div style={helperGridStyle}>
@@ -1314,7 +1425,7 @@ function ShopPurchasesPage() {
             </div>
           </div>
 
-          {/* LIST (unchanged) */}
+          {/* LIST (kept) */}
           {linesWithComputed.length === 0 ? (
             <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
               No items in this purchase date yet. Use the pad above and click <strong>{padButtonText}</strong>.
@@ -1401,7 +1512,7 @@ function ShopPurchasesPage() {
                             style={{ padding: 0, margin: 0, border: "none", background: "transparent", color: "#111827", fontWeight: 700, fontSize: "13px", cursor: "pointer", textAlign: "left" }}
                             title="Edit saved purchase line"
                           >
-                            {itemName || "Unknown item"}{" "}
+                            {itemName || `Item ${line.itemId}`}{" "}
                             {isEditingThisSaved ? <span style={{ color: "#2563eb", fontWeight: 800, marginLeft: 6 }}>(editing)</span> : null}
                           </button>
                         ) : (
@@ -1411,7 +1522,7 @@ function ShopPurchasesPage() {
                             style={{ padding: 0, margin: 0, border: "none", background: "transparent", color: "#2563eb", fontWeight: 600, fontSize: "13px", cursor: "pointer", textAlign: "left" }}
                             title="Edit new (unsaved) line"
                           >
-                            {itemName || "Unknown item"}
+                            {itemName || `Item ${line.itemId}`}
                           </button>
                         )}
                       </div>
@@ -1493,6 +1604,11 @@ function ShopPurchasesPage() {
               <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 4 }}>
                 Click an item to open its date in Tab 1 and edit inline.
               </div>
+              {historyLoading && historyProgress.total > 0 && (
+                <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 6 }}>
+                  Loading days: {historyProgress.done}/{historyProgress.total}
+                </div>
+              )}
             </div>
 
             <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "end" }}>
@@ -1653,7 +1769,7 @@ function ShopPurchasesPage() {
                           style={{ padding: 0, margin: 0, border: "none", background: "transparent", color: "#111827", fontWeight: 700, fontSize: "13px", cursor: "pointer", textAlign: "left" }}
                           title="Open this date in Tab 1"
                         >
-                          {itemName || "Unknown item"}
+                          {itemName || `Item ${line.itemId}`}
                         </button>
                         <div style={{ fontSize: "11px", color: "#6b7280", marginTop: 2 }}>
                           Date: {line.purchaseDate}
