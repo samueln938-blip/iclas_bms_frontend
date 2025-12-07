@@ -8,36 +8,39 @@ import { API_BASE as CLIENT_API_BASE } from "../../api/client.jsx";
 const API_BASE = CLIENT_API_BASE;
 
 /**
- * ✅ Quantity formatter (supports decimals):
- * - shows integers clean (e.g. 50)
- * - shows decimals when present (e.g. 49.5, 0.25)
+ * ✅ For integer-like values (IDs, pieces-per-unit)
+ * NOTE: This will round if you pass decimals, so only use it for true integers.
  */
-function formatQty(value, maxFractionDigits = 3) {
+function formatInt(value) {
   if (value === null || value === undefined || value === "") return "0";
   const num = Number(value);
   if (!Number.isFinite(num)) return String(value);
+  return Math.round(num).toLocaleString("en-RW", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  });
+}
 
+/**
+ * ✅ For quantities that may be decimals (0.5 units, 0.25 pieces, etc.)
+ * Shows up to N decimals without forcing trailing zeros.
+ */
+function formatQty(value, maxFractionDigits = 2) {
+  if (value === null || value === undefined || value === "") return "0";
+  const num = Number(value);
+  if (!Number.isFinite(num)) return String(value);
   return num.toLocaleString("en-RW", {
     minimumFractionDigits: 0,
     maximumFractionDigits: maxFractionDigits,
   });
 }
 
-/**
- * ✅ Money formatter (RWF style):
- * - keeps your 0-decimal look for normal values
- * - but if backend returns decimals, show up to 2 (useful for /piece)
- */
 function formatMoney(value) {
   if (value === null || value === undefined || value === "") return "0";
-  const num = Number(value);
-  if (!Number.isFinite(num)) return "0";
-
-  const isInt = Math.abs(num - Math.round(num)) < 1e-9;
-
+  const num = Number(value) || 0;
   return num.toLocaleString("en-RW", {
     minimumFractionDigits: 0,
-    maximumFractionDigits: isInt ? 0 : 2,
+    maximumFractionDigits: 0,
   });
 }
 
@@ -64,7 +67,7 @@ function ShopStockPage() {
 
   // ✅ Low stock controls
   const [lowStockMode, setLowStockMode] = useState("PIECES"); // "PIECES" | "UNITS"
-  const [lowStockThreshold, setLowStockThreshold] = useState(10); // supports decimals now
+  const [lowStockThreshold, setLowStockThreshold] = useState(10); // can be decimal now
 
   // sort configuration
   const [sortConfig, setSortConfig] = useState({
@@ -116,7 +119,7 @@ function ShopStockPage() {
     }
 
     return () => controller.abort();
-  }, [shopId, authHeadersNoJson]);
+  }, [API_BASE, shopId, authHeadersNoJson]);
 
   useEffect(() => {
     loadData();
@@ -124,7 +127,9 @@ function ShopStockPage() {
 
   // ✅ Auto-refresh when you come back to the browser tab/window
   useEffect(() => {
-    const onFocus = () => forceReload();
+    const onFocus = () => {
+      forceReload();
+    };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -133,11 +138,10 @@ function ShopStockPage() {
   // Map raw stock records into the row shape used by the table
   const baseRows = useMemo(() => {
     return (stockRows || []).map((s) => {
-      const piecesPerUnit =
-        s.item_pieces_per_unit != null ? Number(s.item_pieces_per_unit) : 1;
+      const piecesPerUnit = s.item_pieces_per_unit != null ? Number(s.item_pieces_per_unit) : 1;
 
-      const totalUnits = Number(s.total_quantity || 0);
-      const soldPieces = Number(s.total_pieces_sold || 0);
+      const totalUnits = Number(s.total_quantity || 0); // ✅ may be decimal
+      const soldPieces = Number(s.total_pieces_sold || 0); // ✅ may be decimal
 
       const defaultUnitCost = Number(s.default_unit_cost_price || 0);
       const recentUnitCost = Number(s.last_purchase_unit_price || 0);
@@ -147,13 +151,13 @@ function ShopStockPage() {
 
       const totalPieces =
         "total_pieces" in s
-          ? Number(s.total_pieces || 0)
-          : totalUnits * piecesPerUnit;
+          ? Number(s.total_pieces || 0) // ✅ may be decimal if backend supports
+          : totalUnits * (piecesPerUnit || 1);
 
       const remainingPieces =
         "remaining_pieces" in s
-          ? Number(s.remaining_pieces || 0)
-          : Math.max(totalPieces - soldPieces, 0);
+          ? Number(s.remaining_pieces || 0) // ✅ may be decimal
+          : totalPieces - soldPieces; // ✅ keep decimals (don’t clamp/round)
 
       const costPerPiece =
         "purchase_cost_per_piece" in s
@@ -222,6 +226,7 @@ function ShopStockPage() {
       if (remaining <= 0) return false;
 
       const ppu = Number(r.piecesPerUnit || 1) > 0 ? Number(r.piecesPerUnit || 1) : 1;
+
       const thresholdPieces = lowStockMode === "UNITS" ? th * ppu : th;
 
       return remaining <= thresholdPieces;
@@ -290,6 +295,7 @@ function ShopStockPage() {
     return { stockValue, expectedSaleValue, expectedInterest };
   }, [filteredRows]);
 
+  // helper: change sort when clicking a header
   const handleSort = (key) => {
     setSortConfig((prev) => {
       if (prev.key === key) {
@@ -299,6 +305,7 @@ function ShopStockPage() {
     });
   };
 
+  // helper: show arrow icon
   const getSortIndicator = (key) => {
     if (sortConfig.key !== key) return "↕";
     return sortConfig.direction === "asc" ? "▲" : "▼";
@@ -415,6 +422,7 @@ function ShopStockPage() {
             marginBottom: "6px",
           }}
         >
+          {/* Title */}
           <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
             <button
               onClick={() => navigate(`/shops/${shopId}`)}
@@ -461,10 +469,7 @@ function ShopStockPage() {
               {lastLoadedAt ? (
                 <span style={{ fontSize: "12px", color: "#6b7280" }}>
                   Updated:{" "}
-                  {lastLoadedAt.toLocaleTimeString("en-RW", {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
+                  {lastLoadedAt.toLocaleTimeString("en-RW", { hour: "2-digit", minute: "2-digit" })}
                 </span>
               ) : null}
             </div>
@@ -553,15 +558,27 @@ function ShopStockPage() {
               All <span style={tinyBadge(activeTab === "ALL")}>{baseRows.length}</span>
             </button>
 
-            <button type="button" onClick={() => setActiveTab("IN_STOCK")} style={tabButtonStyle(activeTab === "IN_STOCK")}>
+            <button
+              type="button"
+              onClick={() => setActiveTab("IN_STOCK")}
+              style={tabButtonStyle(activeTab === "IN_STOCK")}
+            >
               In stock <span style={tinyBadge(activeTab === "IN_STOCK")}>{inStockRows.length}</span>
             </button>
 
-            <button type="button" onClick={() => setActiveTab("LOW_STOCK")} style={tabButtonStyle(activeTab === "LOW_STOCK")}>
+            <button
+              type="button"
+              onClick={() => setActiveTab("LOW_STOCK")}
+              style={tabButtonStyle(activeTab === "LOW_STOCK")}
+            >
               Low stock <span style={tinyBadge(activeTab === "LOW_STOCK")}>{lowStockRows.length}</span>
             </button>
 
-            <button type="button" onClick={() => setActiveTab("ZERO_STOCK")} style={tabButtonStyle(activeTab === "ZERO_STOCK")}>
+            <button
+              type="button"
+              onClick={() => setActiveTab("ZERO_STOCK")}
+              style={tabButtonStyle(activeTab === "ZERO_STOCK")}
+            >
               0 stock <span style={tinyBadge(activeTab === "ZERO_STOCK")}>{zeroStockRows.length}</span>
             </button>
 
@@ -572,7 +589,7 @@ function ShopStockPage() {
                 type="number"
                 min={0.01}
                 step="0.01"
-                value={Number(lowStockThreshold || 0)}
+                value={lowStockThreshold}
                 onChange={(e) => setLowStockThreshold(Number(e.target.value || 0))}
                 style={smallInputStyle}
               />
@@ -729,9 +746,7 @@ function ShopStockPage() {
 
           {/* BODY ROWS */}
           {sortedRows.length === 0 ? (
-            <div style={{ padding: "16px", fontSize: "14px", color: "#6b7280" }}>
-              No items found for this shop.
-            </div>
+            <div style={{ padding: "16px", fontSize: "14px", color: "#6b7280" }}>No items found for this shop.</div>
           ) : (
             sortedRows.map((row) => (
               <div
@@ -766,23 +781,25 @@ function ShopStockPage() {
 
                 <div>{row.category || "-"}</div>
 
-                {/* ✅ quantities now show decimals */}
-                <div>{formatQty(row.totalUnits)}</div>
+                {/* ✅ DECIMALS IMPORTANT */}
+                <div>{formatQty(row.totalUnits, 2)}</div>
 
                 <div>{formatMoney(row.defaultUnitCost)}</div>
                 <div>{formatMoney(row.recentUnitCost)}</div>
                 <div>{formatMoney(row.totalCostRecentUnits)}</div>
 
-                <div>{formatQty(row.piecesPerUnit)}</div>
-                <div>{formatQty(row.totalPieces)}</div>
-                <div>{formatQty(row.soldPieces)}</div>
-                <div>{formatQty(row.remainingPieces)}</div>
+                {/* piecesPerUnit is usually integer */}
+                <div>{formatInt(row.piecesPerUnit)}</div>
+
+                {/* ✅ These may be decimals now */}
+                <div>{formatQty(row.totalPieces, 2)}</div>
+                <div>{formatQty(row.soldPieces, 2)}</div>
+                <div>{formatQty(row.remainingPieces, 2)}</div>
 
                 <div>{formatMoney(row.costPerPiece)}</div>
                 <div>{formatMoney(row.wholesalePerPiece)}</div>
                 <div>{formatMoney(row.salePerPiece)}</div>
                 <div>{formatMoney(row.interestPerPiece)}</div>
-
                 <div>{formatMoney(row.stockValue)}</div>
                 <div>{formatMoney(row.expectedSaleValue)}</div>
                 <div>{formatMoney(row.expectedInterest)}</div>
