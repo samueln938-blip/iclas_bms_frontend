@@ -40,23 +40,27 @@ function todayISO() {
   return `${y}-${m}-${day}`;
 }
 
-// ✅ Normalize "YYYY-MM-DD" or "DD/MM/YYYY"
+// ✅ Normalize "YYYY-MM-DD" or "DD/MM/YYYY" (some browsers display dd/mm)
 function toISODate(raw) {
   const s = String(raw || "").trim();
   if (!s) return "";
 
+  // already ISO
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
 
+  // dd/mm/yyyy
   if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
     const [dd, mm, yyyy] = s.split("/");
     return `${yyyy}-${mm}-${dd}`;
   }
 
+  // dd-mm-yyyy
   if (/^\d{2}-\d{2}-\d{4}$/.test(s)) {
     const [dd, mm, yyyy] = s.split("-");
     return `${yyyy}-${mm}-${dd}`;
   }
 
+  // last resort: Date parse
   const dt = new Date(s);
   if (!Number.isFinite(dt.getTime())) return "";
   const y = dt.getFullYear();
@@ -70,6 +74,7 @@ function parseISOToDate(iso) {
   if (!v) return null;
   const [y, m, d] = v.split("-").map((x) => Number(x));
   if (!y || !m || !d) return null;
+  // local date at noon to avoid DST issues
   return new Date(y, m - 1, d, 12, 0, 0, 0);
 }
 
@@ -87,24 +92,12 @@ function addDaysISO(iso, deltaDays) {
   return fmtDateLocal(dt);
 }
 
-// ✅ Return list of ISO dates inclusive
+// ✅ Return list of ISO dates inclusive (safe + robust)
 function listDaysInclusive(fromISO, toISO, maxDaysHard = 366) {
   const f = parseISOToDate(fromISO);
   const t = parseISOToDate(toISO);
-  if (!f || !t)
-    return {
-      ok: false,
-      error: "Choose valid From and To dates.",
-      days: [],
-      daysCount: 0,
-    };
-  if (f.getTime() > t.getTime())
-    return {
-      ok: false,
-      error: '"From" date must be <= "To" date.',
-      days: [],
-      daysCount: 0,
-    };
+  if (!f || !t) return { ok: false, error: "Choose valid From and To dates.", days: [], daysCount: 0 };
+  if (f.getTime() > t.getTime()) return { ok: false, error: '"From" date must be <= "To" date.', days: [], daysCount: 0 };
 
   const msPerDay = 24 * 60 * 60 * 1000;
   const diffDays = Math.floor((t.getTime() - f.getTime()) / msPerDay) + 1;
@@ -128,7 +121,10 @@ function listDaysInclusive(fromISO, toISO, maxDaysHard = 366) {
 }
 
 /**
- * ✅ Mobile-friendly searchable dropdown
+ * ✅ Mobile-friendly searchable dropdown:
+ * - type to search (keyboard appears on phone)
+ * - scroll list below
+ * - click to select
  */
 function ItemComboBox({ items, valueId, onChangeId, disabled }) {
   const wrapRef = useRef(null);
@@ -140,6 +136,7 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
     return items.find((it) => String(it.id) === String(valueId)) || null;
   }, [items, valueId]);
 
+  // Keep input text aligned with selected item when dropdown closes
   useEffect(() => {
     if (!open) setQ(selected ? selected.label : "");
   }, [selected, open]);
@@ -152,6 +149,7 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
       .slice(0, 500);
   }, [items, q]);
 
+  // Close on outside click
   useEffect(() => {
     const onDown = (e) => {
       if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
@@ -170,7 +168,7 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
     <div ref={wrapRef} style={{ position: "relative", width: "100%" }}>
       <div style={{ position: "relative" }}>
         <input
-          value={disabled ? selected?.label || "" : q}
+          value={disabled ? (selected?.label || "") : q}
           onChange={(e) => {
             setQ(e.target.value);
             setOpen(true);
@@ -284,25 +282,6 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
   );
 }
 
-// --- helper: pick prices from purchase line if backend returns them ---
-function pickLineWholesale(pl, fallback) {
-  const v =
-    pl?.wholesale_price_per_piece ??
-    pl?.wholesale_per_piece ??
-    pl?.wholesale_price ??
-    null;
-  return v === null || v === undefined || v === "" ? fallback : v;
-}
-function pickLineRetail(pl, fallback) {
-  const v =
-    pl?.retail_price_per_piece ??
-    pl?.selling_price_per_piece ??
-    pl?.retail_per_piece ??
-    pl?.retail_price ??
-    null;
-  return v === null || v === undefined || v === "" ? fallback : v;
-}
-
 function ShopPurchasesPage() {
   const { shopId } = useParams();
   const navigate = useNavigate();
@@ -345,6 +324,7 @@ function ShopPurchasesPage() {
   });
 
   const [editingLineId, setEditingLineId] = useState(null);
+
   const [editingDbId, setEditingDbId] = useState(null);
   const [editingDbUiId, setEditingDbUiId] = useState(null);
 
@@ -378,17 +358,83 @@ function ShopPurchasesPage() {
   const [historyHint, setHistoryHint] = useState("");
   const [historySearchTerm, setHistorySearchTerm] = useState("");
   const [historyLines, setHistoryLines] = useState([]);
-  const [historyProgress, setHistoryProgress] = useState({ done: 0, total: 0 });
 
-  // ✅ best practice: cache + abort for history fetch
-  const historyCacheRef = useRef(new Map()); // key: `${shopId}|${date}`
-  const historyAbortRef = useRef(null);
-  const historyReqSeqRef = useRef(0);
+  // ✅ NEW: remember history range per shop (so you are never "blocked" by dates)
+  const HISTORY_RANGE_KEY = useMemo(() => `iclas_purchases_history_range_shop_${shopId}`, [shopId]);
 
-  useEffect(() => {
-    // clear cache when switching shop
-    historyCacheRef.current = new Map();
-  }, [shopId]);
+  // ✅ NEW: range label shown in UI
+  const [historyRangeLabel, setHistoryRangeLabel] = useState("");
+
+  // ✅ NEW: helper to persist/restore range
+  const persistHistoryRange = (fromIso, toIso, label) => {
+    try {
+      const payload = {
+        from: toISODate(fromIso),
+        to: toISODate(toIso),
+        label: String(label || ""),
+        savedAt: Date.now(),
+      };
+      localStorage.setItem(HISTORY_RANGE_KEY, JSON.stringify(payload));
+    } catch {
+      // ignore (private browsing etc.)
+    }
+  };
+
+  const restoreHistoryRange = () => {
+    try {
+      const raw = localStorage.getItem(HISTORY_RANGE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      const f = toISODate(parsed?.from);
+      const t = toISODate(parsed?.to);
+      if (!f || !t) return null;
+      return { from: f, to: t, label: String(parsed?.label || "") };
+    } catch {
+      return null;
+    }
+  };
+
+  // ✅ NEW: apply preset range (mobile-friendly, one tap)
+  const applyHistoryRange = (fromIso, toIso, label, autoRun = true) => {
+    const f = toISODate(fromIso);
+    const t = toISODate(toIso);
+    if (!f || !t) return;
+
+    setHistoryFrom(f);
+    setHistoryTo(t);
+    setHistoryRangeLabel(label || "");
+    persistHistoryRange(f, t, label || "");
+
+    if (autoRun) setHistoryRunToken((x) => x + 1);
+  };
+
+  // ✅ NEW: convenience presets
+  const presetToday = () => {
+    const t = todayISO();
+    applyHistoryRange(t, t, "Today");
+  };
+
+  const presetLastNDays = (n) => {
+    const t = todayISO();
+    applyHistoryRange(addDaysISO(t, -(Number(n) - 1)), t, `Last ${n}d`);
+  };
+
+  const presetThisMonth = () => {
+    const now = new Date();
+    const from = fmtDateLocal(new Date(now.getFullYear(), now.getMonth(), 1, 12, 0, 0, 0));
+    const to = todayISO();
+    applyHistoryRange(from, to, "This month");
+  };
+
+  const presetThisYear = () => {
+    const now = new Date();
+    const from = fmtDateLocal(new Date(now.getFullYear(), 0, 1, 12, 0, 0, 0));
+    const to = todayISO();
+    applyHistoryRange(from, to, "This year");
+  };
+
+  // ✅ NEW: smart expand when range returns 0 rows
+  const [historySmartExpandVisible, setHistorySmartExpandVisible] = useState(false);
 
   const resetPadToDefaults = () => {
     setPad({
@@ -413,20 +459,6 @@ function ShopPurchasesPage() {
     padRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
-  const reloadStockRows = async () => {
-    try {
-      const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`, {
-        headers: authHeadersNoJson,
-      });
-      if (!stockRes.ok) return;
-      const stockData = await stockRes.json();
-      setStockRows(stockData || []);
-    } catch (e) {
-      // silent: stock is supportive data; don't break UX
-      console.error("reloadStockRows failed:", e);
-    }
-  };
-
   useEffect(() => {
     async function loadData() {
       setLoading(true);
@@ -434,15 +466,11 @@ function ShopPurchasesPage() {
       setMessage("");
 
       try {
-        const shopRes = await fetch(`${API_BASE}/shops/${shopId}`, {
-          headers: authHeadersNoJson,
-        });
+        const shopRes = await fetch(`${API_BASE}/shops/${shopId}`, { headers: authHeadersNoJson });
         if (!shopRes.ok) throw new Error("Failed to load shop.");
         const shopData = await shopRes.json();
 
-        const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`, {
-          headers: authHeadersNoJson,
-        });
+        const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`, { headers: authHeadersNoJson });
         if (!stockRes.ok) throw new Error("Failed to load stock.");
         const stockData = await stockRes.json();
 
@@ -467,7 +495,7 @@ function ShopPurchasesPage() {
 
   const shopName = shop?.name || `Shop ${shopId}`;
 
-  // ✅ Items list for combobox
+  // ✅ Items list for combobox (HOOK SAFE)
   const pickerItems = useMemo(
     () =>
       (stockRows || []).map((s) => ({
@@ -483,52 +511,39 @@ function ShopPurchasesPage() {
   }, [stockRows]);
 
   const loadExistingLines = async () => {
-    // ✅ IMPORTANT FIX: do NOT depend on stockRows length
-    // (history items may exist even if stock endpoint doesn't return them)
+    if (!stockRows.length) {
+      setLines([]);
+      return;
+    }
+
     try {
       const iso = toISODate(purchaseDate);
-      if (!iso) {
-        setLines([]);
-        return;
-      }
-
       const url = `${API_BASE}/purchases/by-shop-date/?shop_id=${shopId}&purchase_date=${iso}`;
       const res = await fetch(url, { headers: authHeadersNoJson });
-      if (!res.ok) {
-        setLines([]);
-        return;
-      }
+      if (!res.ok) return;
       const data = await res.json();
 
-      const mapped = (data || []).map((pl) => {
-        const fallbackWholesale = stockByItemId[pl.item_id]?.wholesale_price_per_piece || "";
-        const fallbackRetail = stockByItemId[pl.item_id]?.selling_price_per_piece || "";
-        return {
-          id: `db-${pl.id}`,
-          isFromDb: true,
-          dbId: pl.id,
-          itemId: pl.item_id,
-          qtyUnits: pl.quantity,
-          newUnitCost: pl.unit_cost_price,
-          // ✅ prefer values from purchase line if backend provides them
-          newWholesalePerPiece: pickLineWholesale(pl, fallbackWholesale),
-          newRetailPerPiece: pickLineRetail(pl, fallbackRetail),
-          purchaseDate: iso,
-        };
-      });
+      const mapped = (data || []).map((pl) => ({
+        id: `db-${pl.id}`,
+        isFromDb: true,
+        dbId: pl.id,
+        itemId: pl.item_id,
+        qtyUnits: pl.quantity,
+        newUnitCost: pl.unit_cost_price,
+        newWholesalePerPiece: stockByItemId[pl.item_id]?.wholesale_price_per_piece || "",
+        newRetailPerPiece: stockByItemId[pl.item_id]?.selling_price_per_piece || "",
+      }));
 
       setLines(mapped);
     } catch (err) {
       console.error("Error loading existing purchase lines:", err);
-      // don't hard-fail UI
-      setLines([]);
     }
   };
 
   useEffect(() => {
     loadExistingLines();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shopId, purchaseDate, stockByItemId, authHeadersNoJson]);
+  }, [shopId, purchaseDate, stockRows, stockByItemId]);
 
   useEffect(() => {
     cancelAnyEdit();
@@ -628,7 +643,6 @@ function ShopPurchasesPage() {
     setPadSaving(true);
     setError("");
     setMessage("");
-    setHistoryError("");
 
     try {
       const res = await fetch(`${API_BASE}/purchases/lines/${dbId}`, {
@@ -642,15 +656,9 @@ function ShopPurchasesPage() {
       }
 
       await res.json().catch(() => null);
-
-      // ✅ sync UI from backend after delete
       setMessage("Saved purchase line deleted and stock recalculated.");
       cancelAnyEdit();
-
-      await reloadStockRows();
       await loadExistingLines();
-
-      // refresh history
       setHistoryRefreshToken((x) => x + 1);
     } catch (err) {
       console.error(err);
@@ -662,12 +670,15 @@ function ShopPurchasesPage() {
   };
 
   const handleSubmitPad = async () => {
+    if (!stockRows.length) return;
+
     const itemId = Number(pad.itemId || 0);
     if (!itemId) {
       setError("Select an item in the pad before saving.");
       return;
     }
 
+    // ✅ Allow 0.5 units etc (only require > 0)
     const qtyUnits = Number(pad.qtyUnits || 0);
     if (qtyUnits <= 0) {
       setError("Quantity (units) must be greater than zero.");
@@ -711,12 +722,8 @@ function ShopPurchasesPage() {
         }
 
         await res.json().catch(() => null);
-
-        // ✅ reload after update
         setMessage("Saved purchase line updated and stock recalculated.");
-        await reloadStockRows();
         await loadExistingLines();
-
         cancelAnyEdit();
         scrollPadIntoView();
 
@@ -732,7 +739,6 @@ function ShopPurchasesPage() {
       }
     }
 
-    // new (unsaved) list item
     if (editingLineId === null) {
       setLines((prev) => [
         ...prev,
@@ -783,6 +789,8 @@ function ShopPurchasesPage() {
 
       const newCostPerPiece = piecesPerUnit > 0 ? newUnitCost / piecesPerUnit : 0;
       const lineTotal = qtyUnits * newUnitCost;
+
+      // ✅ New column value
       const allPieces = qtyUnits * piecesPerUnit;
 
       return {
@@ -824,21 +832,10 @@ function ShopPurchasesPage() {
 
   // -------------------- TAB 2: HISTORY LOADER --------------------
   const loadHistoryRangeLines = async () => {
-    // abort previous
-    if (historyAbortRef.current) {
-      try {
-        historyAbortRef.current.abort();
-      } catch {}
-    }
-    const controller = new AbortController();
-    historyAbortRef.current = controller;
-
-    const mySeq = ++historyReqSeqRef.current;
-
     setHistoryLoading(true);
     setHistoryError("");
     setHistoryHint("");
-    setHistoryProgress({ done: 0, total: 0 });
+    setHistorySmartExpandVisible(false);
 
     try {
       const fromISO = toISODate(historyFrom);
@@ -852,70 +849,44 @@ function ShopPurchasesPage() {
       }
 
       if (chk.daysCount > 93) {
-        setHistoryHint(`Large range (${chk.daysCount} days). It may be slower. Tip: use Last 30d.`);
+        setHistoryHint(`Large range (${chk.daysCount} days). It may be slower. Tip: use Last 30d or Last 90d.`);
       }
 
+      // ✅ Always use the endpoint we KNOW works for you (same as Tab 1):
+      // /purchases/by-shop-date/?shop_id=...&purchase_date=YYYY-MM-DD
       const days = chk.days;
-      setHistoryProgress({ done: 0, total: days.length });
 
+      // ✅ small concurrency for speed (doesn't overload server)
       const CONCURRENCY = 8;
       const collected = [];
 
       for (let i = 0; i < days.length; i += CONCURRENCY) {
-        if (controller.signal.aborted) return;
-        if (historyReqSeqRef.current !== mySeq) return;
-
         const chunk = days.slice(i, i + CONCURRENCY);
 
         // eslint-disable-next-line no-await-in-loop
         const results = await Promise.all(
           chunk.map(async (d) => {
-            const cacheKey = `${shopId}|${d}`;
-            const cached = historyCacheRef.current.get(cacheKey);
-            if (cached) return cached;
-
             const url = `${API_BASE}/purchases/by-shop-date/?shop_id=${shopId}&purchase_date=${d}`;
-            const res = await fetch(url, {
-              headers: authHeadersNoJson,
-              signal: controller.signal,
-            });
-            if (!res.ok) {
-              historyCacheRef.current.set(cacheKey, []);
-              return [];
-            }
+            const res = await fetch(url, { headers: authHeadersNoJson });
+            if (!res.ok) return [];
             const data = await res.json().catch(() => []);
-            if (!Array.isArray(data)) {
-              historyCacheRef.current.set(cacheKey, []);
-              return [];
-            }
+            if (!Array.isArray(data)) return [];
 
-            const mapped = data.map((pl) => {
-              const fallbackWholesale = stockByItemId[pl.item_id]?.wholesale_price_per_piece || "";
-              const fallbackRetail = stockByItemId[pl.item_id]?.selling_price_per_piece || "";
-              return {
-                id: `h-db-${pl.id}`,
-                isFromDb: true,
-                dbId: pl.id,
-                itemId: pl.item_id,
-                qtyUnits: pl.quantity,
-                newUnitCost: pl.unit_cost_price,
-                newWholesalePerPiece: pickLineWholesale(pl, fallbackWholesale),
-                newRetailPerPiece: pickLineRetail(pl, fallbackRetail),
-                purchaseDate: d,
-              };
-            });
-
-            historyCacheRef.current.set(cacheKey, mapped);
-            return mapped;
+            return data.map((pl) => ({
+              id: `h-db-${pl.id}`,
+              isFromDb: true,
+              dbId: pl.id,
+              itemId: pl.item_id,
+              qtyUnits: pl.quantity,
+              newUnitCost: pl.unit_cost_price,
+              newWholesalePerPiece: stockByItemId[pl.item_id]?.wholesale_price_per_piece || "",
+              newRetailPerPiece: stockByItemId[pl.item_id]?.selling_price_per_piece || "",
+              purchaseDate: d,
+            }));
           })
         );
 
         for (const arr of results) collected.push(...arr);
-
-        setHistoryProgress((p) => ({
-          done: Math.min(p.total, p.done + chunk.length),
-          total: p.total,
-        }));
       }
 
       collected.sort((a, b) => {
@@ -925,28 +896,33 @@ function ShopPurchasesPage() {
         return Number(b.dbId || 0) - Number(a.dbId || 0);
       });
 
-      if (controller.signal.aborted) return;
-      if (historyReqSeqRef.current !== mySeq) return;
-
       setHistoryLines(collected);
+
+      // ✅ NEW: if 0 results, show smart expand options (so you are not blocked by date)
+      if ((collected || []).length === 0) {
+        setHistorySmartExpandVisible(true);
+        setHistoryHint("No purchases found in this range. Try expanding the range below.");
+      } else {
+        setHistorySmartExpandVisible(false);
+      }
+
+      // ✅ NEW: persist range every time it successfully runs
+      persistHistoryRange(fromISO, toISO, historyRangeLabel || "");
     } catch (e) {
-      if (String(e?.name || "") === "AbortError") return;
       console.error(e);
       setHistoryLines([]);
       setHistoryError(e?.message || "Failed to load history.");
     } finally {
-      if (historyReqSeqRef.current === mySeq) {
-        setHistoryLoading(false);
-      }
+      setHistoryLoading(false);
     }
   };
 
   useEffect(() => {
     if (activeTab !== 2) return;
-    // ✅ IMPORTANT FIX: do NOT block history when stockRows is empty
+    if (!stockRows.length) return;
     loadHistoryRangeLines();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, historyRunToken, historyRefreshToken]);
+  }, [activeTab, historyRunToken, historyRefreshToken, stockRows]);
 
   const historyLinesWithComputed = useMemo(() => {
     return historyLines.map((line) => {
@@ -999,6 +975,8 @@ function ShopPurchasesPage() {
     setMessage("");
     setError("");
     setHistoryError("");
+    setHistoryHint("");
+    // LoadExistingLines will run after purchaseDate changes. Then user clicks the line to edit.
   };
 
   const handleSave = async () => {
@@ -1022,7 +1000,7 @@ function ShopPurchasesPage() {
         invoice_number: invoiceNumber || null,
         lines: newLinesForSave.map((l) => ({
           item_id: l.itemId,
-          quantity: Number(l.qtyUnits || 0),
+          quantity: Number(l.qtyUnits || 0), // ✅ decimals allowed
           unit_cost_price: Number(l.newUnitCost || 0),
           wholesale_price_per_piece:
             l.newWholesalePerPiece === "" || l.newWholesalePerPiece == null ? null : Number(l.newWholesalePerPiece),
@@ -1042,25 +1020,24 @@ function ShopPurchasesPage() {
         throw new Error(errData?.detail || `Failed to save purchase. Status: ${res.status}`);
       }
 
-      await res.json().catch(() => null);
-
+      await res.json();
       setMessage("Purchase saved and stock updated successfully.");
       setError("");
 
-      // ✅ KEY FIX: reload from backend (Tab 1 shows DB lines immediately)
+      // ✅ KEY FIX: don't clear UI; reload saved lines so Tab 1 shows DB lines immediately
       cancelAnyEdit();
       resetPadToDefaults();
-
-      await reloadStockRows();
       await loadExistingLines();
 
-      // refresh history (Tab2)
+      // ✅ Refresh Tab 2
       setHistoryRefreshToken((x) => x + 1);
 
-      // keep Tab2 aligned
+      // ✅ keep Tab2 "connected" to this purchaseDate by default (but do NOT override user's saved range)
       const base = toISODate(purchaseDate) || todayISO();
-      setHistoryFrom(addDaysISO(base, -30));
-      setHistoryTo(base);
+      // only if user hasn't customized & saved a range yet, or history not initialized
+      if (!historyInitialized) {
+        applyHistoryRange(addDaysISO(base, -30), base, "Last 30d", false);
+      }
     } catch (err) {
       console.error(err);
       setError(err.message || "Failed to save purchase.");
@@ -1070,6 +1047,7 @@ function ShopPurchasesPage() {
     }
   };
 
+  // ✅ Early returns
   if (loading) {
     return (
       <div style={{ padding: "32px" }}>
@@ -1086,6 +1064,7 @@ function ShopPurchasesPage() {
     );
   }
 
+  // ✅ Purchase Pad white
   const padDark = false;
   const padBg = padDark ? "#0b1220" : "#ffffff";
   const padText = padDark ? "#e5e7eb" : "#111827";
@@ -1144,9 +1123,23 @@ function ShopPurchasesPage() {
     cursor: "pointer",
   });
 
+  // ✅ NEW: small helper button style for history presets (mobile friendly)
+  const quickBtn = (dark = false) => ({
+    padding: "0.5rem 0.95rem",
+    borderRadius: "9999px",
+    border: dark ? "none" : "1px solid #d1d5db",
+    backgroundColor: dark ? "#111827" : "#ffffff",
+    color: dark ? "#ffffff" : "#111827",
+    fontWeight: 800,
+    fontSize: "0.85rem",
+    cursor: "pointer",
+    height: 40,
+    whiteSpace: "nowrap",
+  });
+
   return (
     <div style={{ padding: "16px 24px 24px" }}>
-      {/* Header */}
+      {/* Header (same format, not sticky now) */}
       <div
         ref={headerRef}
         style={{
@@ -1201,10 +1194,24 @@ function ShopPurchasesPage() {
                   setHistoryError("");
                   setHistoryHint("");
 
+                  // ✅ NEW: restore last-used range from localStorage (if exists)
+                  const restored = restoreHistoryRange();
+
                   if (!historyInitialized) {
+                    if (restored?.from && restored?.to) {
+                      setHistoryFrom(restored.from);
+                      setHistoryTo(restored.to);
+                      setHistoryRangeLabel(restored.label || "");
+                      setHistoryRunToken((x) => x + 1);
+                      setHistoryInitialized(true);
+                      return;
+                    }
+
+                    // ✅ fallback: connect Tab2 to Tab1 date
                     const base = toISODate(purchaseDate) || todayISO();
                     setHistoryFrom(addDaysISO(base, -30));
                     setHistoryTo(base);
+                    setHistoryRangeLabel("Last 30d");
                     setHistoryRunToken((x) => x + 1);
                     setHistoryInitialized(true);
                   }
@@ -1269,8 +1276,8 @@ function ShopPurchasesPage() {
             marginBottom: "1rem",
             padding: "0.6rem 0.8rem",
             borderRadius: "0.75rem",
-            backgroundColor: error || historyError ? "#fef2f2" : historyHint ? "#fffbeb" : "#ecfdf3",
-            color: error || historyError ? "#b91c1c" : historyHint ? "#92400e" : "#166534",
+            backgroundColor: (error || historyError) ? "#fef2f2" : historyHint ? "#fffbeb" : "#ecfdf3",
+            color: (error || historyError) ? "#b91c1c" : historyHint ? "#92400e" : "#166534",
             fontSize: "0.9rem",
           }}
         >
@@ -1278,7 +1285,7 @@ function ShopPurchasesPage() {
         </div>
       )}
 
-      {/* ======================= TAB 1 (unchanged UI) ======================= */}
+      {/* ======================= TAB 1 (your existing UI preserved) ======================= */}
       {activeTab === 1 && (
         <div
           style={{
@@ -1339,16 +1346,16 @@ function ShopPurchasesPage() {
                 <button
                   type="button"
                   onClick={handleSubmitPad}
-                  disabled={padSaving}
+                  disabled={!stockRows.length || padSaving}
                   style={{
                     padding: "0.55rem 1.3rem",
                     borderRadius: "9999px",
                     border: "none",
-                    backgroundColor: "#2563eb",
+                    backgroundColor: stockRows.length ? "#2563eb" : "#9ca3af",
                     color: "white",
                     fontWeight: 800,
                     fontSize: "0.9rem",
-                    cursor: padSaving ? "not-allowed" : "pointer",
+                    cursor: !stockRows.length || padSaving ? "not-allowed" : "pointer",
                     opacity: padSaving ? 0.8 : 1,
                   }}
                 >
@@ -1370,7 +1377,7 @@ function ShopPurchasesPage() {
                 items={pickerItems}
                 valueId={pad.itemId === "" ? "" : String(pad.itemId)}
                 onChangeId={(idStr) => updatePad("itemId", idStr)}
-                disabled={isEditingSaved}
+                disabled={!stockRows.length || isEditingSaved}
               />
 
               <div style={helperGridStyle}>
@@ -1425,7 +1432,7 @@ function ShopPurchasesPage() {
             </div>
           </div>
 
-          {/* LIST (kept) */}
+          {/* LIST (unchanged) */}
           {linesWithComputed.length === 0 ? (
             <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
               No items in this purchase date yet. Use the pad above and click <strong>{padButtonText}</strong>.
@@ -1512,7 +1519,7 @@ function ShopPurchasesPage() {
                             style={{ padding: 0, margin: 0, border: "none", background: "transparent", color: "#111827", fontWeight: 700, fontSize: "13px", cursor: "pointer", textAlign: "left" }}
                             title="Edit saved purchase line"
                           >
-                            {itemName || `Item ${line.itemId}`}{" "}
+                            {itemName || "Unknown item"}{" "}
                             {isEditingThisSaved ? <span style={{ color: "#2563eb", fontWeight: 800, marginLeft: 6 }}>(editing)</span> : null}
                           </button>
                         ) : (
@@ -1522,7 +1529,7 @@ function ShopPurchasesPage() {
                             style={{ padding: 0, margin: 0, border: "none", background: "transparent", color: "#2563eb", fontWeight: 600, fontSize: "13px", cursor: "pointer", textAlign: "left" }}
                             title="Edit new (unsaved) line"
                           >
-                            {itemName || `Item ${line.itemId}`}
+                            {itemName || "Unknown item"}
                           </button>
                         )}
                       </div>
@@ -1604,11 +1611,10 @@ function ShopPurchasesPage() {
               <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 4 }}>
                 Click an item to open its date in Tab 1 and edit inline.
               </div>
-              {historyLoading && historyProgress.total > 0 && (
-                <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 6 }}>
-                  Loading days: {historyProgress.done}/{historyProgress.total}
-                </div>
-              )}
+              <div style={{ fontSize: "11px", color: "#9ca3af", marginTop: 4 }}>
+                Showing: <strong>{toISODate(historyFrom)}</strong> → <strong>{toISODate(historyTo)}</strong>
+                {historyRangeLabel ? <span> · <strong>{historyRangeLabel}</strong></span> : null}
+              </div>
             </div>
 
             <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "end" }}>
@@ -1617,7 +1623,10 @@ function ShopPurchasesPage() {
                 <input
                   type="date"
                   value={toISODate(historyFrom)}
-                  onChange={(e) => setHistoryFrom(e.target.value)}
+                  onChange={(e) => {
+                    setHistoryFrom(e.target.value);
+                    setHistoryRangeLabel("");
+                  }}
                   style={{ padding: "8px 12px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px", backgroundColor: "#ffffff" }}
                 />
               </div>
@@ -1627,69 +1636,92 @@ function ShopPurchasesPage() {
                 <input
                   type="date"
                   value={toISODate(historyTo)}
-                  onChange={(e) => setHistoryTo(e.target.value)}
+                  onChange={(e) => {
+                    setHistoryTo(e.target.value);
+                    setHistoryRangeLabel("");
+                  }}
                   style={{ padding: "8px 12px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px", backgroundColor: "#ffffff" }}
                 />
               </div>
 
               <button
                 type="button"
-                onClick={() => setHistoryRunToken((x) => x + 1)}
-                style={{
-                  padding: "0.55rem 1.2rem",
-                  borderRadius: "9999px",
-                  border: "none",
-                  backgroundColor: "#111827",
-                  color: "white",
-                  fontWeight: 800,
-                  fontSize: "0.9rem",
-                  cursor: "pointer",
-                  height: 40,
+                onClick={() => {
+                  // persist immediately when user applies manual range
+                  persistHistoryRange(toISODate(historyFrom), toISODate(historyTo), "");
+                  setHistoryRunToken((x) => x + 1);
                 }}
+                style={quickBtn(true)}
               >
                 {historyLoading ? "Loading..." : "Apply"}
               </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  const t = todayISO();
-                  setHistoryFrom(t);
-                  setHistoryTo(t);
-                  setHistoryRunToken((x) => x + 1);
-                }}
-                style={{ padding: "0.5rem 1rem", borderRadius: "9999px", border: "1px solid #d1d5db", backgroundColor: "#ffffff", fontWeight: 800, fontSize: "0.85rem", cursor: "pointer", height: 40 }}
-              >
-                Today
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  const t = todayISO();
-                  setHistoryFrom(addDaysISO(t, -7));
-                  setHistoryTo(t);
-                  setHistoryRunToken((x) => x + 1);
-                }}
-                style={{ padding: "0.5rem 1rem", borderRadius: "9999px", border: "1px solid #d1d5db", backgroundColor: "#ffffff", fontWeight: 800, fontSize: "0.85rem", cursor: "pointer", height: 40 }}
-              >
-                Last 7d
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  const t = todayISO();
-                  setHistoryFrom(addDaysISO(t, -30));
-                  setHistoryTo(t);
-                  setHistoryRunToken((x) => x + 1);
-                }}
-                style={{ padding: "0.5rem 1rem", borderRadius: "9999px", border: "1px solid #d1d5db", backgroundColor: "#ffffff", fontWeight: 800, fontSize: "0.85rem", cursor: "pointer", height: 40 }}
-              >
-                Last 30d
-              </button>
             </div>
           </div>
+
+          {/* ✅ NEW: Quick ranges (mobile-friendly) */}
+          <div style={{ marginTop: 10, display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+            <button type="button" onClick={presetToday} style={quickBtn(false)}>Today</button>
+            <button type="button" onClick={() => presetLastNDays(7)} style={quickBtn(false)}>Last 7d</button>
+            <button type="button" onClick={() => presetLastNDays(30)} style={quickBtn(false)}>Last 30d</button>
+            <button type="button" onClick={() => presetLastNDays(90)} style={quickBtn(false)}>Last 90d</button>
+            <button type="button" onClick={() => presetLastNDays(180)} style={quickBtn(false)}>Last 180d</button>
+            <button type="button" onClick={presetThisMonth} style={quickBtn(false)}>This month</button>
+            <button type="button" onClick={presetThisYear} style={quickBtn(false)}>This year</button>
+
+            <button
+              type="button"
+              onClick={() => {
+                // "All time" without backend min-date:
+                // Set to last 365 days (safe max = 366 in loader).
+                // If you want TRUE all-time, we will add backend range endpoint later.
+                presetLastNDays(365);
+              }}
+              style={quickBtn(false)}
+              title="All time (frontend safe max: 365 days). For full all-time, we will add a backend range endpoint later."
+            >
+              All time*
+            </button>
+
+            <div style={{ flex: 1 }} />
+
+            <button
+              type="button"
+              onClick={() => {
+                // reset to default and persist
+                const base = todayISO();
+                applyHistoryRange(addDaysISO(base, -30), base, "Last 30d");
+              }}
+              style={quickBtn(false)}
+              title="Reset to default Last 30d"
+            >
+              Reset range
+            </button>
+          </div>
+
+          {/* ✅ NEW: Smart expand helpers (only shown when 0 results) */}
+          {historySmartExpandVisible && (
+            <div
+              style={{
+                marginTop: 10,
+                padding: "10px 12px",
+                borderRadius: "14px",
+                backgroundColor: "#fffbeb",
+                border: "1px solid #fde68a",
+                color: "#92400e",
+                fontSize: "12px",
+                display: "flex",
+                gap: "8px",
+                flexWrap: "wrap",
+                alignItems: "center",
+              }}
+            >
+              <strong>Nothing found.</strong>
+              <span>Expand range:</span>
+              <button type="button" onClick={() => presetLastNDays(90)} style={quickBtn(false)}>Last 90d</button>
+              <button type="button" onClick={() => presetLastNDays(180)} style={quickBtn(false)}>Last 180d</button>
+              <button type="button" onClick={() => presetLastNDays(365)} style={quickBtn(false)}>Last 365d</button>
+            </div>
+          )}
 
           <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
             <input
@@ -1769,7 +1801,7 @@ function ShopPurchasesPage() {
                           style={{ padding: 0, margin: 0, border: "none", background: "transparent", color: "#111827", fontWeight: 700, fontSize: "13px", cursor: "pointer", textAlign: "left" }}
                           title="Open this date in Tab 1"
                         >
-                          {itemName || `Item ${line.itemId}`}
+                          {itemName || "Unknown item"}
                         </button>
                         <div style={{ fontSize: "11px", color: "#6b7280", marginTop: 2 }}>
                           Date: {line.purchaseDate}
@@ -1804,6 +1836,10 @@ function ShopPurchasesPage() {
                 })}
               </div>
             )}
+          </div>
+
+          <div style={{ marginTop: 10, fontSize: "11px", color: "#9ca3af" }}>
+            * “All time” is limited to 365 days here to keep it fast and safe (your loader max is 366 days). When you’re ready, we can add a single backend range endpoint for true all-time history.
           </div>
         </div>
       )}
