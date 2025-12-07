@@ -31,40 +31,93 @@ function formatQty(value) {
   return n.toLocaleString("en-RW", { maximumFractionDigits: 2 });
 }
 
+// ✅ local-safe today (no UTC shifting)
 function todayISO() {
-  return new Date().toISOString().slice(0, 10);
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+// ✅ Normalize "YYYY-MM-DD" or "DD/MM/YYYY" (some browsers display dd/mm)
+function toISODate(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+
+  // already ISO
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+
+  // dd/mm/yyyy
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
+    const [dd, mm, yyyy] = s.split("/");
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  // dd-mm-yyyy
+  if (/^\d{2}-\d{2}-\d{4}$/.test(s)) {
+    const [dd, mm, yyyy] = s.split("-");
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  // last resort: Date parse
+  const dt = new Date(s);
+  if (!Number.isFinite(dt.getTime())) return "";
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const d = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function parseISOToDate(iso) {
+  const v = toISODate(iso);
+  if (!v) return null;
+  const [y, m, d] = v.split("-").map((x) => Number(x));
+  if (!y || !m || !d) return null;
+  // local date at noon to avoid DST issues
+  return new Date(y, m - 1, d, 12, 0, 0, 0);
+}
+
+function fmtDateLocal(dt) {
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const d = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
 }
 
 function addDaysISO(iso, deltaDays) {
-  const [y, m, d] = String(iso || "").split("-").map((x) => Number(x));
-  if (!y || !m || !d) return todayISO();
-  const dt = new Date(y, m - 1, d);
-  dt.setDate(dt.getDate() + deltaDays);
-  return dt.toISOString().slice(0, 10);
+  const dt = parseISOToDate(iso);
+  if (!dt) return todayISO();
+  dt.setDate(dt.getDate() + Number(deltaDays || 0));
+  return fmtDateLocal(dt);
 }
 
-function listDaysInclusive(fromISO, toISO, maxDays = 93) {
-  const from = String(fromISO || "").trim();
-  const to = String(toISO || "").trim();
-  if (!from || !to) return { ok: false, error: "Choose both From and To dates.", days: [] };
-  if (from > to) return { ok: false, error: '"From" date must be <= "To" date.', days: [] };
+// ✅ Return list of ISO dates inclusive (safe + robust)
+function listDaysInclusive(fromISO, toISO, maxDaysHard = 366) {
+  const f = parseISOToDate(fromISO);
+  const t = parseISOToDate(toISO);
+  if (!f || !t) return { ok: false, error: "Choose valid From and To dates.", days: [], daysCount: 0 };
+  if (f.getTime() > t.getTime()) return { ok: false, error: '"From" date must be <= "To" date.', days: [], daysCount: 0 };
+
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const diffDays = Math.floor((t.getTime() - f.getTime()) / msPerDay) + 1;
+
+  if (diffDays > maxDaysHard) {
+    return {
+      ok: false,
+      error: `Date range too large (>${maxDaysHard} days). Please reduce the range.`,
+      days: [],
+      daysCount: diffDays,
+    };
+  }
 
   const days = [];
-  let cur = from;
-  let guard = 0;
-  while (cur <= to) {
-    days.push(cur);
-    cur = addDaysISO(cur, 1);
-    guard++;
-    if (guard > maxDays) {
-      return {
-        ok: false,
-        error: `Date range too large (>${maxDays} days). Please reduce the range.`,
-        days: [],
-      };
-    }
+  const cur = new Date(f.getTime());
+  for (let i = 0; i < diffDays; i++) {
+    days.push(fmtDateLocal(cur));
+    cur.setDate(cur.getDate() + 1);
   }
-  return { ok: true, error: "", days };
+  return { ok: true, error: "", days, daysCount: diffDays };
 }
 
 /**
@@ -247,13 +300,9 @@ function ShopPurchasesPage() {
   }, [token]);
 
   // ✅ Tabs
-  const [activeTab, setActiveTab] = useState(1); // 1 = Entry, 2 = History
-
-  // ✅ History refresh trigger (so Tab 2 reloads after save/edit/delete)
+  const [activeTab, setActiveTab] = useState(1); // 1=Entry, 2=History
   const [historyRefreshToken, setHistoryRefreshToken] = useState(0);
-
-  // ✅ If user clicks a history line, we jump to Tab1 + open edit for that saved line
-  const [pendingEditDbId, setPendingEditDbId] = useState(null);
+  const [historyInitialized, setHistoryInitialized] = useState(false);
 
   const [shop, setShop] = useState(null);
   const [stockRows, setStockRows] = useState([]);
@@ -300,14 +349,15 @@ function ShopPurchasesPage() {
     return () => window.removeEventListener("resize", calc);
   }, []);
 
-  // -------------------- History tab state --------------------
+  // -------------------- Tab 2: History state --------------------
   const [historyFrom, setHistoryFrom] = useState(() => addDaysISO(todayISO(), -30));
   const [historyTo, setHistoryTo] = useState(() => todayISO());
   const [historyRunToken, setHistoryRunToken] = useState(0);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
+  const [historyHint, setHistoryHint] = useState("");
   const [historySearchTerm, setHistorySearchTerm] = useState("");
-  const [historyLines, setHistoryLines] = useState([]); // saved lines across date range
+  const [historyLines, setHistoryLines] = useState([]);
 
   const resetPadToDefaults = () => {
     setPad({
@@ -368,7 +418,7 @@ function ShopPurchasesPage() {
 
   const shopName = shop?.name || `Shop ${shopId}`;
 
-  // ✅ Items list for combobox (HOOK SAFE: defined before any early returns)
+  // ✅ Items list for combobox (HOOK SAFE)
   const pickerItems = useMemo(
     () =>
       (stockRows || []).map((s) => ({
@@ -390,12 +440,13 @@ function ShopPurchasesPage() {
     }
 
     try {
-      const url = `${API_BASE}/purchases/by-shop-date/?shop_id=${shopId}&purchase_date=${purchaseDate}`;
+      const iso = toISODate(purchaseDate);
+      const url = `${API_BASE}/purchases/by-shop-date/?shop_id=${shopId}&purchase_date=${iso}`;
       const res = await fetch(url, { headers: authHeadersNoJson });
       if (!res.ok) return;
       const data = await res.json();
 
-      const mapped = data.map((pl) => ({
+      const mapped = (data || []).map((pl) => ({
         id: `db-${pl.id}`,
         isFromDb: true,
         dbId: pl.id,
@@ -497,18 +548,6 @@ function ShopPurchasesPage() {
     scrollPadIntoView();
   };
 
-  // ✅ If we came from History tab, open the correct saved line after Tab1 reload
-  useEffect(() => {
-    if (pendingEditDbId == null) return;
-    const match = lines.find((l) => l.isFromDb && Number(l.dbId) === Number(pendingEditDbId));
-    if (match) {
-      startEditSavedLine(match);
-      setPendingEditDbId(null);
-      setActiveTab(1);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingEditDbId, lines]);
-
   const removeLine = (id) => {
     setLines((prev) => prev.filter((l) => l.id !== id));
     if (editingLineId === id) {
@@ -518,9 +557,7 @@ function ShopPurchasesPage() {
     if (selectedLineId === id) setSelectedLineId(null);
   };
 
-  const deleteSavedLine = async (dbId, opts = {}) => {
-    const { refreshTab1After = true, refreshHistoryAfter = true } = opts;
-
+  const deleteSavedLine = async (dbId) => {
     const ok = window.confirm(
       "Delete this saved purchase item?\n\nThis will reduce stock accordingly and cannot be undone."
     );
@@ -544,13 +581,8 @@ function ShopPurchasesPage() {
       await res.json().catch(() => null);
       setMessage("Saved purchase line deleted and stock recalculated.");
       cancelAnyEdit();
-
-      if (refreshTab1After) {
-        await loadExistingLines();
-      }
-      if (refreshHistoryAfter) {
-        setHistoryRefreshToken((x) => x + 1);
-      }
+      await loadExistingLines();
+      setHistoryRefreshToken((x) => x + 1);
     } catch (err) {
       console.error(err);
       setError(err.message || "Failed to delete saved line.");
@@ -614,12 +646,10 @@ function ShopPurchasesPage() {
 
         await res.json().catch(() => null);
         setMessage("Saved purchase line updated and stock recalculated.");
-
         await loadExistingLines();
         cancelAnyEdit();
         scrollPadIntoView();
 
-        // ✅ also refresh history view
         setHistoryRefreshToken((x) => x + 1);
         return;
       } catch (err) {
@@ -723,73 +753,66 @@ function ShopPurchasesPage() {
   const padPurchaseCostPerPiece =
     pad.itemId && padPiecesPerUnit > 0 ? Number(pad.newUnitCost || 0) / padPiecesPerUnit : 0;
 
-  // -------------------- History loader (date range) --------------------
+  // -------------------- TAB 2: HISTORY LOADER --------------------
   const loadHistoryRangeLines = async () => {
     setHistoryLoading(true);
     setHistoryError("");
+    setHistoryHint("");
+
     try {
-      const chk = listDaysInclusive(historyFrom, historyTo, 93);
+      const fromISO = toISODate(historyFrom);
+      const toISO = toISODate(historyTo);
+
+      const chk = listDaysInclusive(fromISO, toISO, 366);
       if (!chk.ok) {
         setHistoryLines([]);
         setHistoryError(chk.error);
         return;
       }
 
-      // Try a range endpoint first (if you have it)
-      const rangeUrl = `${API_BASE}/purchases/by-shop-date-range/?shop_id=${shopId}&date_from=${historyFrom}&date_to=${historyTo}`;
-      let rangeData = null;
-
-      const rangeRes = await fetch(rangeUrl, { headers: authHeadersNoJson });
-      if (rangeRes.ok) {
-        const raw = await rangeRes.json().catch(() => null);
-        const arr = Array.isArray(raw) ? raw : raw?.lines || raw?.items || raw?.data || [];
-        if (Array.isArray(arr)) rangeData = arr;
+      if (chk.daysCount > 93) {
+        setHistoryHint(
+          `Large range (${chk.daysCount} days). It may be slower. Tip: use Last 30d.`
+        );
       }
 
-      let collected = [];
+      // ✅ Always use the endpoint we KNOW works for you (same as Tab 1):
+      // /purchases/by-shop-date/?shop_id=...&purchase_date=YYYY-MM-DD
+      const days = chk.days;
 
-      if (rangeData) {
-        // Expect each item to include purchase_date/date; if not, we still show it (date badge may be blank)
-        collected = rangeData.map((pl) => ({
-          id: `h-db-${pl.id}`,
-          isFromDb: true,
-          dbId: pl.id,
-          itemId: pl.item_id,
-          qtyUnits: pl.quantity,
-          newUnitCost: pl.unit_cost_price,
-          newWholesalePerPiece: stockByItemId[pl.item_id]?.wholesale_price_per_piece || "",
-          newRetailPerPiece: stockByItemId[pl.item_id]?.selling_price_per_piece || "",
-          purchaseDate: pl.purchase_date || pl.date || pl.purchase_date_str || "",
-        }));
-      } else {
-        // Fallback: fetch each day using your existing endpoint (safe + guaranteed to work)
-        const days = chk.days;
-        for (const d of days) {
-          const url = `${API_BASE}/purchases/by-shop-date/?shop_id=${shopId}&purchase_date=${d}`;
-          // eslint-disable-next-line no-await-in-loop
-          const res = await fetch(url, { headers: authHeadersNoJson });
-          if (!res.ok) continue;
-          // eslint-disable-next-line no-await-in-loop
-          const data = await res.json().catch(() => null);
-          if (!Array.isArray(data)) continue;
+      // ✅ small concurrency for speed (doesn't overload server)
+      const CONCURRENCY = 8;
+      const collected = [];
 
-          const mapped = data.map((pl) => ({
-            id: `h-db-${pl.id}`,
-            isFromDb: true,
-            dbId: pl.id,
-            itemId: pl.item_id,
-            qtyUnits: pl.quantity,
-            newUnitCost: pl.unit_cost_price,
-            newWholesalePerPiece: stockByItemId[pl.item_id]?.wholesale_price_per_piece || "",
-            newRetailPerPiece: stockByItemId[pl.item_id]?.selling_price_per_piece || "",
-            purchaseDate: d,
-          }));
+      for (let i = 0; i < days.length; i += CONCURRENCY) {
+        const chunk = days.slice(i, i + CONCURRENCY);
 
-          collected.push(...mapped);
-        }
+        // eslint-disable-next-line no-await-in-loop
+        const results = await Promise.all(
+          chunk.map(async (d) => {
+            const url = `${API_BASE}/purchases/by-shop-date/?shop_id=${shopId}&purchase_date=${d}`;
+            const res = await fetch(url, { headers: authHeadersNoJson });
+            if (!res.ok) return [];
+            const data = await res.json().catch(() => []);
+            if (!Array.isArray(data)) return [];
+
+            return data.map((pl) => ({
+              id: `h-db-${pl.id}`,
+              isFromDb: true,
+              dbId: pl.id,
+              itemId: pl.item_id,
+              qtyUnits: pl.quantity,
+              newUnitCost: pl.unit_cost_price,
+              newWholesalePerPiece: stockByItemId[pl.item_id]?.wholesale_price_per_piece || "",
+              newRetailPerPiece: stockByItemId[pl.item_id]?.selling_price_per_piece || "",
+              purchaseDate: d,
+            }));
+          })
+        );
+
+        for (const arr of results) collected.push(...arr);
       }
 
-      // Sort newest date first (then id desc)
       collected.sort((a, b) => {
         const da = String(a.purchaseDate || "");
         const db = String(b.purchaseDate || "");
@@ -807,9 +830,6 @@ function ShopPurchasesPage() {
     }
   };
 
-  // Auto reload history when:
-  // - user presses Apply (historyRunToken)
-  // - something changes (save/edit/delete triggers historyRefreshToken)
   useEffect(() => {
     if (activeTab !== 2) return;
     if (!stockRows.length) return;
@@ -864,12 +884,11 @@ function ShopPurchasesPage() {
   const openHistoryLineForEdit = (line) => {
     const d = line.purchaseDate || "";
     if (d) setPurchaseDate(d);
-    setPendingEditDbId(line.dbId);
     setActiveTab(1);
     setMessage("");
     setError("");
     setHistoryError("");
-    // loadExistingLines will run via purchaseDate effect, then pendingEditDbId effect opens pad edit
+    // LoadExistingLines will run after purchaseDate changes. Then user clicks the line to edit.
   };
 
   const handleSave = async () => {
@@ -888,7 +907,7 @@ function ShopPurchasesPage() {
     try {
       const payload = {
         shop_id: Number(shopId),
-        purchase_date: purchaseDate,
+        purchase_date: toISODate(purchaseDate),
         supplier_name: supplierName || null,
         invoice_number: invoiceNumber || null,
         lines: newLinesForSave.map((l) => ({
@@ -917,14 +936,17 @@ function ShopPurchasesPage() {
       setMessage("Purchase saved and stock updated successfully.");
       setError("");
 
-      // ✅ IMPORTANT: Reload the saved lines so your list (your “Tab 2 columns/formulas/edit”) stays visible
-      // Instead of leaving it blank.
+      // ✅ KEY FIX: don't clear UI; reload saved lines so Tab 1 shows DB lines immediately
       cancelAnyEdit();
       resetPadToDefaults();
       await loadExistingLines();
 
-      // ✅ refresh History tab too
+      // ✅ Refresh Tab 2
       setHistoryRefreshToken((x) => x + 1);
+
+      // ✅ also keep Tab2 "connected" to this purchaseDate by default
+      setHistoryFrom(addDaysISO(purchaseDate, -30));
+      setHistoryTo(toISODate(purchaseDate));
     } catch (err) {
       console.error(err);
       setError(err.message || "Failed to save purchase.");
@@ -934,7 +956,7 @@ function ShopPurchasesPage() {
     }
   };
 
-  // ✅ Early returns must come AFTER all hooks (we are safe now)
+  // ✅ Early returns
   if (loading) {
     return (
       <div style={{ padding: "32px" }}>
@@ -1024,15 +1046,7 @@ function ShopPurchasesPage() {
           background: "linear-gradient(to bottom, #f3f4f6 0%, #f3f4f6 65%, rgba(243,244,246,0) 100%)",
         }}
       >
-        <div
-          style={{
-            display: "flex",
-            alignItems: "flex-start",
-            justifyContent: "space-between",
-            gap: "12px",
-            marginBottom: "6px",
-          }}
-        >
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px", marginBottom: "6px" }}>
           <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
             <button
               onClick={() => navigate(`/shops/${shopId}`)}
@@ -1049,14 +1063,10 @@ function ShopPurchasesPage() {
               ← Back to shop workspace
             </button>
 
-            <h1 style={{ fontSize: "30px", fontWeight: 800, letterSpacing: "0.03em", margin: 0 }}>
-              Purchases
-            </h1>
-            <div style={{ marginTop: "2px", fontSize: "13px", fontWeight: 600, color: "#2563eb" }}>
-              {shopName}
-            </div>
+            <h1 style={{ fontSize: "30px", fontWeight: 800, letterSpacing: "0.03em", margin: 0 }}>Purchases</h1>
+            <div style={{ marginTop: "2px", fontSize: "13px", fontWeight: 600, color: "#2563eb" }}>{shopName}</div>
 
-            {/* ✅ Tabs */}
+            {/* Tabs */}
             <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
               <button
                 type="button"
@@ -1064,6 +1074,7 @@ function ShopPurchasesPage() {
                 onClick={() => {
                   setActiveTab(1);
                   setHistoryError("");
+                  setHistoryHint("");
                 }}
               >
                 Tab 1: Purchase entry
@@ -1075,7 +1086,17 @@ function ShopPurchasesPage() {
                   setActiveTab(2);
                   setError("");
                   setMessage("");
-                  // load when user clicks Apply (or after save triggers refreshToken)
+                  setHistoryError("");
+                  setHistoryHint("");
+
+                  // ✅ Connect Tab2 to Tab1 (first time only)
+                  if (!historyInitialized) {
+                    const base = toISODate(purchaseDate) || todayISO();
+                    setHistoryFrom(addDaysISO(base, -30));
+                    setHistoryTo(base);
+                    setHistoryRunToken((x) => x + 1);
+                    setHistoryInitialized(true);
+                  }
                 }}
               >
                 Tab 2: History (date range)
@@ -1097,87 +1118,56 @@ function ShopPurchasesPage() {
             }}
           >
             <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>Purchase summary</div>
-            <div
-              style={{
-                fontSize: "10px",
-                textTransform: "uppercase",
-                letterSpacing: "0.14em",
-                color: "#9ca3af",
-                marginBottom: "4px",
-              }}
-            >
-              All items on {purchaseDate}
+            <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.14em", color: "#9ca3af", marginBottom: "4px" }}>
+              All items on {toISODate(purchaseDate) || purchaseDate}
             </div>
             <div>
-              <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.1em", color: "#6b7280" }}>
-                Total amount
-              </div>
+              <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.1em", color: "#6b7280" }}>Total amount</div>
               <div style={{ fontSize: "18px", fontWeight: 800, color: "#111827" }}>{formatMoney(purchaseTotal)}</div>
             </div>
           </div>
         </div>
 
-        {/* These top inputs are still relevant in Tab 1; we keep them visible because they’re your current workflow */}
         <div style={{ display: "grid", gridTemplateColumns: "160px minmax(0, 1fr) 220px", gap: "12px", marginBottom: "8px" }}>
           <input
             type="date"
-            value={purchaseDate}
+            value={toISODate(purchaseDate)}
             onChange={(e) => setPurchaseDate(e.target.value)}
-            style={{
-              padding: "8px 12px",
-              borderRadius: "999px",
-              border: "1px solid #d1d5db",
-              fontSize: "13px",
-              backgroundColor: "#ffffff",
-            }}
+            style={{ padding: "8px 12px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px", backgroundColor: "#ffffff" }}
           />
           <input
             type="text"
             placeholder="Supplier name (optional)"
             value={supplierName}
             onChange={(e) => setSupplierName(e.target.value)}
-            style={{
-              width: "100%",
-              padding: "8px 12px",
-              borderRadius: "999px",
-              border: "1px solid #d1d5db",
-              fontSize: "13px",
-              backgroundColor: "#ffffff",
-            }}
+            style={{ width: "100%", padding: "8px 12px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px", backgroundColor: "#ffffff" }}
           />
           <input
             type="text"
             placeholder="Invoice number (optional)"
             value={invoiceNumber}
             onChange={(e) => setInvoiceNumber(e.target.value)}
-            style={{
-              width: "100%",
-              padding: "8px 12px",
-              borderRadius: "999px",
-              border: "1px solid #d1d5db",
-              fontSize: "13px",
-              backgroundColor: "#ffffff",
-            }}
+            style={{ width: "100%", padding: "8px 12px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px", backgroundColor: "#ffffff" }}
           />
         </div>
       </div>
 
-      {(message || error || historyError) && (
+      {(message || error || historyError || historyHint) && (
         <div
           style={{
             marginBottom: "1rem",
             padding: "0.6rem 0.8rem",
             borderRadius: "0.75rem",
-            backgroundColor: (error || historyError) ? "#fef2f2" : "#ecfdf3",
-            color: (error || historyError) ? "#b91c1c" : "#166534",
+            backgroundColor: (error || historyError) ? "#fef2f2" : historyHint ? "#fffbeb" : "#ecfdf3",
+            color: (error || historyError) ? "#b91c1c" : historyHint ? "#92400e" : "#166534",
             fontSize: "0.9rem",
           }}
         >
-          {error || historyError || message}
+          {error || historyError || historyHint || message}
         </div>
       )}
 
-      {/* ======================= TAB 1 (your existing UI) ======================= */}
+      {/* ======================= TAB 1 (your existing UI preserved) ======================= */}
       {activeTab === 1 && (
         <div
           style={{
@@ -1189,7 +1179,9 @@ function ShopPurchasesPage() {
         >
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
             <div>
-              <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>Items purchased on {purchaseDate}</h2>
+              <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>
+                Items purchased on {toISODate(purchaseDate) || purchaseDate}
+              </h2>
             </div>
           </div>
 
@@ -1206,17 +1198,7 @@ function ShopPurchasesPage() {
               scrollMarginTop: HEADER_IS_STICKY ? `${headerHeight + 12}px` : "12px",
             }}
           >
-            <div
-              style={{
-                fontSize: "13px",
-                fontWeight: 700,
-                marginBottom: "10px",
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                gap: "8px",
-              }}
-            >
+            <div style={{ fontSize: "13px", fontWeight: 700, marginBottom: "10px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
               <span>{padTitle}</span>
 
               <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
@@ -1265,24 +1247,12 @@ function ShopPurchasesPage() {
             </div>
 
             {isEditingSaved && (
-              <div
-                style={{
-                  marginBottom: "10px",
-                  padding: "8px 10px",
-                  borderRadius: "12px",
-                  border: "1px solid #e5e7eb",
-                  background: "#f9fafb",
-                  color: "#6b7280",
-                  fontSize: "12px",
-                  lineHeight: 1.35,
-                }}
-              >
-                Note: Item cannot be changed when editing a saved line. If you need a different item, delete the saved
-                line and add a new one.
+              <div style={{ marginBottom: "10px", padding: "8px 10px", borderRadius: "12px", border: "1px solid #e5e7eb", background: "#f9fafb", color: "#6b7280", fontSize: "12px", lineHeight: 1.35 }}>
+                Note: Item cannot be changed when editing a saved line. If you need a different item, delete the saved line and add a new one.
               </div>
             )}
 
-            {/* ITEM (mobile friendly) */}
+            {/* ITEM */}
             <div>
               <label style={labelStyle}>Item</label>
               <ItemComboBox
@@ -1294,26 +1264,16 @@ function ShopPurchasesPage() {
 
               <div style={helperGridStyle}>
                 <div>
-                  Pieces / unit:{" "}
-                  <strong style={{ color: padText }}>{padStock ? padPiecesPerUnit : "—"}</strong>
+                  Pieces / unit: <strong style={{ color: padText }}>{padStock ? padPiecesPerUnit : "—"}</strong>
                 </div>
                 <div>
-                  Recent unit cost:{" "}
-                  <strong style={{ color: padText }}>
-                    {padStock ? formatMoney(padStock.last_purchase_unit_price || 0) : "—"}
-                  </strong>
+                  Recent unit cost: <strong style={{ color: padText }}>{padStock ? formatMoney(padStock.last_purchase_unit_price || 0) : "—"}</strong>
                 </div>
                 <div>
-                  Recent wholesale / piece:{" "}
-                  <strong style={{ color: padText }}>
-                    {padStock ? formatMoney(padStock.wholesale_price_per_piece || 0) : "—"}
-                  </strong>
+                  Recent wholesale / piece: <strong style={{ color: padText }}>{padStock ? formatMoney(padStock.wholesale_price_per_piece || 0) : "—"}</strong>
                 </div>
                 <div>
-                  Recent retail / piece:{" "}
-                  <strong style={{ color: padText }}>
-                    {padStock ? formatMoney(padStock.selling_price_per_piece || 0) : "—"}
-                  </strong>
+                  Recent retail / piece: <strong style={{ color: padText }}>{padStock ? formatMoney(padStock.selling_price_per_piece || 0) : "—"}</strong>
                 </div>
               </div>
             </div>
@@ -1322,89 +1282,48 @@ function ShopPurchasesPage() {
               style={{
                 marginTop: "12px",
                 display: "grid",
-                gridTemplateColumns:
-                  "140px minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr)",
+                gridTemplateColumns: "140px minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr)",
                 gap: "12px",
                 alignItems: "end",
               }}
             >
               <div>
                 <label style={labelStyle}>Qty units</label>
-                <input
-                  type="number"
-                  min={0.01}
-                  step="0.01"
-                  value={pad.qtyUnits}
-                  onChange={(e) => updatePad("qtyUnits", e.target.value)}
-                  style={inputBase}
-                />
+                <input type="number" min={0.01} step="0.01" value={pad.qtyUnits} onChange={(e) => updatePad("qtyUnits", e.target.value)} style={inputBase} />
               </div>
 
               <div>
                 <label style={labelStyle}>Purchase cost (unit)</label>
-                <input
-                  type="number"
-                  value={pad.newUnitCost}
-                  onChange={(e) => updatePad("newUnitCost", e.target.value)}
-                  placeholder="0"
-                  style={inputBase}
-                />
+                <input type="number" value={pad.newUnitCost} onChange={(e) => updatePad("newUnitCost", e.target.value)} placeholder="0" style={inputBase} />
               </div>
 
               <div>
                 <label style={labelStyle}>Purchase cost / piece</label>
-                <input
-                  type="text"
-                  readOnly
-                  value={pad.itemId ? formatMoney(padPurchaseCostPerPiece) : ""}
-                  placeholder="—"
-                  style={{ ...inputBase, backgroundColor: "#f3f4f6", fontWeight: 800 }}
-                />
+                <input type="text" readOnly value={pad.itemId ? formatMoney(padPurchaseCostPerPiece) : ""} placeholder="—" style={{ ...inputBase, backgroundColor: "#f3f4f6", fontWeight: 800 }} />
               </div>
 
               <div>
                 <label style={labelStyle}>New wholesale / piece</label>
-                <input
-                  type="number"
-                  value={pad.newWholesalePerPiece}
-                  onChange={(e) => updatePad("newWholesalePerPiece", e.target.value)}
-                  placeholder="0"
-                  style={inputBase}
-                />
+                <input type="number" value={pad.newWholesalePerPiece} onChange={(e) => updatePad("newWholesalePerPiece", e.target.value)} placeholder="0" style={inputBase} />
               </div>
 
               <div>
                 <label style={labelStyle}>New retail / piece</label>
-                <input
-                  type="number"
-                  value={pad.newRetailPerPiece}
-                  onChange={(e) => updatePad("newRetailPerPiece", e.target.value)}
-                  placeholder="0"
-                  style={inputBase}
-                />
+                <input type="number" value={pad.newRetailPerPiece} onChange={(e) => updatePad("newRetailPerPiece", e.target.value)} placeholder="0" style={inputBase} />
               </div>
             </div>
           </div>
 
-          {/* LIST (your existing columns/formulas/inline edit kept) */}
+          {/* LIST (unchanged) */}
           {linesWithComputed.length === 0 ? (
             <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
-              No items in this purchase date yet. Use the pad above and click{" "}
-              <strong>{padButtonText}</strong>.
+              No items in this purchase date yet. Use the pad above and click <strong>{padButtonText}</strong>.
             </div>
           ) : (
             <>
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  marginBottom: "6px",
-                  marginTop: "2px",
-                }}
-              >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px", marginTop: "2px" }}>
                 <div style={{ fontSize: "12px", color: "#6b7280" }}>
-                  Items for {purchaseDate}: {linesWithComputed.length}{" "}
+                  Items for {toISODate(purchaseDate) || purchaseDate}: {linesWithComputed.length}{" "}
                   {searchTerm ? `(showing ${filteredLinesWithComputed.length} after filter)` : ""}
                 </div>
                 <input
@@ -1412,27 +1331,11 @@ function ShopPurchasesPage() {
                   placeholder="Search in items..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  style={{
-                    width: "240px",
-                    padding: "6px 10px",
-                    borderRadius: "999px",
-                    border: "1px solid #d1d5db",
-                    fontSize: "12px",
-                  }}
+                  style={{ width: "240px", padding: "6px 10px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "12px" }}
                 />
               </div>
 
-              <div
-                style={{
-                  maxHeight: "420px",
-                  overflowY: "auto",
-                  overflowX: "auto",
-                  borderRadius: "12px",
-                  border: "1px solid #e5e7eb",
-                  padding: "0 8px 4px 0",
-                  backgroundColor: "#fcfcff",
-                }}
-              >
+              <div style={{ maxHeight: "420px", overflowY: "auto", overflowX: "auto", borderRadius: "12px", border: "1px solid #e5e7eb", padding: "0 8px 4px 0", backgroundColor: "#fcfcff" }}>
                 <div
                   style={{
                     display: "grid",
@@ -1469,8 +1372,7 @@ function ShopPurchasesPage() {
 
                 {filteredLinesWithComputed.map((line) => {
                   const { meta, computed } = line;
-                  const { itemName, piecesPerUnit, recentUnitCost, recentWholesalePerPiece, recentRetailPerPiece } =
-                    meta;
+                  const { itemName, piecesPerUnit, recentUnitCost, recentWholesalePerPiece, recentRetailPerPiece } = meta;
                   const { newCostPerPiece, lineTotal, allPieces } = computed;
 
                   const isFromDb = line.isFromDb;
@@ -1496,41 +1398,17 @@ function ShopPurchasesPage() {
                           <button
                             type="button"
                             onClick={() => startEditSavedLine(line)}
-                            style={{
-                              padding: 0,
-                              margin: 0,
-                              border: "none",
-                              background: "transparent",
-                              color: "#111827",
-                              fontWeight: 700,
-                              fontSize: "13px",
-                              cursor: "pointer",
-                              textAlign: "left",
-                            }}
+                            style={{ padding: 0, margin: 0, border: "none", background: "transparent", color: "#111827", fontWeight: 700, fontSize: "13px", cursor: "pointer", textAlign: "left" }}
                             title="Edit saved purchase line"
                           >
                             {itemName || "Unknown item"}{" "}
-                            {isEditingThisSaved ? (
-                              <span style={{ color: "#2563eb", fontWeight: 800, marginLeft: 6 }}>
-                                (editing)
-                              </span>
-                            ) : null}
+                            {isEditingThisSaved ? <span style={{ color: "#2563eb", fontWeight: 800, marginLeft: 6 }}>(editing)</span> : null}
                           </button>
                         ) : (
                           <button
                             type="button"
                             onClick={() => startEditNewLine(line.id)}
-                            style={{
-                              padding: 0,
-                              margin: 0,
-                              border: "none",
-                              background: "transparent",
-                              color: "#2563eb",
-                              fontWeight: 600,
-                              fontSize: "13px",
-                              cursor: "pointer",
-                              textAlign: "left",
-                            }}
+                            style={{ padding: 0, margin: 0, border: "none", background: "transparent", color: "#2563eb", fontWeight: 600, fontSize: "13px", cursor: "pointer", textAlign: "left" }}
                             title="Edit new (unsaved) line"
                           >
                             {itemName || "Unknown item"}
@@ -1557,17 +1435,7 @@ function ShopPurchasesPage() {
                             onClick={() => deleteSavedLine(line.dbId)}
                             disabled={padSaving}
                             title="Delete saved line"
-                            style={{
-                              width: "28px",
-                              height: "28px",
-                              borderRadius: "9999px",
-                              border: "1px solid #fee2e2",
-                              backgroundColor: "#fef2f2",
-                              color: "#b91c1c",
-                              fontSize: "14px",
-                              cursor: padSaving ? "not-allowed" : "pointer",
-                              opacity: padSaving ? 0.7 : 1,
-                            }}
+                            style={{ width: "28px", height: "28px", borderRadius: "9999px", border: "1px solid #fee2e2", backgroundColor: "#fef2f2", color: "#b91c1c", fontSize: "14px", cursor: padSaving ? "not-allowed" : "pointer", opacity: padSaving ? 0.7 : 1 }}
                           >
                             🗑
                           </button>
@@ -1575,16 +1443,7 @@ function ShopPurchasesPage() {
                           <button
                             type="button"
                             onClick={() => removeLine(line.id)}
-                            style={{
-                              width: "28px",
-                              height: "28px",
-                              borderRadius: "9999px",
-                              border: "1px solid #fee2e2",
-                              backgroundColor: "#fef2f2",
-                              color: "#b91c1c",
-                              fontSize: "16px",
-                              cursor: "pointer",
-                            }}
+                            style={{ width: "28px", height: "28px", borderRadius: "9999px", border: "1px solid #fee2e2", backgroundColor: "#fef2f2", color: "#b91c1c", fontSize: "16px", cursor: "pointer" }}
                             title="Remove new line (not saved yet)"
                           >
                             ✕
@@ -1602,16 +1461,7 @@ function ShopPurchasesPage() {
             <button
               type="button"
               onClick={() => navigate(`/shops/${shopId}/stock`)}
-              style={{
-                padding: "0.6rem 1.4rem",
-                borderRadius: "999px",
-                border: "1px solid #d1d5db",
-                backgroundColor: "#ffffff",
-                color: "#111827",
-                fontWeight: 600,
-                fontSize: "0.95rem",
-                cursor: "pointer",
-              }}
+              style={{ padding: "0.6rem 1.4rem", borderRadius: "999px", border: "1px solid #d1d5db", backgroundColor: "#ffffff", color: "#111827", fontWeight: 600, fontSize: "0.95rem", cursor: "pointer" }}
             >
               View stock
             </button>
@@ -1619,16 +1469,7 @@ function ShopPurchasesPage() {
               type="button"
               onClick={handleSave}
               disabled={saving}
-              style={{
-                padding: "0.6rem 1.8rem",
-                borderRadius: "999px",
-                border: "none",
-                backgroundColor: saving ? "#2563eb99" : "#2563eb",
-                color: "white",
-                fontWeight: 700,
-                fontSize: "0.95rem",
-                cursor: saving ? "not-allowed" : "pointer",
-              }}
+              style={{ padding: "0.6rem 1.8rem", borderRadius: "999px", border: "none", backgroundColor: saving ? "#2563eb99" : "#2563eb", color: "white", fontWeight: 700, fontSize: "0.95rem", cursor: saving ? "not-allowed" : "pointer" }}
             >
               {saving ? "Saving..." : "Save purchase"}
             </button>
@@ -1650,7 +1491,7 @@ function ShopPurchasesPage() {
             <div>
               <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>Purchase history (saved lines)</h2>
               <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 4 }}>
-                Tip: Click an item to open its date in Tab 1 and edit inline.
+                Click an item to open its date in Tab 1 and edit inline.
               </div>
             </div>
 
@@ -1659,15 +1500,9 @@ function ShopPurchasesPage() {
                 <div style={{ fontSize: "11px", fontWeight: 700, color: "#6b7280", marginBottom: 4 }}>From</div>
                 <input
                   type="date"
-                  value={historyFrom}
+                  value={toISODate(historyFrom)}
                   onChange={(e) => setHistoryFrom(e.target.value)}
-                  style={{
-                    padding: "8px 12px",
-                    borderRadius: "999px",
-                    border: "1px solid #d1d5db",
-                    fontSize: "13px",
-                    backgroundColor: "#ffffff",
-                  }}
+                  style={{ padding: "8px 12px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px", backgroundColor: "#ffffff" }}
                 />
               </div>
 
@@ -1675,15 +1510,9 @@ function ShopPurchasesPage() {
                 <div style={{ fontSize: "11px", fontWeight: 700, color: "#6b7280", marginBottom: 4 }}>To</div>
                 <input
                   type="date"
-                  value={historyTo}
+                  value={toISODate(historyTo)}
                   onChange={(e) => setHistoryTo(e.target.value)}
-                  style={{
-                    padding: "8px 12px",
-                    borderRadius: "999px",
-                    border: "1px solid #d1d5db",
-                    fontSize: "13px",
-                    backgroundColor: "#ffffff",
-                  }}
+                  style={{ padding: "8px 12px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px", backgroundColor: "#ffffff" }}
                 />
               </div>
 
@@ -1713,16 +1542,7 @@ function ShopPurchasesPage() {
                   setHistoryTo(t);
                   setHistoryRunToken((x) => x + 1);
                 }}
-                style={{
-                  padding: "0.5rem 1rem",
-                  borderRadius: "9999px",
-                  border: "1px solid #d1d5db",
-                  backgroundColor: "#ffffff",
-                  fontWeight: 800,
-                  fontSize: "0.85rem",
-                  cursor: "pointer",
-                  height: 40,
-                }}
+                style={{ padding: "0.5rem 1rem", borderRadius: "9999px", border: "1px solid #d1d5db", backgroundColor: "#ffffff", fontWeight: 800, fontSize: "0.85rem", cursor: "pointer", height: 40 }}
               >
                 Today
               </button>
@@ -1735,16 +1555,7 @@ function ShopPurchasesPage() {
                   setHistoryTo(t);
                   setHistoryRunToken((x) => x + 1);
                 }}
-                style={{
-                  padding: "0.5rem 1rem",
-                  borderRadius: "9999px",
-                  border: "1px solid #d1d5db",
-                  backgroundColor: "#ffffff",
-                  fontWeight: 800,
-                  fontSize: "0.85rem",
-                  cursor: "pointer",
-                  height: 40,
-                }}
+                style={{ padding: "0.5rem 1rem", borderRadius: "9999px", border: "1px solid #d1d5db", backgroundColor: "#ffffff", fontWeight: 800, fontSize: "0.85rem", cursor: "pointer", height: 40 }}
               >
                 Last 7d
               </button>
@@ -1757,16 +1568,7 @@ function ShopPurchasesPage() {
                   setHistoryTo(t);
                   setHistoryRunToken((x) => x + 1);
                 }}
-                style={{
-                  padding: "0.5rem 1rem",
-                  borderRadius: "9999px",
-                  border: "1px solid #d1d5db",
-                  backgroundColor: "#ffffff",
-                  fontWeight: 800,
-                  fontSize: "0.85rem",
-                  cursor: "pointer",
-                  height: 40,
-                }}
+                style={{ padding: "0.5rem 1rem", borderRadius: "9999px", border: "1px solid #d1d5db", backgroundColor: "#ffffff", fontWeight: 800, fontSize: "0.85rem", cursor: "pointer", height: 40 }}
               >
                 Last 30d
               </button>
@@ -1779,13 +1581,7 @@ function ShopPurchasesPage() {
               placeholder="Search item or date…"
               value={historySearchTerm}
               onChange={(e) => setHistorySearchTerm(e.target.value)}
-              style={{
-                width: "260px",
-                padding: "6px 10px",
-                borderRadius: "999px",
-                border: "1px solid #d1d5db",
-                fontSize: "12px",
-              }}
+              style={{ width: "260px", padding: "6px 10px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "12px" }}
             />
           </div>
 
@@ -1797,18 +1593,7 @@ function ShopPurchasesPage() {
                 No saved purchase lines in this date range.
               </div>
             ) : (
-              <div
-                style={{
-                  maxHeight: "520px",
-                  overflowY: "auto",
-                  overflowX: "auto",
-                  borderRadius: "12px",
-                  border: "1px solid #e5e7eb",
-                  padding: "0 8px 4px 0",
-                  backgroundColor: "#fcfcff",
-                }}
-              >
-                {/* Header - same columns as your list (kept) */}
+              <div style={{ maxHeight: "520px", overflowY: "auto", overflowX: "auto", borderRadius: "12px", border: "1px solid #e5e7eb", padding: "0 8px 4px 0", backgroundColor: "#fcfcff" }}>
                 <div
                   style={{
                     display: "grid",
@@ -1845,8 +1630,7 @@ function ShopPurchasesPage() {
 
                 {filteredHistoryLinesWithComputed.map((line) => {
                   const { meta, computed } = line;
-                  const { itemName, piecesPerUnit, recentUnitCost, recentWholesalePerPiece, recentRetailPerPiece } =
-                    meta;
+                  const { itemName, piecesPerUnit, recentUnitCost, recentWholesalePerPiece, recentRetailPerPiece } = meta;
                   const { newCostPerPiece, lineTotal, allPieces } = computed;
 
                   return (
@@ -1866,23 +1650,13 @@ function ShopPurchasesPage() {
                         <button
                           type="button"
                           onClick={() => openHistoryLineForEdit(line)}
-                          style={{
-                            padding: 0,
-                            margin: 0,
-                            border: "none",
-                            background: "transparent",
-                            color: "#111827",
-                            fontWeight: 700,
-                            fontSize: "13px",
-                            cursor: "pointer",
-                            textAlign: "left",
-                          }}
-                          title="Open this date and edit this saved line"
+                          style={{ padding: 0, margin: 0, border: "none", background: "transparent", color: "#111827", fontWeight: 700, fontSize: "13px", cursor: "pointer", textAlign: "left" }}
+                          title="Open this date in Tab 1"
                         >
                           {itemName || "Unknown item"}
                         </button>
                         <div style={{ fontSize: "11px", color: "#6b7280", marginTop: 2 }}>
-                          {line.purchaseDate ? `Date: ${line.purchaseDate}` : ""}
+                          Date: {line.purchaseDate}
                         </div>
                       </div>
 
@@ -1901,22 +1675,10 @@ function ShopPurchasesPage() {
                       <div style={{ textAlign: "center" }}>
                         <button
                           type="button"
-                          onClick={() =>
-                            deleteSavedLine(line.dbId, { refreshTab1After: false, refreshHistoryAfter: true })
-                          }
+                          onClick={() => deleteSavedLine(line.dbId)}
                           disabled={padSaving}
                           title="Delete saved line"
-                          style={{
-                            width: "28px",
-                            height: "28px",
-                            borderRadius: "9999px",
-                            border: "1px solid #fee2e2",
-                            backgroundColor: "#fef2f2",
-                            color: "#b91c1c",
-                            fontSize: "14px",
-                            cursor: padSaving ? "not-allowed" : "pointer",
-                            opacity: padSaving ? 0.7 : 1,
-                          }}
+                          style={{ width: "28px", height: "28px", borderRadius: "9999px", border: "1px solid #fee2e2", backgroundColor: "#fef2f2", color: "#b91c1c", fontSize: "14px", cursor: padSaving ? "not-allowed" : "pointer", opacity: padSaving ? 0.7 : 1 }}
                         >
                           🗑
                         </button>
