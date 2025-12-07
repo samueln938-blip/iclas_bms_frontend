@@ -7,21 +7,37 @@ import { useAuth } from "../../context/AuthContext.jsx";
 import { API_BASE as CLIENT_API_BASE } from "../../api/client.jsx";
 const API_BASE = CLIENT_API_BASE;
 
-function formatNumber(value) {
-  if (value === null || value === undefined) return "0";
-  const num = Number(value) || 0;
+/**
+ * ✅ Quantity formatter (supports decimals):
+ * - shows integers clean (e.g. 50)
+ * - shows decimals when present (e.g. 49.5, 0.25)
+ */
+function formatQty(value, maxFractionDigits = 3) {
+  if (value === null || value === undefined || value === "") return "0";
+  const num = Number(value);
+  if (!Number.isFinite(num)) return String(value);
+
   return num.toLocaleString("en-RW", {
     minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
+    maximumFractionDigits: maxFractionDigits,
   });
 }
 
+/**
+ * ✅ Money formatter (RWF style):
+ * - keeps your 0-decimal look for normal values
+ * - but if backend returns decimals, show up to 2 (useful for /piece)
+ */
 function formatMoney(value) {
-  if (value === null || value === undefined) return "0";
-  const num = Number(value) || 0;
+  if (value === null || value === undefined || value === "") return "0";
+  const num = Number(value);
+  if (!Number.isFinite(num)) return "0";
+
+  const isInt = Math.abs(num - Math.round(num)) < 1e-9;
+
   return num.toLocaleString("en-RW", {
     minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
+    maximumFractionDigits: isInt ? 0 : 2,
   });
 }
 
@@ -44,16 +60,11 @@ function ShopStockPage() {
   const [search, setSearch] = useState("");
 
   // ✅ Tabs
-  // ALL = everything
-  // IN_STOCK = remainingPieces > 0
-  // LOW_STOCK = remainingPieces > 0 but "close to zero"
-  // ZERO_STOCK = remainingPieces <= 0
   const [activeTab, setActiveTab] = useState("ALL");
 
   // ✅ Low stock controls
-  // Mode: filter low stock by pieces OR by units (converted to pieces)
   const [lowStockMode, setLowStockMode] = useState("PIECES"); // "PIECES" | "UNITS"
-  const [lowStockThreshold, setLowStockThreshold] = useState(10); // default: 10 pieces
+  const [lowStockThreshold, setLowStockThreshold] = useState(10); // supports decimals now
 
   // sort configuration
   const [sortConfig, setSortConfig] = useState({
@@ -105,7 +116,7 @@ function ShopStockPage() {
     }
 
     return () => controller.abort();
-  }, [API_BASE, shopId, authHeadersNoJson]);
+  }, [shopId, authHeadersNoJson]);
 
   useEffect(() => {
     loadData();
@@ -113,10 +124,7 @@ function ShopStockPage() {
 
   // ✅ Auto-refresh when you come back to the browser tab/window
   useEffect(() => {
-    const onFocus = () => {
-      // Don’t spam refresh if still loading
-      forceReload();
-    };
+    const onFocus = () => forceReload();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -126,7 +134,7 @@ function ShopStockPage() {
   const baseRows = useMemo(() => {
     return (stockRows || []).map((s) => {
       const piecesPerUnit =
-        s.item_pieces_per_unit != null ? s.item_pieces_per_unit : 1;
+        s.item_pieces_per_unit != null ? Number(s.item_pieces_per_unit) : 1;
 
       const totalUnits = Number(s.total_quantity || 0);
       const soldPieces = Number(s.total_pieces_sold || 0);
@@ -213,10 +221,7 @@ function ShopStockPage() {
       const remaining = Number(r.remainingPieces || 0);
       if (remaining <= 0) return false;
 
-      const ppu =
-        Number(r.piecesPerUnit || 1) > 0 ? Number(r.piecesPerUnit || 1) : 1;
-
-      // If mode is UNITS, convert threshold units -> pieces threshold
+      const ppu = Number(r.piecesPerUnit || 1) > 0 ? Number(r.piecesPerUnit || 1) : 1;
       const thresholdPieces = lowStockMode === "UNITS" ? th * ppu : th;
 
       return remaining <= thresholdPieces;
@@ -263,9 +268,7 @@ function ShopStockPage() {
       } else {
         const s1 = String(v1).toLowerCase();
         const s2 = String(v2).toLowerCase();
-        return sortConfig.direction === "asc"
-          ? s1.localeCompare(s2)
-          : s2.localeCompare(s1);
+        return sortConfig.direction === "asc" ? s1.localeCompare(s2) : s2.localeCompare(s1);
       }
     });
 
@@ -287,20 +290,15 @@ function ShopStockPage() {
     return { stockValue, expectedSaleValue, expectedInterest };
   }, [filteredRows]);
 
-  // helper: change sort when clicking a header
   const handleSort = (key) => {
     setSortConfig((prev) => {
       if (prev.key === key) {
-        return {
-          key,
-          direction: prev.direction === "asc" ? "desc" : "asc",
-        };
+        return { key, direction: prev.direction === "asc" ? "desc" : "asc" };
       }
       return { key, direction: "asc" };
     });
   };
 
-  // helper: show arrow icon
   const getSortIndicator = (key) => {
     if (sortConfig.key !== key) return "↕";
     return sortConfig.direction === "asc" ? "▲" : "▼";
@@ -336,7 +334,6 @@ function ShopStockPage() {
     color: sortConfig.key === key ? "#111827" : "#9ca3af",
   });
 
-  // Tabs UI
   const tabWrapStyle = {
     display: "flex",
     alignItems: "center",
@@ -368,7 +365,6 @@ function ShopStockPage() {
     color: isActive ? "#ffffff" : "#374151",
   });
 
-  // ✅ Low stock inputs
   const lowWrapStyle = {
     display: "flex",
     alignItems: "center",
@@ -419,7 +415,6 @@ function ShopStockPage() {
             marginBottom: "6px",
           }}
         >
-          {/* Title */}
           <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
             <button
               onClick={() => navigate(`/shops/${shopId}`)}
@@ -465,7 +460,11 @@ function ShopStockPage() {
 
               {lastLoadedAt ? (
                 <span style={{ fontSize: "12px", color: "#6b7280" }}>
-                  Updated: {lastLoadedAt.toLocaleTimeString("en-RW", { hour: "2-digit", minute: "2-digit" })}
+                  Updated:{" "}
+                  {lastLoadedAt.toLocaleTimeString("en-RW", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
                 </span>
               ) : null}
             </div>
@@ -486,21 +485,62 @@ function ShopStockPage() {
             }}
           >
             <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>Stock Summary</div>
-            <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.14em", color: "#9ca3af", marginBottom: "4px" }}>
+            <div
+              style={{
+                fontSize: "10px",
+                textTransform: "uppercase",
+                letterSpacing: "0.14em",
+                color: "#9ca3af",
+                marginBottom: "4px",
+              }}
+            >
               Based on remaining pieces
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", gap: "10px" }}>
               <div>
-                <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.1em", color: "#6b7280" }}>Stock value</div>
-                <div style={{ fontSize: "15px", fontWeight: 700, color: "#111827" }}>{formatMoney(summary.stockValue)}</div>
+                <div
+                  style={{
+                    fontSize: "10px",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.1em",
+                    color: "#6b7280",
+                  }}
+                >
+                  Stock value
+                </div>
+                <div style={{ fontSize: "15px", fontWeight: 700, color: "#111827" }}>
+                  {formatMoney(summary.stockValue)}
+                </div>
               </div>
               <div>
-                <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.1em", color: "#6b7280" }}>Expected sale</div>
-                <div style={{ fontSize: "15px", fontWeight: 700, color: "#111827" }}>{formatMoney(summary.expectedSaleValue)}</div>
+                <div
+                  style={{
+                    fontSize: "10px",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.1em",
+                    color: "#6b7280",
+                  }}
+                >
+                  Expected sale
+                </div>
+                <div style={{ fontSize: "15px", fontWeight: 700, color: "#111827" }}>
+                  {formatMoney(summary.expectedSaleValue)}
+                </div>
               </div>
               <div>
-                <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.1em", color: "#6b7280" }}>Expected interest</div>
-                <div style={{ fontSize: "15px", fontWeight: 700, color: "#111827" }}>{formatMoney(summary.expectedInterest)}</div>
+                <div
+                  style={{
+                    fontSize: "10px",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.1em",
+                    color: "#6b7280",
+                  }}
+                >
+                  Expected interest
+                </div>
+                <div style={{ fontSize: "15px", fontWeight: 700, color: "#111827" }}>
+                  {formatMoney(summary.expectedInterest)}
+                </div>
               </div>
             </div>
           </div>
@@ -530,7 +570,8 @@ function ShopStockPage() {
 
               <input
                 type="number"
-                min={1}
+                min={0.01}
+                step="0.01"
                 value={Number(lowStockThreshold || 0)}
                 onChange={(e) => setLowStockThreshold(Number(e.target.value || 0))}
                 style={smallInputStyle}
@@ -720,24 +761,28 @@ function ShopStockPage() {
                   }}
                 >
                   {row.itemName}{" "}
-                  <span style={{ color: "#9ca3af", fontSize: "11px" }}>
-                    (ID: {row.itemId})
-                  </span>
+                  <span style={{ color: "#9ca3af", fontSize: "11px" }}>(ID: {row.itemId})</span>
                 </div>
 
                 <div>{row.category || "-"}</div>
-                <div>{formatNumber(row.totalUnits)}</div>
+
+                {/* ✅ quantities now show decimals */}
+                <div>{formatQty(row.totalUnits)}</div>
+
                 <div>{formatMoney(row.defaultUnitCost)}</div>
                 <div>{formatMoney(row.recentUnitCost)}</div>
                 <div>{formatMoney(row.totalCostRecentUnits)}</div>
-                <div>{formatNumber(row.piecesPerUnit)}</div>
-                <div>{formatNumber(row.totalPieces)}</div>
-                <div>{formatNumber(row.soldPieces)}</div>
-                <div>{formatNumber(row.remainingPieces)}</div>
+
+                <div>{formatQty(row.piecesPerUnit)}</div>
+                <div>{formatQty(row.totalPieces)}</div>
+                <div>{formatQty(row.soldPieces)}</div>
+                <div>{formatQty(row.remainingPieces)}</div>
+
                 <div>{formatMoney(row.costPerPiece)}</div>
                 <div>{formatMoney(row.wholesalePerPiece)}</div>
                 <div>{formatMoney(row.salePerPiece)}</div>
                 <div>{formatMoney(row.interestPerPiece)}</div>
+
                 <div>{formatMoney(row.stockValue)}</div>
                 <div>{formatMoney(row.expectedSaleValue)}</div>
                 <div>{formatMoney(row.expectedInterest)}</div>
