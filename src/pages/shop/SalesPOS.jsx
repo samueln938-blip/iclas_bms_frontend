@@ -17,7 +17,9 @@ import { API_BASE as CLIENT_API_BASE } from "../../api/client.jsx";
 function safeNumber(raw) {
   const s = String(raw ?? "").replace(/,/g, "").trim();
   if (!s) return 0;
-  const n = Number(s);
+  // allow decimals
+  const cleaned = s.replace(/[^\d.-]/g, "");
+  const n = Number(cleaned);
   return Number.isFinite(n) ? n : 0;
 }
 
@@ -32,11 +34,13 @@ function CalculatorModal({ open, initialValue, title = "Calculator", onClose, on
   if (!open) return null;
 
   const append = (ch) => setVal((p) => `${p ?? ""}${ch}`);
+
   const backspace = () => setVal((p) => String(p ?? "").slice(0, -1));
   const clear = () => setVal("");
 
   const apply = () => {
-    const num = Math.round(safeNumber(val));
+    // ✅ NO rounding; supports decimals
+    const num = safeNumber(val);
     onApply?.(num);
     onClose?.();
   };
@@ -60,6 +64,8 @@ function CalculatorModal({ open, initialValue, title = "Calculator", onClose, on
     </button>
   );
 
+  const dotDisabled = String(val ?? "").includes(".");
+
   return (
     <div
       onClick={onClose}
@@ -78,6 +84,7 @@ function CalculatorModal({ open, initialValue, title = "Calculator", onClose, on
         onClick={(e) => e.stopPropagation()}
         style={{
           width: 360,
+          maxWidth: "95vw",
           backgroundColor: "#ffffff",
           borderRadius: 18,
           boxShadow: "0 20px 50px rgba(15,23,42,0.35)",
@@ -101,7 +108,8 @@ function CalculatorModal({ open, initialValue, title = "Calculator", onClose, on
             value={val}
             onChange={(e) => setVal(e.target.value)}
             placeholder="Enter amount"
-            inputMode="numeric"
+            // ✅ decimal keypad on mobile
+            inputMode="decimal"
             style={{
               width: "100%",
               padding: "12px 14px",
@@ -114,7 +122,9 @@ function CalculatorModal({ open, initialValue, title = "Calculator", onClose, on
           />
           <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280", textAlign: "right" }}>
             Preview:{" "}
-            <strong style={{ color: "#111827" }}>{safeNumber(val).toLocaleString("en-RW")}</strong>
+            <strong style={{ color: "#111827" }}>
+              {safeNumber(val).toLocaleString("en-RW", { maximumFractionDigits: 3 })}
+            </strong>
           </div>
         </div>
 
@@ -122,15 +132,29 @@ function CalculatorModal({ open, initialValue, title = "Calculator", onClose, on
           <Key onClick={() => append("7")}>7</Key>
           <Key onClick={() => append("8")}>8</Key>
           <Key onClick={() => append("9")}>9</Key>
+
           <Key onClick={() => append("4")}>4</Key>
           <Key onClick={() => append("5")}>5</Key>
           <Key onClick={() => append("6")}>6</Key>
+
           <Key onClick={() => append("1")}>1</Key>
           <Key onClick={() => append("2")}>2</Key>
           <Key onClick={() => append("3")}>3</Key>
+
           <Key onClick={() => append("0")}>0</Key>
           <Key onClick={() => append("00")}>00</Key>
-          <Key onClick={backspace}>⌫</Key>
+
+          <Key
+            onClick={() => {
+              if (!dotDisabled) append(".");
+            }}
+          >
+            .
+          </Key>
+
+          <Key wide onClick={backspace}>
+            ⌫ Back
+          </Key>
           <Key wide onClick={clear}>
             Clear
           </Key>
@@ -328,7 +352,7 @@ export default function SalesPOS() {
   }, [expenses, shopId, todayStr]);
 
   const expensesTotalToday = useMemo(() => {
-    return (expenses || []).reduce((sum, e) => sum + Number(e?.amount || 0), 0);
+    return (expenses || []).reduce((sum, e) => sum + safeNumber(e?.amount || 0), 0);
   }, [expenses]);
 
   const stockByItemId = useMemo(() => {
@@ -371,7 +395,8 @@ export default function SalesPOS() {
 
       if (!stockOk) throw new Error("Failed to load stock.");
 
-      const positiveStock = (stockData || []).filter((row) => Number(row?.remaining_pieces || 0) > 0);
+      // ✅ decimals safe: 0.5 remaining pieces should count as positive
+      const positiveStock = (stockData || []).filter((row) => safeNumber(row?.remaining_pieces) > 0);
 
       setShop(shopData);
       setStockRows(positiveStock);
@@ -438,7 +463,19 @@ export default function SalesPOS() {
           </div>
         </div>
 
-        <div style={{ display: "inline-flex", backgroundColor: "#e5e7eb", borderRadius: "999px", padding: "2px" }}>
+        {/* ✅ Mobile friendly tabs: horizontal scroll instead of wrapping */}
+        <div
+          style={{
+            display: "inline-flex",
+            backgroundColor: "#e5e7eb",
+            borderRadius: "999px",
+            padding: "2px",
+            maxWidth: "100%",
+            overflowX: "auto",
+            WebkitOverflowScrolling: "touch",
+            gap: "2px",
+          }}
+        >
           {allowedTabs.map((t) => {
             const isActive = activeTab === t.key;
             return (
@@ -456,6 +493,8 @@ export default function SalesPOS() {
                   backgroundColor: isActive ? "#ffffff" : "transparent",
                   color: isActive ? "#111827" : "#4b5563",
                   boxShadow: isActive ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
+                  whiteSpace: "nowrap",
+                  flex: "0 0 auto",
                 }}
               >
                 {t.label}
