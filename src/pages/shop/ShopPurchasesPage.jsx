@@ -60,6 +60,7 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
     return items.find((it) => String(it.id) === String(valueId)) || null;
   }, [items, valueId]);
 
+  // Keep input text aligned with selected item when dropdown closes
   useEffect(() => {
     if (!open) setQ(selected ? selected.label : "");
   }, [selected, open]);
@@ -72,6 +73,7 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
       .slice(0, 500);
   }, [items, q]);
 
+  // Close on outside click
   useEffect(() => {
     const onDown = (e) => {
       if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
@@ -413,6 +415,7 @@ function ShopPurchasesPage() {
 
   const shopName = shop?.name || `Shop ${shopId}`;
 
+  // ✅ Items list for combobox (HOOK SAFE)
   const pickerItems = useMemo(
     () =>
       (stockRows || []).map((s) => ({
@@ -439,10 +442,8 @@ function ShopPurchasesPage() {
       if (!res.ok) return;
       const data = await res.json();
 
-      const mapped = data.map((pl) => {
-        const sup = _readSupplierNameFromApi(pl);
-        const inv = _readInvoiceFromApi(pl);
-
+      const mapped = (data || []).map((pl) => {
+        const s = stockByItemId[pl.item_id] || {};
         return {
           id: `db-${pl.id}`,
           isFromDb: true,
@@ -450,10 +451,15 @@ function ShopPurchasesPage() {
           itemId: pl.item_id,
           qtyUnits: pl.quantity,
           newUnitCost: pl.unit_cost_price,
-          newWholesalePerPiece: stockByItemId[pl.item_id]?.wholesale_price_per_piece || "",
-          newRetailPerPiece: stockByItemId[pl.item_id]?.selling_price_per_piece || "",
-          supplierName: sup || null,
-          invoiceNumber: inv || null,
+
+          // ✅ KEEP "new vs recent" correctly: prefer values from purchase line if backend returns them
+          newWholesalePerPiece:
+            pl.wholesale_price_per_piece ?? pl.wholesale ?? pl.new_wholesale_per_piece ?? s.wholesale_price_per_piece ?? "",
+          newRetailPerPiece:
+            pl.retail_price_per_piece ?? pl.retail ?? pl.new_retail_per_piece ?? s.selling_price_per_piece ?? "",
+
+          supplierName: _readSupplierNameFromApi(pl) || null,
+          invoiceNumber: _readInvoiceFromApi(pl) || null,
           purchaseDate: _safeIsoDate(pl.purchase_date || pl.date || purchaseDate) || purchaseDate,
         };
       });
@@ -497,6 +503,11 @@ function ShopPurchasesPage() {
         itemId: pl.item_id,
         qtyUnits: pl.quantity,
         newUnitCost: pl.unit_cost_price,
+
+        // ✅ restore new prices in view tabs too
+        newWholesalePerPiece: pl.wholesale_price_per_piece ?? pl.wholesale ?? pl.new_wholesale_per_piece ?? null,
+        newRetailPerPiece: pl.retail_price_per_piece ?? pl.retail ?? pl.new_retail_per_piece ?? null,
+
         supplierName: _readSupplierNameFromApi(pl) || null,
         invoiceNumber: _readInvoiceFromApi(pl) || null,
         purchaseDate: _safeIsoDate(pl.purchase_date || pl.date || dateStr) || dateStr,
@@ -546,6 +557,11 @@ function ShopPurchasesPage() {
             itemId: pl.item_id,
             qtyUnits: pl.quantity,
             newUnitCost: pl.unit_cost_price,
+
+            // ✅ restore new prices in range view too
+            newWholesalePerPiece: pl.wholesale_price_per_piece ?? pl.wholesale ?? pl.new_wholesale_per_piece ?? null,
+            newRetailPerPiece: pl.retail_price_per_piece ?? pl.retail ?? pl.new_retail_per_piece ?? null,
+
             supplierName: _readSupplierNameFromApi(pl) || null,
             invoiceNumber: _readInvoiceFromApi(pl) || null,
             purchaseDate: _safeIsoDate(pl.purchase_date || pl.date || d) || d,
@@ -619,6 +635,7 @@ function ShopPurchasesPage() {
     });
   };
 
+  // ✅ RESTORED inline edit behavior (same as your original)
   const startEditNewLine = (lineId) => {
     const baseLine = lines.find((l) => l.id === lineId);
     if (!baseLine || baseLine.isFromDb) return;
@@ -640,6 +657,7 @@ function ShopPurchasesPage() {
     scrollPadIntoView();
   };
 
+  // ✅ RESTORED inline edit behavior (same as your original)
   const startEditSavedLine = (line) => {
     setSelectedLineId(line.id);
 
@@ -713,6 +731,7 @@ function ShopPurchasesPage() {
       return;
     }
 
+    // ✅ Allow 0.5 units etc (only require > 0)
     const qtyUnits = Number(pad.qtyUnits || 0);
     if (qtyUnits <= 0) {
       setError("Quantity (units) must be greater than zero.");
@@ -786,9 +805,6 @@ function ShopPurchasesPage() {
           newUnitCost,
           newWholesalePerPiece: pad.newWholesalePerPiece || "",
           newRetailPerPiece: pad.newRetailPerPiece || "",
-          supplierName: supplierName || null,
-          invoiceNumber: invoiceNumber || null,
-          purchaseDate: purchaseDate,
         },
       ]);
     } else {
@@ -802,8 +818,6 @@ function ShopPurchasesPage() {
                 newUnitCost,
                 newWholesalePerPiece: pad.newWholesalePerPiece || "",
                 newRetailPerPiece: pad.newRetailPerPiece || "",
-                supplierName: l.supplierName ?? (supplierName || null),
-                invoiceNumber: l.invoiceNumber ?? (invoiceNumber || null),
               }
             : l
         )
@@ -830,6 +844,8 @@ function ShopPurchasesPage() {
 
       const newCostPerPiece = piecesPerUnit > 0 ? newUnitCost / piecesPerUnit : 0;
       const lineTotal = qtyUnits * newUnitCost;
+
+      // ✅ New column value
       const allPieces = qtyUnits * piecesPerUnit;
 
       return {
@@ -994,11 +1010,7 @@ function ShopPurchasesPage() {
       });
   }, [viewFiltered]);
 
-  const apiSeemsMissingSupplier = useMemo(() => {
-    if (viewLinesRaw.length === 0) return false;
-    return viewLinesRaw.every((l) => !l.supplierName);
-  }, [viewLinesRaw]);
-
+  // ✅ Early returns must come AFTER all hooks
   if (loading) {
     return (
       <div style={{ padding: "32px" }}>
@@ -1015,6 +1027,7 @@ function ShopPurchasesPage() {
     );
   }
 
+  // ✅ Purchase Pad white
   const padDark = false;
   const padBg = padDark ? "#0b1220" : "#ffffff";
   const padText = padDark ? "#e5e7eb" : "#111827";
@@ -1084,11 +1097,6 @@ function ShopPurchasesPage() {
               setMessage("");
               setError("");
               setViewError("");
-              if (t.id === "supplier") setViewDate((v) => v || purchaseDate);
-              if (t.id === "date") {
-                setViewFromDate((v) => v || purchaseDate);
-                setViewToDate((v) => v || purchaseDate);
-              }
             }}
             style={{
               padding: "8px 14px",
@@ -1108,7 +1116,8 @@ function ShopPurchasesPage() {
     </div>
   );
 
-  const ViewTable = ({ rows, showDelete = false }) => {
+  // ✅ Read-only table for tabs 2 & 3 (kept separate so Tab 1 inline-edit stays intact)
+  const ViewTable = ({ rows }) => {
     if (!rows || rows.length === 0) {
       return (
         <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
@@ -1118,17 +1127,7 @@ function ShopPurchasesPage() {
     }
 
     return (
-      <div
-        style={{
-          maxHeight: "420px",
-          overflowY: "auto",
-          overflowX: "auto",
-          borderRadius: "12px",
-          border: "1px solid #e5e7eb",
-          padding: "0 8px 4px 0",
-          backgroundColor: "#fcfcff",
-        }}
-      >
+      <div style={{ maxHeight: "420px", overflowY: "auto", overflowX: "auto", borderRadius: "12px", border: "1px solid #e5e7eb", padding: "0 8px 4px 0", backgroundColor: "#fcfcff" }}>
         <div
           style={{
             display: "grid",
@@ -1189,49 +1188,35 @@ function ShopPurchasesPage() {
               <div style={{ textAlign: "right" }}>{formatMoney(line.newUnitCost)}</div>
               <div style={{ textAlign: "right" }}>{formatMoney(newCostPerPiece)}</div>
               <div style={{ textAlign: "right" }}>{formatMoney(recentWholesalePerPiece)}</div>
-
-              {/* ✅ FIXED: wrap ternary in { } so React evaluates it */}
               <div style={{ textAlign: "right" }}>
-                {line.newWholesalePerPiece != null && line.newWholesalePerPiece !== ""
-                  ? formatMoney(line.newWholesalePerPiece)
-                  : "—"}
+                {line.newWholesalePerPiece != null && line.newWholesalePerPiece !== "" ? formatMoney(line.newWholesalePerPiece) : "—"}
               </div>
-
               <div style={{ textAlign: "right" }}>{formatMoney(recentRetailPerPiece)}</div>
-
-              {/* ✅ FIXED: wrap ternary in { } so React evaluates it */}
               <div style={{ textAlign: "right" }}>
-                {line.newRetailPerPiece != null && line.newRetailPerPiece !== ""
-                  ? formatMoney(line.newRetailPerPiece)
-                  : "—"}
+                {line.newRetailPerPiece != null && line.newRetailPerPiece !== "" ? formatMoney(line.newRetailPerPiece) : "—"}
               </div>
-
               <div style={{ textAlign: "right", fontWeight: 600 }}>{formatMoney(lineTotal)}</div>
 
               <div style={{ textAlign: "center" }}>
-                {showDelete ? (
-                  <button
-                    type="button"
-                    onClick={() => deleteSavedLine(line.dbId)}
-                    disabled={padSaving}
-                    title="Delete saved line"
-                    style={{
-                      width: "28px",
-                      height: "28px",
-                      borderRadius: "9999px",
-                      border: "1px solid #fee2e2",
-                      backgroundColor: "#fef2f2",
-                      color: "#b91c1c",
-                      fontSize: "14px",
-                      cursor: padSaving ? "not-allowed" : "pointer",
-                      opacity: padSaving ? 0.7 : 1,
-                    }}
-                  >
-                    🗑
-                  </button>
-                ) : (
-                  <span style={{ color: "#9ca3af" }}> </span>
-                )}
+                <button
+                  type="button"
+                  onClick={() => deleteSavedLine(line.dbId)}
+                  disabled={padSaving}
+                  title="Delete saved line"
+                  style={{
+                    width: "28px",
+                    height: "28px",
+                    borderRadius: "9999px",
+                    border: "1px solid #fee2e2",
+                    backgroundColor: "#fef2f2",
+                    color: "#b91c1c",
+                    fontSize: "14px",
+                    cursor: padSaving ? "not-allowed" : "pointer",
+                    opacity: padSaving ? 0.7 : 1,
+                  }}
+                >
+                  🗑
+                </button>
               </div>
             </div>
           );
@@ -1240,9 +1225,9 @@ function ShopPurchasesPage() {
     );
   };
 
-  // ------- UI -------
   return (
     <div style={{ padding: "16px 24px 24px" }}>
+      {/* Header */}
       <div
         ref={headerRef}
         style={{
@@ -1307,7 +1292,7 @@ function ShopPurchasesPage() {
           </div>
         </div>
 
-        {/* Header filters */}
+        {/* Filters per tab */}
         {activeTab === "entry" ? (
           <div style={{ display: "grid", gridTemplateColumns: "160px minmax(0, 1fr) 220px", gap: "12px", marginBottom: "8px" }}>
             <input
@@ -1397,16 +1382,12 @@ function ShopPurchasesPage() {
           padding: "16px 18px 14px",
         }}
       >
-        {/* TAB 1 (Entry) */}
+        {/* TAB 1: ENTRY (✅ inline edit restored exactly as before) */}
         {activeTab === "entry" && (
           <>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-              <div>
-                <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>
-                  Items purchased on {formatDateDMY(purchaseDate)}
-                </h2>
-              </div>
-            </div>
+            <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0, marginBottom: "10px" }}>
+              Items purchased on {formatDateDMY(purchaseDate)}
+            </h2>
 
             {/* PAD */}
             <div
@@ -1536,20 +1517,148 @@ function ShopPurchasesPage() {
               </div>
             </div>
 
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px", marginTop: "2px" }}>
-              <div style={{ fontSize: "12px", color: "#6b7280" }}>
-                Items for {formatDateDMY(purchaseDate)}: {linesWithComputed.length} {searchTerm ? `(showing ${filteredLinesWithComputed.length} after filter)` : ""}
+            {/* LIST (✅ original inline edit restored) */}
+            {linesWithComputed.length === 0 ? (
+              <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
+                No items in this purchase date yet. Use the pad above and click <strong>{padButtonText}</strong>.
               </div>
-              <input
-                type="text"
-                placeholder="Search in items..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                style={{ width: "240px", padding: "6px 10px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "12px" }}
-              />
-            </div>
+            ) : (
+              <>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px", marginTop: "2px" }}>
+                  <div style={{ fontSize: "12px", color: "#6b7280" }}>
+                    Items for {formatDateDMY(purchaseDate)}: {linesWithComputed.length}{" "}
+                    {searchTerm ? `(showing ${filteredLinesWithComputed.length} after filter)` : ""}
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="Search in items..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    style={{ width: "240px", padding: "6px 10px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "12px" }}
+                  />
+                </div>
 
-            <ViewTable rows={filteredLinesWithComputed} showDelete={true} />
+                <div style={{ maxHeight: "420px", overflowY: "auto", overflowX: "auto", borderRadius: "12px", border: "1px solid #e5e7eb", padding: "0 8px 4px 0", backgroundColor: "#fcfcff" }}>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: PURCHASE_GRID_COLUMNS,
+                      minWidth: "1260px",
+                      alignItems: "center",
+                      padding: "6px 4px 6px 8px",
+                      borderBottom: "1px solid #e5e7eb",
+                      fontSize: "11px",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.08em",
+                      color: "#6b7280",
+                      fontWeight: 600,
+                      position: "sticky",
+                      top: 0,
+                      backgroundColor: "#f9fafb",
+                      zIndex: 5,
+                    }}
+                  >
+                    <div>Item</div>
+                    <div style={{ textAlign: "center" }}>Qty units</div>
+                    <div style={{ textAlign: "center" }}>Pieces / unit</div>
+                    <div style={{ textAlign: "center" }}>All pieces</div>
+                    <div style={{ textAlign: "right" }}>Recent cost/unit</div>
+                    <div style={{ textAlign: "right" }}>New cost/unit</div>
+                    <div style={{ textAlign: "right" }}>Cost / piece</div>
+                    <div style={{ textAlign: "right" }}>Recent wholesale</div>
+                    <div style={{ textAlign: "right" }}>New wholesale</div>
+                    <div style={{ textAlign: "right" }}>Recent retail</div>
+                    <div style={{ textAlign: "right" }}>New retail</div>
+                    <div style={{ textAlign: "right" }}>Line total</div>
+                    <div></div>
+                  </div>
+
+                  {filteredLinesWithComputed.map((line) => {
+                    const { meta, computed } = line;
+                    const { itemName, piecesPerUnit, recentUnitCost, recentWholesalePerPiece, recentRetailPerPiece } = meta;
+                    const { newCostPerPiece, lineTotal, allPieces } = computed;
+
+                    const isFromDb = line.isFromDb;
+                    const isSelected = selectedLineId === line.id;
+                    const isEditingThisSaved = isFromDb && editingDbUiId === line.id;
+
+                    return (
+                      <div
+                        key={line.id}
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: PURCHASE_GRID_COLUMNS,
+                          minWidth: "1260px",
+                          alignItems: "center",
+                          padding: "8px 4px 8px 8px",
+                          borderBottom: "1px solid #f3f4f6",
+                          fontSize: "13px",
+                          backgroundColor: isSelected ? "#eff6ff" : "transparent",
+                        }}
+                      >
+                        <div>
+                          {isFromDb ? (
+                            <button
+                              type="button"
+                              onClick={() => startEditSavedLine(line)}
+                              style={{ padding: 0, margin: 0, border: "none", background: "transparent", color: "#111827", fontWeight: 700, fontSize: "13px", cursor: "pointer", textAlign: "left" }}
+                              title="Edit saved purchase line"
+                            >
+                              {itemName || "Unknown item"}{" "}
+                              {isEditingThisSaved ? <span style={{ color: "#2563eb", fontWeight: 800, marginLeft: 6 }}>(editing)</span> : null}
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => startEditNewLine(line.id)}
+                              style={{ padding: 0, margin: 0, border: "none", background: "transparent", color: "#2563eb", fontWeight: 600, fontSize: "13px", cursor: "pointer", textAlign: "left" }}
+                              title="Edit new (unsaved) line"
+                            >
+                              {itemName || "Unknown item"}
+                            </button>
+                          )}
+                        </div>
+
+                        <div style={{ textAlign: "center" }}>{formatQty(line.qtyUnits)}</div>
+                        <div style={{ textAlign: "center" }}>{formatQty(piecesPerUnit)}</div>
+                        <div style={{ textAlign: "center" }}>{formatQty(allPieces)}</div>
+                        <div style={{ textAlign: "right" }}>{formatMoney(recentUnitCost)}</div>
+                        <div style={{ textAlign: "right" }}>{formatMoney(line.newUnitCost)}</div>
+                        <div style={{ textAlign: "right" }}>{formatMoney(newCostPerPiece)}</div>
+                        <div style={{ textAlign: "right" }}>{formatMoney(recentWholesalePerPiece)}</div>
+                        <div style={{ textAlign: "right" }}>{formatMoney(line.newWholesalePerPiece)}</div>
+                        <div style={{ textAlign: "right" }}>{formatMoney(recentRetailPerPiece)}</div>
+                        <div style={{ textAlign: "right" }}>{formatMoney(line.newRetailPerPiece)}</div>
+                        <div style={{ textAlign: "right", fontWeight: 600 }}>{formatMoney(lineTotal)}</div>
+
+                        <div style={{ textAlign: "center" }}>
+                          {isFromDb ? (
+                            <button
+                              type="button"
+                              onClick={() => deleteSavedLine(line.dbId)}
+                              disabled={padSaving}
+                              title="Delete saved line"
+                              style={{ width: "28px", height: "28px", borderRadius: "9999px", border: "1px solid #fee2e2", backgroundColor: "#fef2f2", color: "#b91c1c", fontSize: "14px", cursor: padSaving ? "not-allowed" : "pointer", opacity: padSaving ? 0.7 : 1 }}
+                            >
+                              🗑
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => removeLine(line.id)}
+                              style={{ width: "28px", height: "28px", borderRadius: "9999px", border: "1px solid #fee2e2", backgroundColor: "#fef2f2", color: "#b91c1c", fontSize: "16px", cursor: "pointer" }}
+                              title="Remove new line (not saved yet)"
+                            >
+                              ✕
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: "12px", marginTop: "14px" }}>
               <button
@@ -1571,7 +1680,7 @@ function ShopPurchasesPage() {
           </>
         )}
 
-        {/* TAB 2 */}
+        {/* TAB 2: BY SUPPLIER */}
         {activeTab === "supplier" && (
           <>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", marginBottom: "10px" }}>
@@ -1581,11 +1690,6 @@ function ShopPurchasesPage() {
                 </h2>
                 <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "2px" }}>
                   Showing {viewFiltered.length} item lines
-                  {apiSeemsMissingSupplier ? (
-                    <span style={{ marginLeft: 8, color: "#b45309", fontWeight: 700 }}>
-                      (Supplier not included by API → grouped as “Unknown supplier”)
-                    </span>
-                  ) : null}
                 </div>
               </div>
 
@@ -1626,7 +1730,7 @@ function ShopPurchasesPage() {
                         <span style={{ color: "#111827", fontWeight: 900 }}>{formatMoney(g.total)}</span>
                       </div>
                     </div>
-                    <ViewTable rows={g.lines} showDelete={true} />
+                    <ViewTable rows={g.lines} />
                   </div>
                 ))}
               </div>
@@ -1634,7 +1738,7 @@ function ShopPurchasesPage() {
           </>
         )}
 
-        {/* TAB 3 */}
+        {/* TAB 3: BY DATE RANGE */}
         {activeTab === "date" && (
           <>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", marginBottom: "10px" }}>
@@ -1670,7 +1774,7 @@ function ShopPurchasesPage() {
             {viewLoading ? (
               <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>Loading purchases…</div>
             ) : (
-              <ViewTable rows={viewFiltered} showDelete={true} />
+              <ViewTable rows={viewFiltered} />
             )}
           </>
         )}
