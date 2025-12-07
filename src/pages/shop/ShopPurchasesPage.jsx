@@ -193,6 +193,49 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
   );
 }
 
+// --- Small helpers for view tabs (best-effort supplier extraction) ---
+function _readSupplierNameFromApi(obj) {
+  if (!obj) return null;
+  // Try common field names / nested structures
+  return (
+    obj.supplier_name ||
+    obj.supplierName ||
+    obj.supplier ||
+    obj.vendor_name ||
+    obj.vendorName ||
+    obj.purchase_supplier_name ||
+    obj.purchaseSupplierName ||
+    obj?.purchase?.supplier_name ||
+    obj?.purchase?.supplierName ||
+    null
+  );
+}
+
+function _readInvoiceFromApi(obj) {
+  if (!obj) return null;
+  return (
+    obj.invoice_number ||
+    obj.invoiceNumber ||
+    obj.invoice ||
+    obj.purchase_invoice_number ||
+    obj?.purchase?.invoice_number ||
+    null
+  );
+}
+
+function _safeIsoDate(d) {
+  try {
+    if (!d) return null;
+    // If already ISO date "YYYY-MM-DD"
+    if (typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
+    // If datetime string, take date part
+    if (typeof d === "string" && d.includes("T")) return d.split("T")[0];
+    return String(d).slice(0, 10);
+  } catch {
+    return null;
+  }
+}
+
 function ShopPurchasesPage() {
   const { shopId } = useParams();
   const navigate = useNavigate();
@@ -210,11 +253,15 @@ function ShopPurchasesPage() {
     return h;
   }, [token]);
 
+  // ✅ Tabs
+  const [activeTab, setActiveTab] = useState("entry"); // "entry" | "supplier" | "date"
+
   const [shop, setShop] = useState(null);
   const [stockRows, setStockRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
+  // ✅ Tab 1 (entry) state (unchanged)
   const [purchaseDate, setPurchaseDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [supplierName, setSupplierName] = useState("");
   const [invoiceNumber, setInvoiceNumber] = useState("");
@@ -254,6 +301,13 @@ function ShopPurchasesPage() {
     window.addEventListener("resize", calc);
     return () => window.removeEventListener("resize", calc);
   }, []);
+
+  // ✅ Tab 2 & 3 (view) state
+  const [viewDate, setViewDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [viewLinesRaw, setViewLinesRaw] = useState([]); // normalized raw from API for tabs 2/3
+  const [viewLoading, setViewLoading] = useState(false);
+  const [viewError, setViewError] = useState("");
+  const [viewSearch, setViewSearch] = useState("");
 
   const resetPadToDefaults = () => {
     setPad({
@@ -341,16 +395,25 @@ function ShopPurchasesPage() {
       if (!res.ok) return;
       const data = await res.json();
 
-      const mapped = data.map((pl) => ({
-        id: `db-${pl.id}`,
-        isFromDb: true,
-        dbId: pl.id,
-        itemId: pl.item_id,
-        qtyUnits: pl.quantity,
-        newUnitCost: pl.unit_cost_price,
-        newWholesalePerPiece: stockByItemId[pl.item_id]?.wholesale_price_per_piece || "",
-        newRetailPerPiece: stockByItemId[pl.item_id]?.selling_price_per_piece || "",
-      }));
+      const mapped = data.map((pl) => {
+        const sup = _readSupplierNameFromApi(pl);
+        const inv = _readInvoiceFromApi(pl);
+
+        return {
+          id: `db-${pl.id}`,
+          isFromDb: true,
+          dbId: pl.id,
+          itemId: pl.item_id,
+          qtyUnits: pl.quantity,
+          newUnitCost: pl.unit_cost_price,
+          newWholesalePerPiece: stockByItemId[pl.item_id]?.wholesale_price_per_piece || "",
+          newRetailPerPiece: stockByItemId[pl.item_id]?.selling_price_per_piece || "",
+          // ✅ keep metadata if API provides it (doesn't affect existing features)
+          supplierName: sup || null,
+          invoiceNumber: inv || null,
+          purchaseDate: _safeIsoDate(pl.purchase_date || pl.date || purchaseDate) || purchaseDate,
+        };
+      });
 
       setLines(mapped);
     } catch (err) {
@@ -367,6 +430,62 @@ function ShopPurchasesPage() {
     cancelAnyEdit();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [purchaseDate]);
+
+  // ✅ Load view data for Tab 2 & 3 (separate from entry lines)
+  const loadViewLinesForDate = async (dateStr) => {
+    if (!stockRows.length) {
+      setViewLinesRaw([]);
+      return;
+    }
+
+    setViewLoading(true);
+    setViewError("");
+    try {
+      const url = `${API_BASE}/purchases/by-shop-date/?shop_id=${shopId}&purchase_date=${dateStr}`;
+      const res = await fetch(url, { headers: authHeadersNoJson });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => null);
+        throw new Error(errData?.detail || `Failed to load purchases for view. Status: ${res.status}`);
+      }
+      const data = await res.json();
+
+      // Normalize to a “line” record that includes supplier if present
+      const normalized = (data || []).map((pl) => ({
+        id: `view-db-${pl.id}`,
+        dbId: pl.id,
+        itemId: pl.item_id,
+        qtyUnits: pl.quantity,
+        newUnitCost: pl.unit_cost_price,
+        // best-effort supplier extraction
+        supplierName: _readSupplierNameFromApi(pl) || null,
+        invoiceNumber: _readInvoiceFromApi(pl) || null,
+        purchaseDate: _safeIsoDate(pl.purchase_date || pl.date || dateStr) || dateStr,
+      }));
+
+      setViewLinesRaw(normalized);
+    } catch (err) {
+      console.error(err);
+      setViewError(err?.message || "Failed to load purchases for view.");
+      setViewLinesRaw([]);
+    } finally {
+      setViewLoading(false);
+    }
+  };
+
+  // When switching to supplier/date tabs, load view lines (doesn't affect entry tab)
+  useEffect(() => {
+    if (activeTab === "supplier" || activeTab === "date") {
+      loadViewLinesForDate(viewDate);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab === "supplier" || activeTab === "date") {
+      loadViewLinesForDate(viewDate);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewDate]);
 
   const updatePad = (field, rawValue) => {
     setPad((prev) => {
@@ -477,6 +596,11 @@ function ShopPurchasesPage() {
       setMessage("Saved purchase line deleted and stock recalculated.");
       cancelAnyEdit();
       await loadExistingLines();
+
+      // refresh view tabs if open
+      if (activeTab === "supplier" || activeTab === "date") {
+        await loadViewLinesForDate(viewDate);
+      }
     } catch (err) {
       console.error(err);
       setError(err.message || "Failed to delete saved line.");
@@ -541,6 +665,12 @@ function ShopPurchasesPage() {
         await res.json().catch(() => null);
         setMessage("Saved purchase line updated and stock recalculated.");
         await loadExistingLines();
+
+        // refresh view tabs if open
+        if (activeTab === "supplier" || activeTab === "date") {
+          await loadViewLinesForDate(viewDate);
+        }
+
         cancelAnyEdit();
         scrollPadIntoView();
         return;
@@ -565,6 +695,10 @@ function ShopPurchasesPage() {
           newUnitCost,
           newWholesalePerPiece: pad.newWholesalePerPiece || "",
           newRetailPerPiece: pad.newRetailPerPiece || "",
+          // keep current header values on the draft line (does not change existing features)
+          supplierName: supplierName || null,
+          invoiceNumber: invoiceNumber || null,
+          purchaseDate: purchaseDate,
         },
       ]);
     } else {
@@ -578,6 +712,8 @@ function ShopPurchasesPage() {
                 newUnitCost,
                 newWholesalePerPiece: pad.newWholesalePerPiece || "",
                 newRetailPerPiece: pad.newRetailPerPiece || "",
+                supplierName: l.supplierName ?? (supplierName || null),
+                invoiceNumber: l.invoiceNumber ?? (invoiceNumber || null),
               }
             : l
         )
@@ -693,6 +829,12 @@ function ShopPurchasesPage() {
       setLines([]);
       setSelectedLineId(null);
       resetPadToDefaults();
+
+      // refresh entry & view tabs
+      await loadExistingLines();
+      if (activeTab === "supplier" || activeTab === "date") {
+        await loadViewLinesForDate(viewDate);
+      }
     } catch (err) {
       console.error(err);
       setError(err.message || "Failed to save purchase.");
@@ -701,6 +843,77 @@ function ShopPurchasesPage() {
       setSaving(false);
     }
   };
+
+  // ✅ View tab computed lines (same columns)
+  const viewLinesWithComputed = useMemo(() => {
+    return (viewLinesRaw || []).map((line) => {
+      const s = stockByItemId[line.itemId] || {};
+      const piecesPerUnit = s.item_pieces_per_unit || 1;
+
+      const recentUnitCost = Number(s.last_purchase_unit_price || 0);
+      const recentWholesalePerPiece = Number(s.wholesale_price_per_piece || 0);
+      const recentRetailPerPiece = Number(s.selling_price_per_piece || 0);
+
+      const qtyUnits = Number(line.qtyUnits || 0);
+      const newUnitCost = Number(line.newUnitCost || 0);
+
+      const newCostPerPiece = piecesPerUnit > 0 ? newUnitCost / piecesPerUnit : 0;
+      const lineTotal = qtyUnits * newUnitCost;
+      const allPieces = qtyUnits * piecesPerUnit;
+
+      return {
+        ...line,
+        meta: {
+          itemName: s.item_name,
+          category: s.item_category,
+          piecesPerUnit,
+          recentUnitCost,
+          recentWholesalePerPiece,
+          recentRetailPerPiece,
+        },
+        computed: {
+          newCostPerPiece,
+          lineTotal,
+          allPieces,
+        },
+      };
+    });
+  }, [viewLinesRaw, stockByItemId]);
+
+  const viewFiltered = useMemo(() => {
+    const t = viewSearch.trim().toLowerCase();
+    if (!t) return viewLinesWithComputed;
+    return viewLinesWithComputed.filter((l) => {
+      const name = (l.meta.itemName || "").toLowerCase();
+      const sup = (l.supplierName || "").toLowerCase();
+      return name.includes(t) || sup.includes(t);
+    });
+  }, [viewLinesWithComputed, viewSearch]);
+
+  const viewTotal = useMemo(() => {
+    return viewFiltered.reduce((sum, l) => sum + (l.computed.lineTotal || 0), 0);
+  }, [viewFiltered]);
+
+  const groupedBySupplier = useMemo(() => {
+    const groups = {};
+    for (const l of viewFiltered) {
+      const key = (l.supplierName || "").trim() || "Unknown supplier";
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(l);
+    }
+    // Return sorted list for stable rendering
+    return Object.entries(groups)
+      .sort(([a], [b]) => a.localeCompare(b, undefined, { sensitivity: "base" }))
+      .map(([supplier, arr]) => {
+        const total = arr.reduce((s, x) => s + (x.computed.lineTotal || 0), 0);
+        return { supplier, lines: arr, total };
+      });
+  }, [viewFiltered]);
+
+  const apiSeemsMissingSupplier = useMemo(() => {
+    if (viewLinesRaw.length === 0) return false;
+    return viewLinesRaw.every((l) => !l.supplierName);
+  }, [viewLinesRaw]);
 
   // ✅ Early returns must come AFTER all hooks (we are safe now)
   if (loading) {
@@ -767,6 +980,181 @@ function ShopPurchasesPage() {
 
   const padButtonText = isEditingSaved ? "Update saved item" : isEditingNew ? "Update item" : "+ Add to list";
 
+  const TabsBar = (
+    <div
+      style={{
+        display: "flex",
+        gap: "10px",
+        flexWrap: "wrap",
+        marginTop: "10px",
+        marginBottom: "8px",
+      }}
+    >
+      {[
+        { id: "entry", label: "1) Purchase entry" },
+        { id: "supplier", label: "2) By supplier" },
+        { id: "date", label: "3) By date (full list)" },
+      ].map((t) => {
+        const active = activeTab === t.id;
+        return (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => {
+              setActiveTab(t.id);
+              setMessage("");
+              setError("");
+              setViewError("");
+              // when moving to view tabs, default viewDate to current purchaseDate if viewDate empty
+              if ((t.id === "supplier" || t.id === "date") && !viewDate) setViewDate(purchaseDate);
+            }}
+            style={{
+              padding: "8px 14px",
+              borderRadius: "999px",
+              border: active ? "1px solid #2563eb" : "1px solid #d1d5db",
+              backgroundColor: active ? "#eff6ff" : "#ffffff",
+              color: active ? "#1d4ed8" : "#111827",
+              fontWeight: 800,
+              fontSize: "12px",
+              cursor: "pointer",
+            }}
+          >
+            {t.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  // Reusable view table (same columns), view-only with optional delete button
+  const ViewTable = ({ rows, showDelete = false }) => {
+    if (!rows || rows.length === 0) {
+      return (
+        <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
+          No purchased items found.
+        </div>
+      );
+    }
+
+    return (
+      <div
+        style={{
+          maxHeight: "420px",
+          overflowY: "auto",
+          overflowX: "auto",
+          borderRadius: "12px",
+          border: "1px solid #e5e7eb",
+          padding: "0 8px 4px 0",
+          backgroundColor: "#fcfcff",
+        }}
+      >
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: PURCHASE_GRID_COLUMNS,
+            minWidth: "1260px",
+            alignItems: "center",
+            padding: "6px 4px 6px 8px",
+            borderBottom: "1px solid #e5e7eb",
+            fontSize: "11px",
+            textTransform: "uppercase",
+            letterSpacing: "0.08em",
+            color: "#6b7280",
+            fontWeight: 600,
+            position: "sticky",
+            top: 0,
+            backgroundColor: "#f9fafb",
+            zIndex: 5,
+          }}
+        >
+          <div>Item</div>
+          <div style={{ textAlign: "center" }}>Qty units</div>
+          <div style={{ textAlign: "center" }}>Pieces / unit</div>
+          <div style={{ textAlign: "center" }}>All pieces</div>
+          <div style={{ textAlign: "right" }}>Recent cost/unit</div>
+          <div style={{ textAlign: "right" }}>New cost/unit</div>
+          <div style={{ textAlign: "right" }}>Cost / piece</div>
+          <div style={{ textAlign: "right" }}>Recent wholesale</div>
+          <div style={{ textAlign: "right" }}>New wholesale</div>
+          <div style={{ textAlign: "right" }}>Recent retail</div>
+          <div style={{ textAlign: "right" }}>New retail</div>
+          <div style={{ textAlign: "right" }}>Line total</div>
+          <div></div>
+        </div>
+
+        {rows.map((line) => {
+          const { meta, computed } = line;
+          const { itemName, piecesPerUnit, recentUnitCost, recentWholesalePerPiece, recentRetailPerPiece } = meta;
+          const { newCostPerPiece, lineTotal, allPieces } = computed;
+
+          return (
+            <div
+              key={line.id}
+              style={{
+                display: "grid",
+                gridTemplateColumns: PURCHASE_GRID_COLUMNS,
+                minWidth: "1260px",
+                alignItems: "center",
+                padding: "8px 4px 8px 8px",
+                borderBottom: "1px solid #f3f4f6",
+                fontSize: "13px",
+              }}
+            >
+              <div style={{ fontWeight: 700, color: "#111827" }}>{itemName || "Unknown item"}</div>
+              <div style={{ textAlign: "center" }}>{formatQty(line.qtyUnits)}</div>
+              <div style={{ textAlign: "center" }}>{formatQty(piecesPerUnit)}</div>
+              <div style={{ textAlign: "center" }}>{formatQty(allPieces)}</div>
+              <div style={{ textAlign: "right" }}>{formatMoney(recentUnitCost)}</div>
+              <div style={{ textAlign: "right" }}>{formatMoney(line.newUnitCost)}</div>
+              <div style={{ textAlign: "right" }}>{formatMoney(newCostPerPiece)}</div>
+              <div style={{ textAlign: "right" }}>{formatMoney(recentWholesalePerPiece)}</div>
+              <div style={{ textAlign: "right" }}>
+                {/* For view lines we don't store newWholesale/newRetail in API payload response,
+                    so we show dash if not known */}
+                {line.newWholesalePerPiece != null && line.newWholesalePerPiece !== ""
+                  ? formatMoney(line.newWholesalePerPiece)
+                  : "—"}
+              </div>
+              <div style={{ textAlign: "right" }}>{formatMoney(recentRetailPerPiece)}</div>
+              <div style={{ textAlign: "right" }}>
+                {line.newRetailPerPiece != null && line.newRetailPerPiece !== ""
+                  ? formatMoney(line.newRetailPerPiece)
+                  : "—"}
+              </div>
+              <div style={{ textAlign: "right", fontWeight: 600 }}>{formatMoney(lineTotal)}</div>
+
+              <div style={{ textAlign: "center" }}>
+                {showDelete ? (
+                  <button
+                    type="button"
+                    onClick={() => deleteSavedLine(line.dbId)}
+                    disabled={padSaving}
+                    title="Delete saved line"
+                    style={{
+                      width: "28px",
+                      height: "28px",
+                      borderRadius: "9999px",
+                      border: "1px solid #fee2e2",
+                      backgroundColor: "#fef2f2",
+                      color: "#b91c1c",
+                      fontSize: "14px",
+                      cursor: padSaving ? "not-allowed" : "pointer",
+                      opacity: padSaving ? 0.7 : 1,
+                    }}
+                  >
+                    🗑
+                  </button>
+                ) : (
+                  <span style={{ color: "#9ca3af" }}> </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
   return (
     <div style={{ padding: "16px 24px 24px" }}>
       {/* Header (same format, not sticky now) */}
@@ -781,7 +1169,15 @@ function ShopPurchasesPage() {
           background: "linear-gradient(to bottom, #f3f4f6 0%, #f3f4f6 65%, rgba(243,244,246,0) 100%)",
         }}
       >
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px", marginBottom: "6px" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "space-between",
+            gap: "12px",
+            marginBottom: "6px",
+          }}
+        >
           <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
             <button
               onClick={() => navigate(`/shops/${shopId}`)}
@@ -798,8 +1194,15 @@ function ShopPurchasesPage() {
               ← Back to shop workspace
             </button>
 
-            <h1 style={{ fontSize: "30px", fontWeight: 800, letterSpacing: "0.03em", margin: 0 }}>Purchases</h1>
-            <div style={{ marginTop: "2px", fontSize: "13px", fontWeight: 600, color: "#2563eb" }}>{shopName}</div>
+            <h1 style={{ fontSize: "30px", fontWeight: 800, letterSpacing: "0.03em", margin: 0 }}>
+              Purchases
+            </h1>
+            <div style={{ marginTop: "2px", fontSize: "13px", fontWeight: 600, color: "#2563eb" }}>
+              {shopName}
+            </div>
+
+            {/* ✅ Tabs */}
+            {TabsBar}
           </div>
 
           <div
@@ -815,53 +1218,119 @@ function ShopPurchasesPage() {
               fontSize: "12px",
             }}
           >
-            <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>Purchase summary</div>
-            <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.14em", color: "#9ca3af", marginBottom: "4px" }}>
-              All items on {purchaseDate}
+            <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>
+              {activeTab === "entry" ? "Purchase summary" : "View summary"}
+            </div>
+            <div
+              style={{
+                fontSize: "10px",
+                textTransform: "uppercase",
+                letterSpacing: "0.14em",
+                color: "#9ca3af",
+                marginBottom: "4px",
+              }}
+            >
+              {activeTab === "entry" ? `All items on ${purchaseDate}` : `All items on ${viewDate}`}
             </div>
             <div>
-              <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.1em", color: "#6b7280" }}>Total amount</div>
-              <div style={{ fontSize: "18px", fontWeight: 800, color: "#111827" }}>{formatMoney(purchaseTotal)}</div>
+              <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.1em", color: "#6b7280" }}>
+                Total amount
+              </div>
+              <div style={{ fontSize: "18px", fontWeight: 800, color: "#111827" }}>
+                {activeTab === "entry" ? formatMoney(purchaseTotal) : formatMoney(viewTotal)}
+              </div>
             </div>
           </div>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "160px minmax(0, 1fr) 220px", gap: "12px", marginBottom: "8px" }}>
-          <input
-            type="date"
-            value={purchaseDate}
-            onChange={(e) => setPurchaseDate(e.target.value)}
-            style={{ padding: "8px 12px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px", backgroundColor: "#ffffff" }}
-          />
-          <input
-            type="text"
-            placeholder="Supplier name (optional)"
-            value={supplierName}
-            onChange={(e) => setSupplierName(e.target.value)}
-            style={{ width: "100%", padding: "8px 12px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px", backgroundColor: "#ffffff" }}
-          />
-          <input
-            type="text"
-            placeholder="Invoice number (optional)"
-            value={invoiceNumber}
-            onChange={(e) => setInvoiceNumber(e.target.value)}
-            style={{ width: "100%", padding: "8px 12px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px", backgroundColor: "#ffffff" }}
-          />
-        </div>
+        {/* Header filters: Tab 1 keeps original inputs. Tabs 2/3 use a view date picker. */}
+        {activeTab === "entry" ? (
+          <div style={{ display: "grid", gridTemplateColumns: "160px minmax(0, 1fr) 220px", gap: "12px", marginBottom: "8px" }}>
+            <input
+              type="date"
+              value={purchaseDate}
+              onChange={(e) => setPurchaseDate(e.target.value)}
+              style={{
+                padding: "8px 12px",
+                borderRadius: "999px",
+                border: "1px solid #d1d5db",
+                fontSize: "13px",
+                backgroundColor: "#ffffff",
+              }}
+            />
+            <input
+              type="text"
+              placeholder="Supplier name (optional)"
+              value={supplierName}
+              onChange={(e) => setSupplierName(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "8px 12px",
+                borderRadius: "999px",
+                border: "1px solid #d1d5db",
+                fontSize: "13px",
+                backgroundColor: "#ffffff",
+              }}
+            />
+            <input
+              type="text"
+              placeholder="Invoice number (optional)"
+              value={invoiceNumber}
+              onChange={(e) => setInvoiceNumber(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "8px 12px",
+                borderRadius: "999px",
+                border: "1px solid #d1d5db",
+                fontSize: "13px",
+                backgroundColor: "#ffffff",
+              }}
+            />
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "160px minmax(0, 1fr)", gap: "12px", marginBottom: "8px" }}>
+            <input
+              type="date"
+              value={viewDate}
+              onChange={(e) => setViewDate(e.target.value)}
+              style={{
+                padding: "8px 12px",
+                borderRadius: "999px",
+                border: "1px solid #d1d5db",
+                fontSize: "13px",
+                backgroundColor: "#ffffff",
+              }}
+            />
+            <input
+              type="text"
+              placeholder="Search supplier or item..."
+              value={viewSearch}
+              onChange={(e) => setViewSearch(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "8px 12px",
+                borderRadius: "999px",
+                border: "1px solid #d1d5db",
+                fontSize: "13px",
+                backgroundColor: "#ffffff",
+              }}
+            />
+          </div>
+        )}
       </div>
 
-      {(message || error) && (
+      {(message || error || viewError) && (
         <div
           style={{
             marginBottom: "1rem",
             padding: "0.6rem 0.8rem",
             borderRadius: "0.75rem",
-            backgroundColor: error ? "#fef2f2" : "#ecfdf3",
-            color: error ? "#b91c1c" : "#166534",
+            backgroundColor: (error || viewError) ? "#fef2f2" : "#ecfdf3",
+            color: (error || viewError) ? "#b91c1c" : "#166534",
             fontSize: "0.9rem",
           }}
         >
-          {error || message}
+          {error || viewError || message}
         </div>
       )}
 
@@ -873,307 +1342,547 @@ function ShopPurchasesPage() {
           padding: "16px 18px 14px",
         }}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-          <div>
-            <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>Items purchased on {purchaseDate}</h2>
-          </div>
-        </div>
-
-        {/* PAD */}
-        <div
-          ref={padRef}
-          style={{
-            marginBottom: "12px",
-            padding: "14px 14px 16px",
-            borderRadius: "18px",
-            background: padBg,
-            border: padBorder,
-            color: padText,
-            scrollMarginTop: HEADER_IS_STICKY ? `${headerHeight + 12}px` : "12px",
-          }}
-        >
-          <div style={{ fontSize: "13px", fontWeight: 700, marginBottom: "10px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
-            <span>{padTitle}</span>
-
-            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-              {(isEditingNew || isEditingSaved) && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    cancelAnyEdit();
-                    scrollPadIntoView();
-                  }}
-                  disabled={padSaving}
-                  style={{
-                    padding: "0.4rem 1rem",
-                    borderRadius: "9999px",
-                    border: "1px solid #d1d5db",
-                    backgroundColor: "#ffffff",
-                    color: "#111827",
-                    fontSize: "0.8rem",
-                    cursor: padSaving ? "not-allowed" : "pointer",
-                    opacity: padSaving ? 0.7 : 1,
-                  }}
-                >
-                  Cancel edit
-                </button>
-              )}
-
-              <button
-                type="button"
-                onClick={handleSubmitPad}
-                disabled={!stockRows.length || padSaving}
-                style={{
-                  padding: "0.55rem 1.3rem",
-                  borderRadius: "9999px",
-                  border: "none",
-                  backgroundColor: stockRows.length ? "#2563eb" : "#9ca3af",
-                  color: "white",
-                  fontWeight: 800,
-                  fontSize: "0.9rem",
-                  cursor: !stockRows.length || padSaving ? "not-allowed" : "pointer",
-                  opacity: padSaving ? 0.8 : 1,
-                }}
-              >
-                {padSaving ? "Updating..." : padButtonText}
-              </button>
-            </div>
-          </div>
-
-          {isEditingSaved && (
-            <div style={{ marginBottom: "10px", padding: "8px 10px", borderRadius: "12px", border: "1px solid #e5e7eb", background: "#f9fafb", color: "#6b7280", fontSize: "12px", lineHeight: 1.35 }}>
-              Note: Item cannot be changed when editing a saved line. If you need a different item, delete the saved line and add a new one.
-            </div>
-          )}
-
-          {/* ITEM (mobile friendly) */}
-          <div>
-            <label style={labelStyle}>Item</label>
-            <ItemComboBox
-              items={pickerItems}
-              valueId={pad.itemId === "" ? "" : String(pad.itemId)}
-              onChangeId={(idStr) => updatePad("itemId", idStr)}
-              disabled={!stockRows.length || isEditingSaved}
-            />
-
-            <div style={helperGridStyle}>
-              <div>
-                Pieces / unit: <strong style={{ color: padText }}>{padStock ? padPiecesPerUnit : "—"}</strong>
-              </div>
-              <div>
-                Recent unit cost: <strong style={{ color: padText }}>{padStock ? formatMoney(padStock.last_purchase_unit_price || 0) : "—"}</strong>
-              </div>
-              <div>
-                Recent wholesale / piece: <strong style={{ color: padText }}>{padStock ? formatMoney(padStock.wholesale_price_per_piece || 0) : "—"}</strong>
-              </div>
-              <div>
-                Recent retail / piece: <strong style={{ color: padText }}>{padStock ? formatMoney(padStock.selling_price_per_piece || 0) : "—"}</strong>
-              </div>
-            </div>
-          </div>
-
-          <div
-            style={{
-              marginTop: "12px",
-              display: "grid",
-              gridTemplateColumns: "140px minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr)",
-              gap: "12px",
-              alignItems: "end",
-            }}
-          >
-            <div>
-              <label style={labelStyle}>Qty units</label>
-              <input
-                type="number"
-                min={0.01}
-                step="0.01"
-                value={pad.qtyUnits}
-                onChange={(e) => updatePad("qtyUnits", e.target.value)}
-                style={inputBase}
-              />
-            </div>
-
-            <div>
-              <label style={labelStyle}>Purchase cost (unit)</label>
-              <input type="number" value={pad.newUnitCost} onChange={(e) => updatePad("newUnitCost", e.target.value)} placeholder="0" style={inputBase} />
-            </div>
-
-            <div>
-              <label style={labelStyle}>Purchase cost / piece</label>
-              <input type="text" readOnly value={pad.itemId ? formatMoney(padPurchaseCostPerPiece) : ""} placeholder="—" style={{ ...inputBase, backgroundColor: "#f3f4f6", fontWeight: 800 }} />
-            </div>
-
-            <div>
-              <label style={labelStyle}>New wholesale / piece</label>
-              <input type="number" value={pad.newWholesalePerPiece} onChange={(e) => updatePad("newWholesalePerPiece", e.target.value)} placeholder="0" style={inputBase} />
-            </div>
-
-            <div>
-              <label style={labelStyle}>New retail / piece</label>
-              <input type="number" value={pad.newRetailPerPiece} onChange={(e) => updatePad("newRetailPerPiece", e.target.value)} placeholder="0" style={inputBase} />
-            </div>
-          </div>
-        </div>
-
-        {/* LIST */}
-        {linesWithComputed.length === 0 ? (
-          <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
-            No items in this purchase date yet. Use the pad above and click <strong>{padButtonText}</strong>.
-          </div>
-        ) : (
+        {/* ---------------- TAB 1: ENTRY (your original UI, intact) ---------------- */}
+        {activeTab === "entry" && (
           <>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px", marginTop: "2px" }}>
-              <div style={{ fontSize: "12px", color: "#6b7280" }}>
-                Items for {purchaseDate}: {linesWithComputed.length} {searchTerm ? `(showing ${filteredLinesWithComputed.length} after filter)` : ""}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+              <div>
+                <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>
+                  Items purchased on {purchaseDate}
+                </h2>
               </div>
-              <input
-                type="text"
-                placeholder="Search in items..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                style={{ width: "240px", padding: "6px 10px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "12px" }}
-              />
             </div>
 
-            <div style={{ maxHeight: "420px", overflowY: "auto", overflowX: "auto", borderRadius: "12px", border: "1px solid #e5e7eb", padding: "0 8px 4px 0", backgroundColor: "#fcfcff" }}>
+            {/* PAD */}
+            <div
+              ref={padRef}
+              style={{
+                marginBottom: "12px",
+                padding: "14px 14px 16px",
+                borderRadius: "18px",
+                background: padBg,
+                border: padBorder,
+                color: padText,
+                scrollMarginTop: HEADER_IS_STICKY ? `${headerHeight + 12}px` : "12px",
+              }}
+            >
               <div
                 style={{
-                  display: "grid",
-                  gridTemplateColumns: PURCHASE_GRID_COLUMNS,
-                  minWidth: "1260px",
+                  fontSize: "13px",
+                  fontWeight: 700,
+                  marginBottom: "10px",
+                  display: "flex",
+                  justifyContent: "space-between",
                   alignItems: "center",
-                  padding: "6px 4px 6px 8px",
-                  borderBottom: "1px solid #e5e7eb",
-                  fontSize: "11px",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.08em",
-                  color: "#6b7280",
-                  fontWeight: 600,
-                  position: "sticky",
-                  top: 0,
-                  backgroundColor: "#f9fafb",
-                  zIndex: 5,
+                  gap: "8px",
                 }}
               >
-                <div>Item</div>
-                <div style={{ textAlign: "center" }}>Qty units</div>
-                <div style={{ textAlign: "center" }}>Pieces / unit</div>
-                <div style={{ textAlign: "center" }}>All pieces</div>
-                <div style={{ textAlign: "right" }}>Recent cost/unit</div>
-                <div style={{ textAlign: "right" }}>New cost/unit</div>
-                <div style={{ textAlign: "right" }}>Cost / piece</div>
-                <div style={{ textAlign: "right" }}>Recent wholesale</div>
-                <div style={{ textAlign: "right" }}>New wholesale</div>
-                <div style={{ textAlign: "right" }}>Recent retail</div>
-                <div style={{ textAlign: "right" }}>New retail</div>
-                <div style={{ textAlign: "right" }}>Line total</div>
-                <div></div>
+                <span>{padTitle}</span>
+
+                <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                  {(isEditingNew || isEditingSaved) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        cancelAnyEdit();
+                        scrollPadIntoView();
+                      }}
+                      disabled={padSaving}
+                      style={{
+                        padding: "0.4rem 1rem",
+                        borderRadius: "9999px",
+                        border: "1px solid #d1d5db",
+                        backgroundColor: "#ffffff",
+                        color: "#111827",
+                        fontSize: "0.8rem",
+                        cursor: padSaving ? "not-allowed" : "pointer",
+                        opacity: padSaving ? 0.7 : 1,
+                      }}
+                    >
+                      Cancel edit
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={handleSubmitPad}
+                    disabled={!stockRows.length || padSaving}
+                    style={{
+                      padding: "0.55rem 1.3rem",
+                      borderRadius: "9999px",
+                      border: "none",
+                      backgroundColor: stockRows.length ? "#2563eb" : "#9ca3af",
+                      color: "white",
+                      fontWeight: 800,
+                      fontSize: "0.9rem",
+                      cursor: !stockRows.length || padSaving ? "not-allowed" : "pointer",
+                      opacity: padSaving ? 0.8 : 1,
+                    }}
+                  >
+                    {padSaving ? "Updating..." : padButtonText}
+                  </button>
+                </div>
               </div>
 
-              {filteredLinesWithComputed.map((line) => {
-                const { meta, computed } = line;
-                const { itemName, piecesPerUnit, recentUnitCost, recentWholesalePerPiece, recentRetailPerPiece } = meta;
-                const { newCostPerPiece, lineTotal, allPieces } = computed;
+              {isEditingSaved && (
+                <div
+                  style={{
+                    marginBottom: "10px",
+                    padding: "8px 10px",
+                    borderRadius: "12px",
+                    border: "1px solid #e5e7eb",
+                    background: "#f9fafb",
+                    color: "#6b7280",
+                    fontSize: "12px",
+                    lineHeight: 1.35,
+                  }}
+                >
+                  Note: Item cannot be changed when editing a saved line. If you need a different item, delete the saved line and add a new one.
+                </div>
+              )}
 
-                const isFromDb = line.isFromDb;
-                const isSelected = selectedLineId === line.id;
-                const isEditingThisSaved = isFromDb && editingDbUiId === line.id;
+              {/* ITEM (mobile friendly) */}
+              <div>
+                <label style={labelStyle}>Item</label>
+                <ItemComboBox
+                  items={pickerItems}
+                  valueId={pad.itemId === "" ? "" : String(pad.itemId)}
+                  onChangeId={(idStr) => updatePad("itemId", idStr)}
+                  disabled={!stockRows.length || isEditingSaved}
+                />
 
-                return (
+                <div style={helperGridStyle}>
+                  <div>
+                    Pieces / unit: <strong style={{ color: padText }}>{padStock ? padPiecesPerUnit : "—"}</strong>
+                  </div>
+                  <div>
+                    Recent unit cost:{" "}
+                    <strong style={{ color: padText }}>
+                      {padStock ? formatMoney(padStock.last_purchase_unit_price || 0) : "—"}
+                    </strong>
+                  </div>
+                  <div>
+                    Recent wholesale / piece:{" "}
+                    <strong style={{ color: padText }}>
+                      {padStock ? formatMoney(padStock.wholesale_price_per_piece || 0) : "—"}
+                    </strong>
+                  </div>
+                  <div>
+                    Recent retail / piece:{" "}
+                    <strong style={{ color: padText }}>
+                      {padStock ? formatMoney(padStock.selling_price_per_piece || 0) : "—"}
+                    </strong>
+                  </div>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  marginTop: "12px",
+                  display: "grid",
+                  gridTemplateColumns:
+                    "140px minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr)",
+                  gap: "12px",
+                  alignItems: "end",
+                }}
+              >
+                <div>
+                  <label style={labelStyle}>Qty units</label>
+                  <input
+                    type="number"
+                    min={0.01}
+                    step="0.01"
+                    value={pad.qtyUnits}
+                    onChange={(e) => updatePad("qtyUnits", e.target.value)}
+                    style={inputBase}
+                  />
+                </div>
+
+                <div>
+                  <label style={labelStyle}>Purchase cost (unit)</label>
+                  <input
+                    type="number"
+                    value={pad.newUnitCost}
+                    onChange={(e) => updatePad("newUnitCost", e.target.value)}
+                    placeholder="0"
+                    style={inputBase}
+                  />
+                </div>
+
+                <div>
+                  <label style={labelStyle}>Purchase cost / piece</label>
+                  <input
+                    type="text"
+                    readOnly
+                    value={pad.itemId ? formatMoney(padPurchaseCostPerPiece) : ""}
+                    placeholder="—"
+                    style={{ ...inputBase, backgroundColor: "#f3f4f6", fontWeight: 800 }}
+                  />
+                </div>
+
+                <div>
+                  <label style={labelStyle}>New wholesale / piece</label>
+                  <input
+                    type="number"
+                    value={pad.newWholesalePerPiece}
+                    onChange={(e) => updatePad("newWholesalePerPiece", e.target.value)}
+                    placeholder="0"
+                    style={inputBase}
+                  />
+                </div>
+
+                <div>
+                  <label style={labelStyle}>New retail / piece</label>
+                  <input
+                    type="number"
+                    value={pad.newRetailPerPiece}
+                    onChange={(e) => updatePad("newRetailPerPiece", e.target.value)}
+                    placeholder="0"
+                    style={inputBase}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* LIST */}
+            {linesWithComputed.length === 0 ? (
+              <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
+                No items in this purchase date yet. Use the pad above and click <strong>{padButtonText}</strong>.
+              </div>
+            ) : (
+              <>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px", marginTop: "2px" }}>
+                  <div style={{ fontSize: "12px", color: "#6b7280" }}>
+                    Items for {purchaseDate}: {linesWithComputed.length}{" "}
+                    {searchTerm ? `(showing ${filteredLinesWithComputed.length} after filter)` : ""}
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="Search in items..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    style={{
+                      width: "240px",
+                      padding: "6px 10px",
+                      borderRadius: "999px",
+                      border: "1px solid #d1d5db",
+                      fontSize: "12px",
+                    }}
+                  />
+                </div>
+
+                <div style={{ maxHeight: "420px", overflowY: "auto", overflowX: "auto", borderRadius: "12px", border: "1px solid #e5e7eb", padding: "0 8px 4px 0", backgroundColor: "#fcfcff" }}>
                   <div
-                    key={line.id}
                     style={{
                       display: "grid",
                       gridTemplateColumns: PURCHASE_GRID_COLUMNS,
                       minWidth: "1260px",
                       alignItems: "center",
-                      padding: "8px 4px 8px 8px",
-                      borderBottom: "1px solid #f3f4f6",
-                      fontSize: "13px",
-                      backgroundColor: isSelected ? "#eff6ff" : "transparent",
+                      padding: "6px 4px 6px 8px",
+                      borderBottom: "1px solid #e5e7eb",
+                      fontSize: "11px",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.08em",
+                      color: "#6b7280",
+                      fontWeight: 600,
+                      position: "sticky",
+                      top: 0,
+                      backgroundColor: "#f9fafb",
+                      zIndex: 5,
                     }}
                   >
-                    <div>
-                      {isFromDb ? (
-                        <button
-                          type="button"
-                          onClick={() => startEditSavedLine(line)}
-                          style={{ padding: 0, margin: 0, border: "none", background: "transparent", color: "#111827", fontWeight: 700, fontSize: "13px", cursor: "pointer", textAlign: "left" }}
-                          title="Edit saved purchase line"
-                        >
-                          {itemName || "Unknown item"}{" "}
-                          {isEditingThisSaved ? <span style={{ color: "#2563eb", fontWeight: 800, marginLeft: 6 }}>(editing)</span> : null}
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => startEditNewLine(line.id)}
-                          style={{ padding: 0, margin: 0, border: "none", background: "transparent", color: "#2563eb", fontWeight: 600, fontSize: "13px", cursor: "pointer", textAlign: "left" }}
-                          title="Edit new (unsaved) line"
-                        >
-                          {itemName || "Unknown item"}
-                        </button>
-                      )}
-                    </div>
-
-                    <div style={{ textAlign: "center" }}>{formatQty(line.qtyUnits)}</div>
-                    <div style={{ textAlign: "center" }}>{formatQty(piecesPerUnit)}</div>
-                    <div style={{ textAlign: "center" }}>{formatQty(allPieces)}</div>
-                    <div style={{ textAlign: "right" }}>{formatMoney(recentUnitCost)}</div>
-                    <div style={{ textAlign: "right" }}>{formatMoney(line.newUnitCost)}</div>
-                    <div style={{ textAlign: "right" }}>{formatMoney(newCostPerPiece)}</div>
-                    <div style={{ textAlign: "right" }}>{formatMoney(recentWholesalePerPiece)}</div>
-                    <div style={{ textAlign: "right" }}>{formatMoney(line.newWholesalePerPiece)}</div>
-                    <div style={{ textAlign: "right" }}>{formatMoney(recentRetailPerPiece)}</div>
-                    <div style={{ textAlign: "right" }}>{formatMoney(line.newRetailPerPiece)}</div>
-                    <div style={{ textAlign: "right", fontWeight: 600 }}>{formatMoney(lineTotal)}</div>
-
-                    <div style={{ textAlign: "center" }}>
-                      {isFromDb ? (
-                        <button
-                          type="button"
-                          onClick={() => deleteSavedLine(line.dbId)}
-                          disabled={padSaving}
-                          title="Delete saved line"
-                          style={{ width: "28px", height: "28px", borderRadius: "9999px", border: "1px solid #fee2e2", backgroundColor: "#fef2f2", color: "#b91c1c", fontSize: "14px", cursor: padSaving ? "not-allowed" : "pointer", opacity: padSaving ? 0.7 : 1 }}
-                        >
-                          🗑
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => removeLine(line.id)}
-                          style={{ width: "28px", height: "28px", borderRadius: "9999px", border: "1px solid #fee2e2", backgroundColor: "#fef2f2", color: "#b91c1c", fontSize: "16px", cursor: "pointer" }}
-                          title="Remove new line (not saved yet)"
-                        >
-                          ✕
-                        </button>
-                      )}
-                    </div>
+                    <div>Item</div>
+                    <div style={{ textAlign: "center" }}>Qty units</div>
+                    <div style={{ textAlign: "center" }}>Pieces / unit</div>
+                    <div style={{ textAlign: "center" }}>All pieces</div>
+                    <div style={{ textAlign: "right" }}>Recent cost/unit</div>
+                    <div style={{ textAlign: "right" }}>New cost/unit</div>
+                    <div style={{ textAlign: "right" }}>Cost / piece</div>
+                    <div style={{ textAlign: "right" }}>Recent wholesale</div>
+                    <div style={{ textAlign: "right" }}>New wholesale</div>
+                    <div style={{ textAlign: "right" }}>Recent retail</div>
+                    <div style={{ textAlign: "right" }}>New retail</div>
+                    <div style={{ textAlign: "right" }}>Line total</div>
+                    <div></div>
                   </div>
-                );
-              })}
+
+                  {filteredLinesWithComputed.map((line) => {
+                    const { meta, computed } = line;
+                    const { itemName, piecesPerUnit, recentUnitCost, recentWholesalePerPiece, recentRetailPerPiece } = meta;
+                    const { newCostPerPiece, lineTotal, allPieces } = computed;
+
+                    const isFromDb = line.isFromDb;
+                    const isSelected = selectedLineId === line.id;
+                    const isEditingThisSaved = isFromDb && editingDbUiId === line.id;
+
+                    return (
+                      <div
+                        key={line.id}
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: PURCHASE_GRID_COLUMNS,
+                          minWidth: "1260px",
+                          alignItems: "center",
+                          padding: "8px 4px 8px 8px",
+                          borderBottom: "1px solid #f3f4f6",
+                          fontSize: "13px",
+                          backgroundColor: isSelected ? "#eff6ff" : "transparent",
+                        }}
+                      >
+                        <div>
+                          {isFromDb ? (
+                            <button
+                              type="button"
+                              onClick={() => startEditSavedLine(line)}
+                              style={{
+                                padding: 0,
+                                margin: 0,
+                                border: "none",
+                                background: "transparent",
+                                color: "#111827",
+                                fontWeight: 700,
+                                fontSize: "13px",
+                                cursor: "pointer",
+                                textAlign: "left",
+                              }}
+                              title="Edit saved purchase line"
+                            >
+                              {itemName || "Unknown item"}{" "}
+                              {isEditingThisSaved ? (
+                                <span style={{ color: "#2563eb", fontWeight: 800, marginLeft: 6 }}>(editing)</span>
+                              ) : null}
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => startEditNewLine(line.id)}
+                              style={{
+                                padding: 0,
+                                margin: 0,
+                                border: "none",
+                                background: "transparent",
+                                color: "#2563eb",
+                                fontWeight: 600,
+                                fontSize: "13px",
+                                cursor: "pointer",
+                                textAlign: "left",
+                              }}
+                              title="Edit new (unsaved) line"
+                            >
+                              {itemName || "Unknown item"}
+                            </button>
+                          )}
+                        </div>
+
+                        <div style={{ textAlign: "center" }}>{formatQty(line.qtyUnits)}</div>
+                        <div style={{ textAlign: "center" }}>{formatQty(piecesPerUnit)}</div>
+                        <div style={{ textAlign: "center" }}>{formatQty(allPieces)}</div>
+                        <div style={{ textAlign: "right" }}>{formatMoney(recentUnitCost)}</div>
+                        <div style={{ textAlign: "right" }}>{formatMoney(line.newUnitCost)}</div>
+                        <div style={{ textAlign: "right" }}>{formatMoney(newCostPerPiece)}</div>
+                        <div style={{ textAlign: "right" }}>{formatMoney(recentWholesalePerPiece)}</div>
+                        <div style={{ textAlign: "right" }}>{formatMoney(line.newWholesalePerPiece)}</div>
+                        <div style={{ textAlign: "right" }}>{formatMoney(recentRetailPerPiece)}</div>
+                        <div style={{ textAlign: "right" }}>{formatMoney(line.newRetailPerPiece)}</div>
+                        <div style={{ textAlign: "right", fontWeight: 600 }}>{formatMoney(lineTotal)}</div>
+
+                        <div style={{ textAlign: "center" }}>
+                          {isFromDb ? (
+                            <button
+                              type="button"
+                              onClick={() => deleteSavedLine(line.dbId)}
+                              disabled={padSaving}
+                              title="Delete saved line"
+                              style={{
+                                width: "28px",
+                                height: "28px",
+                                borderRadius: "9999px",
+                                border: "1px solid #fee2e2",
+                                backgroundColor: "#fef2f2",
+                                color: "#b91c1c",
+                                fontSize: "14px",
+                                cursor: padSaving ? "not-allowed" : "pointer",
+                                opacity: padSaving ? 0.7 : 1,
+                              }}
+                            >
+                              🗑
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => removeLine(line.id)}
+                              style={{
+                                width: "28px",
+                                height: "28px",
+                                borderRadius: "9999px",
+                                border: "1px solid #fee2e2",
+                                backgroundColor: "#fef2f2",
+                                color: "#b91c1c",
+                                fontSize: "16px",
+                                cursor: "pointer",
+                              }}
+                              title="Remove new line (not saved yet)"
+                            >
+                              ✕
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "12px", marginTop: "14px" }}>
+              <button
+                type="button"
+                onClick={() => navigate(`/shops/${shopId}/stock`)}
+                style={{
+                  padding: "0.6rem 1.4rem",
+                  borderRadius: "999px",
+                  border: "1px solid #d1d5db",
+                  backgroundColor: "#ffffff",
+                  color: "#111827",
+                  fontWeight: 600,
+                  fontSize: "0.95rem",
+                  cursor: "pointer",
+                }}
+              >
+                View stock
+              </button>
+              <button
+                type="button"
+                onClick={handleSave}
+                disabled={saving}
+                style={{
+                  padding: "0.6rem 1.8rem",
+                  borderRadius: "999px",
+                  border: "none",
+                  backgroundColor: saving ? "#2563eb99" : "#2563eb",
+                  color: "white",
+                  fontWeight: 700,
+                  fontSize: "0.95rem",
+                  cursor: saving ? "not-allowed" : "pointer",
+                }}
+              >
+                {saving ? "Saving..." : "Save purchase"}
+              </button>
             </div>
           </>
         )}
 
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: "12px", marginTop: "14px" }}>
-          <button
-            type="button"
-            onClick={() => navigate(`/shops/${shopId}/stock`)}
-            style={{ padding: "0.6rem 1.4rem", borderRadius: "999px", border: "1px solid #d1d5db", backgroundColor: "#ffffff", color: "#111827", fontWeight: 600, fontSize: "0.95rem", cursor: "pointer" }}
-          >
-            View stock
-          </button>
-          <button
-            type="button"
-            onClick={handleSave}
-            disabled={saving}
-            style={{ padding: "0.6rem 1.8rem", borderRadius: "999px", border: "none", backgroundColor: saving ? "#2563eb99" : "#2563eb", color: "white", fontWeight: 700, fontSize: "0.95rem", cursor: saving ? "not-allowed" : "pointer" }}
-          >
-            {saving ? "Saving..." : "Save purchase"}
-          </button>
-        </div>
+        {/* ---------------- TAB 2: BY SUPPLIER ---------------- */}
+        {activeTab === "supplier" && (
+          <>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", marginBottom: "10px" }}>
+              <div>
+                <h2 style={{ fontSize: "18px", fontWeight: 800, margin: 0 }}>
+                  Purchases grouped by supplier — {viewDate}
+                </h2>
+                <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "2px" }}>
+                  Showing {viewFiltered.length} item lines
+                  {apiSeemsMissingSupplier ? (
+                    <span style={{ marginLeft: 8, color: "#b45309", fontWeight: 700 }}>
+                      (Supplier not included by API → grouped as “Unknown supplier”)
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => loadViewLinesForDate(viewDate)}
+                disabled={viewLoading}
+                style={{
+                  padding: "0.55rem 1.2rem",
+                  borderRadius: "999px",
+                  border: "1px solid #d1d5db",
+                  backgroundColor: "#ffffff",
+                  color: "#111827",
+                  fontWeight: 800,
+                  fontSize: "0.9rem",
+                  cursor: viewLoading ? "not-allowed" : "pointer",
+                  opacity: viewLoading ? 0.7 : 1,
+                }}
+              >
+                {viewLoading ? "Refreshing..." : "Refresh"}
+              </button>
+            </div>
+
+            {viewLoading ? (
+              <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
+                Loading purchases…
+              </div>
+            ) : groupedBySupplier.length === 0 ? (
+              <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
+                No purchases found for {viewDate}.
+              </div>
+            ) : (
+              <div style={{ display: "grid", rowGap: "14px" }}>
+                {groupedBySupplier.map((g) => (
+                  <div key={g.supplier} style={{ border: "1px solid #e5e7eb", borderRadius: "16px", padding: "10px 10px 12px", background: "#ffffff" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "10px", padding: "4px 6px 10px" }}>
+                      <div style={{ fontSize: "15px", fontWeight: 900, color: "#111827" }}>
+                        {g.supplier}
+                      </div>
+                      <div style={{ fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>
+                        {g.lines.length} items • Total:{" "}
+                        <span style={{ color: "#111827", fontWeight: 900 }}>{formatMoney(g.total)}</span>
+                      </div>
+                    </div>
+
+                    {/* Same columns table */}
+                    <ViewTable rows={g.lines} showDelete={true} />
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ---------------- TAB 3: BY DATE (FULL LIST) ---------------- */}
+        {activeTab === "date" && (
+          <>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", marginBottom: "10px" }}>
+              <div>
+                <h2 style={{ fontSize: "18px", fontWeight: 800, margin: 0 }}>
+                  All purchased items — {viewDate}
+                </h2>
+                <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "2px" }}>
+                  Showing {viewFiltered.length} item lines
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => loadViewLinesForDate(viewDate)}
+                disabled={viewLoading}
+                style={{
+                  padding: "0.55rem 1.2rem",
+                  borderRadius: "999px",
+                  border: "1px solid #d1d5db",
+                  backgroundColor: "#ffffff",
+                  color: "#111827",
+                  fontWeight: 800,
+                  fontSize: "0.9rem",
+                  cursor: viewLoading ? "not-allowed" : "pointer",
+                  opacity: viewLoading ? 0.7 : 1,
+                }}
+              >
+                {viewLoading ? "Refreshing..." : "Refresh"}
+              </button>
+            </div>
+
+            {viewLoading ? (
+              <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
+                Loading purchases…
+              </div>
+            ) : (
+              <ViewTable rows={viewFiltered} showDelete={true} />
+            )}
+          </>
+        )}
       </div>
     </div>
   );
