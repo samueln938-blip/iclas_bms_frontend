@@ -7,6 +7,17 @@ import {
   todayDateString,
 } from "../posUtils.js";
 
+// ✅ Qty/Pieces formatter (keeps decimals like 0.5, 1.25, 49.5)
+// NOTE: We do NOT change formatMoney() because that is for currency.
+function formatQty(value) {
+  const n = Number(value ?? 0);
+  const safe = Number.isFinite(n) ? n : 0;
+  return safe.toLocaleString("en-RW", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 3,
+  });
+}
+
 export default function MySalesTodayTab({
   API_BASE,
   shopId,
@@ -727,7 +738,7 @@ export default function MySalesTodayTab({
                         textAlign: "right",
                       }}
                     >
-                      {formatMoney(qty)}
+                      {formatQty(qty)}
                     </td>
                     <td
                       style={{
@@ -1008,7 +1019,7 @@ export default function MySalesTodayTab({
                 fontWeight: 700,
               }}
             >
-              {formatMoney(summaryToday.totalPieces)}
+              {formatQty(summaryToday.totalPieces)}
             </div>
           </div>
 
@@ -1362,7 +1373,7 @@ export default function MySalesTodayTab({
                           textAlign: "right",
                         }}
                       >
-                        {formatMoney(row.qtyPieces)}
+                        {formatQty(row.qtyPieces)}
                       </td>
                       <td
                         style={{
