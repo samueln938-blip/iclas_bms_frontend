@@ -115,6 +115,107 @@ function CustomerModal({ open, onClose, onSave }) {
   );
 }
 
+// ✅ Customer-facing overlay (shows totals only; hides profit & delete/edit controls)
+function CustomerDisplay({ open, onClose, lines, total }) {
+  if (!open) return null;
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        backgroundColor: "rgba(15,23,42,0.55)",
+        zIndex: 9999,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "14px",
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{
+          width: 760,
+          maxWidth: "96vw",
+          maxHeight: "92vh",
+          overflow: "auto",
+          backgroundColor: "#ffffff",
+          borderRadius: "18px",
+          boxShadow: "0 24px 70px rgba(0,0,0,0.35)",
+          padding: "16px",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+          <div>
+            <div style={{ fontSize: "12px", letterSpacing: "0.08em", textTransform: "uppercase", color: "#6b7280", fontWeight: 800 }}>
+              Customer total
+            </div>
+            <div style={{ fontSize: "30px", fontWeight: 900, marginTop: 4 }}>
+              Amount to pay: {formatMoney(total)}
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={onClose}
+            style={{
+              border: "none",
+              background: "transparent",
+              fontSize: "22px",
+              cursor: "pointer",
+              padding: "6px 10px",
+              borderRadius: "12px",
+            }}
+            title="Close"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div style={{ marginTop: 12, borderTop: "1px solid #e5e7eb", paddingTop: 10 }}>
+          {(lines || []).length === 0 ? (
+            <div style={{ padding: "10px 0", color: "#6b7280", fontSize: 13 }}>No items yet.</div>
+          ) : (
+            (lines || []).map((l) => (
+              <div
+                key={l.id}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  padding: "10px 0",
+                  borderBottom: "1px solid #f3f4f6",
+                  alignItems: "baseline",
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 900, fontSize: 14, color: "#111827", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {l?.meta?.itemName || "Item"}
+                  </div>
+                  <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>
+                    {String(l.qtyPieces)} × {formatMoney(l.unitPrice)}
+                  </div>
+                </div>
+
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 12, color: "#6b7280" }}>Line total</div>
+                  <div style={{ fontSize: 16, fontWeight: 900 }}>{formatMoney(l?.computed?.total || 0)}</div>
+                </div>
+              </div>
+            ))
+          )}
+
+          <div style={{ marginTop: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ fontSize: 13, color: "#6b7280" }}>Grand total</div>
+            <div style={{ fontSize: 22, fontWeight: 900 }}>{formatMoney(total)}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function CurrentSaleTab({
   API_BASE,
   shopId,
@@ -146,6 +247,10 @@ export default function CurrentSaleTab({
   const [pad, setPad] = useState({ itemId: "", qtyPieces: "", agreedPricePerPiece: "" });
   const [saleLines, setSaleLines] = useState([]);
   const [editingLineId, setEditingLineId] = useState(null);
+
+  // ✅ Customer display (overlay) + optional “hide profit” view
+  const [customerDisplayOpen, setCustomerDisplayOpen] = useState(false);
+  const [hideProfitInTab, setHideProfitInTab] = useState(false);
 
   // ✅ Item quick-search (cursor) + dropdown
   const [itemQuery, setItemQuery] = useState("");
@@ -201,6 +306,18 @@ export default function CurrentSaleTab({
     }
   };
 
+  // ✅ Keyboard shortcut: Ctrl+Shift+C toggles customer overlay
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.ctrlKey && e.shiftKey && (e.key === "C" || e.key === "c")) {
+        e.preventDefault();
+        setCustomerDisplayOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // -------------- Helpers for reset / cancel edit --------------
   const clearEditHandoffStorage = () => {
     try {
@@ -232,6 +349,9 @@ export default function CurrentSaleTab({
 
     setEditingSaleId(null);
     setEditSourceSale(null);
+
+    // ✅ close customer overlay when resetting
+    setCustomerDisplayOpen(false);
   };
 
   const cancelEditMode = () => {
@@ -991,6 +1111,54 @@ export default function CurrentSaleTab({
         </div>
       )}
 
+      {/* ✅ Customer-friendly controls (no logic change) */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+        <div style={{ display: "inline-flex", gap: 8, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            onClick={() => setCustomerDisplayOpen(true)}
+            disabled={!saleLinesWithMeta.length}
+            style={{
+              padding: "8px 12px",
+              borderRadius: "999px",
+              border: "1px solid #e5e7eb",
+              backgroundColor: saleLinesWithMeta.length ? "#ffffff" : "#f3f4f6",
+              cursor: saleLinesWithMeta.length ? "pointer" : "not-allowed",
+              fontSize: "13px",
+              fontWeight: 800,
+            }}
+            title="Show a clean total screen for the customer (Ctrl+Shift+C)"
+          >
+            👁 Customer display
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setHideProfitInTab((v) => !v)}
+            style={{
+              padding: "8px 12px",
+              borderRadius: "999px",
+              border: hideProfitInTab ? "none" : "1px solid #e5e7eb",
+              backgroundColor: hideProfitInTab ? "#111827" : "#ffffff",
+              color: hideProfitInTab ? "#ffffff" : "#111827",
+              cursor: "pointer",
+              fontSize: "13px",
+              fontWeight: 800,
+            }}
+            title="Hide/mask profit values on this tab"
+          >
+            {hideProfitInTab ? "🔒 Profit hidden" : "🔓 Hide profit"}
+          </button>
+        </div>
+
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+          <div style={{ fontSize: 12, color: "#6b7280", fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+            Amount to pay
+          </div>
+          <div style={{ fontSize: 20, fontWeight: 900 }}>{formatMoney(saleTotal)}</div>
+        </div>
+      </div>
+
       {/* PAD */}
       <div
         style={{
@@ -1246,13 +1414,19 @@ export default function CurrentSaleTab({
             <div>
               Preview total: <strong>{formatMoney(padPreview.total)}</strong>
             </div>
-            <div>
-              Interest/profit per piece: <strong>{formatMoney(padPreview.profitPerPiece)}</strong>
-            </div>
-            <div>
-              Total interest/profit:{" "}
-              <strong style={{ color: "#16a34a" }}>{formatMoney(padPreview.profitTotal)}</strong>
-            </div>
+
+            {/* ✅ Profit preview hidden when requested (no logic removed) */}
+            {!hideProfitInTab && (
+              <>
+                <div>
+                  Interest/profit per piece: <strong>{formatMoney(padPreview.profitPerPiece)}</strong>
+                </div>
+                <div>
+                  Total interest/profit:{" "}
+                  <strong style={{ color: "#16a34a" }}>{formatMoney(padPreview.profitTotal)}</strong>
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -1279,7 +1453,9 @@ export default function CurrentSaleTab({
               <th style={{ padding: "6px 4px", textAlign: "right" }}>Qty</th>
               <th style={{ padding: "6px 4px", textAlign: "right" }}>Unit price</th>
               <th style={{ padding: "6px 4px", textAlign: "right" }}>Total</th>
-              <th style={{ padding: "6px 4px", textAlign: "right" }}>Profit</th>
+              <th style={{ padding: "6px 4px", textAlign: "right" }}>
+                {hideProfitInTab ? "—" : "Profit"}
+              </th>
               <th style={{ padding: "6px 4px" }}></th>
             </tr>
           </thead>
@@ -1350,7 +1526,10 @@ export default function CurrentSaleTab({
                   <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600 }}>
                     {formatMoney(line.computed.total)}
                   </td>
-                  <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(line.computed.profit)}</td>
+
+                  <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                    {hideProfitInTab ? "•••" : formatMoney(line.computed.profit)}
+                  </td>
 
                   <td style={{ padding: "8px 4px", textAlign: "center" }} onClick={(e) => e.stopPropagation()}>
                     <button
@@ -1380,8 +1559,8 @@ export default function CurrentSaleTab({
               <td></td>
               <td></td>
               <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 800 }}>{formatMoney(saleTotal)}</td>
-              <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600, color: "#16a34a" }}>
-                {formatMoney(saleTotalProfit)}
+              <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600, color: hideProfitInTab ? "#6b7280" : "#16a34a" }}>
+                {hideProfitInTab ? "•••" : formatMoney(saleTotalProfit)}
               </td>
               <td></td>
             </tr>
@@ -1679,6 +1858,14 @@ export default function CurrentSaleTab({
             setError?.(e.message || "Failed to add customer.");
           }
         }}
+      />
+
+      {/* ✅ Customer overlay */}
+      <CustomerDisplay
+        open={customerDisplayOpen}
+        onClose={() => setCustomerDisplayOpen(false)}
+        lines={saleLinesWithMeta}
+        total={saleTotal}
       />
     </div>
   );
