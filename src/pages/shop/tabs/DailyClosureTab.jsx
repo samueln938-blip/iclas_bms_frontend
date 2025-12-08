@@ -125,12 +125,40 @@ export default function DailyClosureTab({
     return v >= 0 ? "#16a34a" : "#b91c1c";
   };
 
+  // -------------------------
+  // Abort + latest-wins guards
+  // -------------------------
+  const sysAbortRef = useRef(null);
+  const expAbortRef = useRef(null);
+  const lastAbortRef = useRef(null);
+
+  const sysReqIdRef = useRef(0);
+  const expReqIdRef = useRef(0);
+  const lastReqIdRef = useRef(0);
+
+  // Simple throttle: avoid burst refresh calls (focus + interval + events)
+  const lastRefreshTickRef = useRef(0);
+  const shouldThrottle = (minMs = 1500) => {
+    const now = Date.now();
+    if (now - lastRefreshTickRef.current < minMs) return true;
+    lastRefreshTickRef.current = now;
+    return false;
+  };
+
   // ------------------------------------------------------------
   // Load today's system totals from /daily-closures/system-totals
   // ------------------------------------------------------------
   const loadSystemTotals = useCallback(
     async ({ silent = false } = {}) => {
       if (!shopId) return;
+
+      // Abort previous
+      if (sysAbortRef.current) sysAbortRef.current.abort();
+      const controller = new AbortController();
+      sysAbortRef.current = controller;
+
+      const reqId = ++sysReqIdRef.current;
+
       if (!silent) {
         setLoading(true);
         clearAlerts?.();
@@ -139,34 +167,36 @@ export default function DailyClosureTab({
 
       try {
         const url = `${API_BASE}/daily-closures/system-totals?shop_id=${shopId}&closure_date=${dateStr}`;
-        const res = await fetch(url, { headers: authHeadersNoJson });
+        const res = await fetch(url, {
+          headers: authHeadersNoJson,
+          signal: controller.signal,
+          cache: "no-store",
+        });
 
         if (!res.ok) {
           const txt = await res.text();
-          throw new Error(
-            `Failed to load system totals (HTTP ${res.status}): ${txt}`
-          );
+          throw new Error(`Failed to load system totals (HTTP ${res.status}): ${txt}`);
         }
 
         const data = await res.json();
+
+        // latest-wins guard
+        if (reqId !== sysReqIdRef.current) return;
+
         setSystem(data || null);
         setLastRefreshedAt(new Date());
       } catch (err) {
+        if (err?.name === "AbortError") return;
         console.error(err);
+
+        if (reqId !== sysReqIdRef.current) return;
+
         setError?.(err?.message || "Failed to load daily closure totals.");
       } finally {
-        if (!silent) setLoading(false);
+        if (!silent && reqId === sysReqIdRef.current) setLoading(false);
       }
     },
-    [
-      API_BASE,
-      shopId,
-      dateStr,
-      authHeadersNoJson,
-      clearAlerts,
-      setError,
-      setMessage,
-    ]
+    [API_BASE, shopId, dateStr, authHeadersNoJson, clearAlerts, setError, setMessage]
   );
 
   // ------------------------------------------------------------
@@ -176,13 +206,28 @@ export default function DailyClosureTab({
   const loadExpenseSummary = useCallback(
     async ({ silent = true } = {}) => {
       if (!shopId) return;
+
+      if (expAbortRef.current) expAbortRef.current.abort();
+      const controller = new AbortController();
+      expAbortRef.current = controller;
+
+      const reqId = ++expReqIdRef.current;
+
       try {
         const url = `${API_BASE}/expenses/summary?shop_id=${shopId}&expense_date=${dateStr}`;
-        const res = await fetch(url, { headers: authHeadersNoJson });
+        const res = await fetch(url, {
+          headers: authHeadersNoJson,
+          signal: controller.signal,
+          cache: "no-store",
+        });
         if (!res.ok) return; // don't break the tab if summary isn't available
         const data = await res.json();
+
+        if (reqId !== expReqIdRef.current) return;
+
         setExpenseSummary(data || null);
-      } catch {
+      } catch (err) {
+        if (err?.name === "AbortError") return;
         // ignore
       } finally {
         if (!silent) {
@@ -198,17 +243,32 @@ export default function DailyClosureTab({
   // ------------------------------------------------------------
   const loadLastClosure = useCallback(async () => {
     if (!shopId) return;
+
+    if (lastAbortRef.current) lastAbortRef.current.abort();
+    const controller = new AbortController();
+    lastAbortRef.current = controller;
+
+    const reqId = ++lastReqIdRef.current;
+
     try {
       const url = `${API_BASE}/daily-closures/${shopId}/${dateStr}`;
-      const res = await fetch(url, { headers: authHeadersNoJson });
+      const res = await fetch(url, {
+        headers: authHeadersNoJson,
+        signal: controller.signal,
+        cache: "no-store",
+      });
 
       if (res.status === 404) {
+        if (reqId !== lastReqIdRef.current) return;
         setLastClosure(null);
         return;
       }
       if (!res.ok) return;
 
       const data = await res.json();
+
+      if (reqId !== lastReqIdRef.current) return;
+
       setLastClosure(data || null);
 
       // Restore cashier pad from last saved ONLY if user hasn't started typing
@@ -220,25 +280,29 @@ export default function DailyClosureTab({
         setPosDrawer(p ? formatMoney(p) : "");
         setMomoDrawer(m ? formatMoney(m) : "");
       }
-    } catch {
+    } catch (err) {
+      if (err?.name === "AbortError") return;
       // ignore
     }
   }, [API_BASE, shopId, dateStr, authHeadersNoJson]);
 
   const refreshAll = useCallback(
-    async ({ silent = false } = {}) => {
+    async ({ silent = false, throttleMs = 1500 } = {}) => {
+      if (!shopId) return;
+      if (shouldThrottle(throttleMs)) return;
+
       await Promise.all([
         loadSystemTotals({ silent }),
         loadExpenseSummary({ silent: true }),
         loadLastClosure(),
       ]);
     },
-    [loadSystemTotals, loadExpenseSummary, loadLastClosure]
+    [shopId, loadSystemTotals, loadExpenseSummary, loadLastClosure]
   );
 
   useEffect(() => {
     touchedRef.current = false;
-    refreshAll({ silent: false });
+    refreshAll({ silent: false, throttleMs: 0 });
   }, [refreshAll]);
 
   // Auto-refresh (so expenses created in other tabs show up here)
@@ -261,6 +325,24 @@ export default function DailyClosureTab({
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVis);
       clearInterval(t);
+    };
+  }, [shopId, refreshAll]);
+
+  // ✅ NEW: immediate sync when Sales History refreshes (optional + harmless)
+  useEffect(() => {
+    if (!shopId) return;
+
+    const onSalesHistorySynced = (e) => {
+      const detailShopId = e?.detail?.shopId;
+      if (detailShopId != null && String(detailShopId) !== String(shopId)) return;
+
+      // silent refresh (never clears your messages) + throttle prevents spam
+      refreshAll({ silent: true, throttleMs: 1000 });
+    };
+
+    window.addEventListener("iclas:sales-history-synced", onSalesHistorySynced);
+    return () => {
+      window.removeEventListener("iclas:sales-history-synced", onSalesHistorySynced);
     };
   }, [shopId, refreshAll]);
 
@@ -341,7 +423,6 @@ export default function DailyClosureTab({
 
   // ------------------------------------------------------------
   // Save closure (POST /daily-closures/)
-  // - backend will store DB expenses + system credit paid
   // ------------------------------------------------------------
   const handleSaveClosure = useCallback(async () => {
     if (!shopId) return;
@@ -365,6 +446,7 @@ export default function DailyClosureTab({
         method: "POST",
         headers: authHeaders,
         body: JSON.stringify(payload),
+        cache: "no-store",
       });
 
       if (!res.ok) {
@@ -377,7 +459,7 @@ export default function DailyClosureTab({
       setMessage?.("Daily closure saved.");
 
       // After save, refresh totals so expenses/credit are up-to-date on screen
-      await refreshAll({ silent: true });
+      await refreshAll({ silent: true, throttleMs: 0 });
     } catch (err) {
       console.error(err);
       setError?.(err?.message || "Failed to save daily closure.");
@@ -447,10 +529,12 @@ export default function DailyClosureTab({
             <div style={{ marginTop: 3, fontSize: 11, color: "#6b7280" }}>
               Last refreshed:{" "}
               <strong>
-                {String(lastRefreshedAt.toLocaleTimeString([], {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                }))}
+                {String(
+                  lastRefreshedAt.toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })
+                )}
               </strong>
             </div>
           )}
@@ -459,7 +543,7 @@ export default function DailyClosureTab({
         <div style={{ display: "flex", gap: 10 }}>
           <button
             type="button"
-            onClick={() => refreshAll({ silent: false })}
+            onClick={() => refreshAll({ silent: false, throttleMs: 0 })}
             style={{
               border: "none",
               borderRadius: 999,
