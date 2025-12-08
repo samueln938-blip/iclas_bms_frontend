@@ -1,5 +1,5 @@
 // src/pages/shop/ShopSalesHistoryPage.jsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext.jsx";
 
@@ -23,7 +23,6 @@ function todayDateString() {
 
 function ymdFromISO(iso) {
   if (!iso) return "";
-  // If backend returns ISO like "2025-12-08T..."
   if (typeof iso === "string" && iso.length >= 10 && iso[4] === "-" && iso[7] === "-") return iso.slice(0, 10);
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
@@ -135,7 +134,7 @@ function SalesHistoryPage() {
   const navigate = useNavigate();
 
   // ✅ Use the same auth headers as Sales & POS
-  const { authHeaders, authHeadersNoJson } = useAuth();
+  const { authHeadersNoJson } = useAuth();
 
   const [shop, setShop] = useState(null);
   const [loadingShop, setLoadingShop] = useState(true);
@@ -180,7 +179,14 @@ function SalesHistoryPage() {
   const [autoRefreshToday, setAutoRefreshToday] = useState(true);
   const autoTimerRef = useRef(null);
 
+  // Last sync info (useful for “is it fresh?” debugging)
+  const [lastSalesSyncAt, setLastSalesSyncAt] = useState(null);
+
   const shopName = shop?.name || `Shop ${shopId}`;
+
+  const headersReady = useMemo(() => {
+    return !!authHeadersNoJson && typeof authHeadersNoJson === "object" && Object.keys(authHeadersNoJson).length > 0;
+  }, [authHeadersNoJson]);
 
   // -------------------------
   // Decide active date range based on tab
@@ -208,8 +214,7 @@ function SalesHistoryPage() {
       const y = Number(yStr);
       const m = Number(mStr);
       if (!y || !m) return todayDateString();
-      // last day of month: day 0 of next month
-      const last = new Date(y, m, 0);
+      const last = new Date(y, m, 0); // last day of month
       const yy = last.getFullYear();
       const mm = String(last.getMonth() + 1).padStart(2, "0");
       const dd = String(last.getDate()).padStart(2, "0");
@@ -219,10 +224,10 @@ function SalesHistoryPage() {
   }, [tab, selectedDate, rangeTo, creditTo, selectedMonth]);
 
   // -------------------------
-  // Safe JSON fetch helper
+  // Safe JSON fetch helper (no cache + abortable)
   // -------------------------
-  const fetchJson = async (url, headers) => {
-    const res = await fetch(url, { headers });
+  const fetchJson = useCallback(async (url, headers, signal) => {
+    const res = await fetch(url, { headers, signal, cache: "no-store" });
     if (!res.ok) {
       let detail = `Request failed. Status: ${res.status}`;
       try {
@@ -232,86 +237,130 @@ function SalesHistoryPage() {
       throw new Error(detail);
     }
     return res.json();
-  };
+  }, []);
+
+  // Abort + latest-wins guards
+  const shopAbortRef = useRef(null);
+  const stockAbortRef = useRef(null);
+  const salesAbortRef = useRef(null);
+
+  const shopReqIdRef = useRef(0);
+  const stockReqIdRef = useRef(0);
+  const salesReqIdRef = useRef(0);
 
   // -------------------------
   // Load shop info (AUTH)
   // -------------------------
-  useEffect(() => {
-    async function loadShop() {
-      if (!shopId) return;
-      setLoadingShop(true);
-      setError("");
+  const loadShop = useCallback(async () => {
+    if (!shopId) return;
+    if (!headersReady) return;
+
+    if (shopAbortRef.current) shopAbortRef.current.abort();
+    const controller = new AbortController();
+    shopAbortRef.current = controller;
+
+    const reqId = ++shopReqIdRef.current;
+
+    setLoadingShop(true);
+    setError("");
+
+    try {
+      const candidates = [
+        `${API_BASE}/shops/${shopId}`,
+        `${API_BASE}/shops/${shopId}/`,
+        `${API_BASE}/shops/detail/${shopId}`,
+      ];
+
+      // Try in parallel; first success wins (reduces “delay” when one endpoint is slow)
+      const tasks = candidates.map((url) =>
+        fetchJson(url, authHeadersNoJson, controller.signal).then((json) => ({ url, json }))
+      );
+
+      let winner = null;
       try {
-        const candidates = [
-          `${API_BASE}/shops/${shopId}`,
-          `${API_BASE}/shops/${shopId}/`,
-          `${API_BASE}/shops/detail/${shopId}`,
-        ];
-
-        let data = null;
-        for (const url of candidates) {
-          try {
-            const json = await fetchJson(url, authHeadersNoJson);
-            data = json?.shop || json;
-            if (data) break;
-          } catch {
-            // try next
-          }
-        }
-
-        if (!data) throw new Error("Failed to load shop.");
-        setShop(data);
-      } catch (err) {
-        console.error(err);
-        setShop(null);
-        setError(err.message || "Failed to load shop.");
-      } finally {
-        setLoadingShop(false);
+        winner = await Promise.any(tasks);
+      } catch (e) {
+        winner = null;
       }
-    }
 
+      if (!winner?.json) throw new Error("Failed to load shop.");
+      const data = winner.json?.shop || winner.json;
+
+      // latest-wins guard
+      if (reqId !== shopReqIdRef.current) return;
+
+      setShop(data);
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+      console.error(err);
+
+      if (reqId !== shopReqIdRef.current) return;
+
+      setShop(null);
+      setError(err.message || "Failed to load shop.");
+    } finally {
+      if (reqId === shopReqIdRef.current) setLoadingShop(false);
+    }
+  }, [API_BASE, authHeadersNoJson, fetchJson, headersReady, shopId]);
+
+  useEffect(() => {
     loadShop();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shopId, API_BASE]);
+  }, [loadShop]);
 
   // -------------------------
   // Load stock to map item_id -> item_name (AUTH)
   // -------------------------
-  useEffect(() => {
-    async function loadStock() {
-      if (!shopId) return;
-      setLoadingStock(true);
+  const loadStock = useCallback(async () => {
+    if (!shopId) return;
+    if (!headersReady) return;
+
+    if (stockAbortRef.current) stockAbortRef.current.abort();
+    const controller = new AbortController();
+    stockAbortRef.current = controller;
+
+    const reqId = ++stockReqIdRef.current;
+
+    setLoadingStock(true);
+
+    try {
+      const candidates = [
+        `${API_BASE}/stock/?shop_id=${shopId}&only_positive=0`,
+        `${API_BASE}/stock/?shop_id=${shopId}`,
+        `${API_BASE}/stock/?shop_id=${shopId}&only_positive=false`,
+      ];
+
+      const tasks = candidates.map((url) =>
+        fetchJson(url, authHeadersNoJson, controller.signal).then((json) => ({ url, json }))
+      );
+
+      let winner = null;
       try {
-        const candidates = [
-          `${API_BASE}/stock/?shop_id=${shopId}&only_positive=0`,
-          `${API_BASE}/stock/?shop_id=${shopId}`,
-          `${API_BASE}/stock/?shop_id=${shopId}&only_positive=false`,
-        ];
-
-        let data = null;
-        for (const url of candidates) {
-          try {
-            const json = await fetchJson(url, authHeadersNoJson);
-            data = Array.isArray(json) ? json : json?.stock || json?.rows || null;
-            if (Array.isArray(data)) break;
-          } catch {
-            // try next
-          }
-        }
-
-        setStockRows(Array.isArray(data) ? data : []);
-      } catch (err) {
-        console.error("Error loading stock for history page:", err);
-        setStockRows([]);
-      } finally {
-        setLoadingStock(false);
+        winner = await Promise.any(tasks);
+      } catch (e) {
+        winner = null;
       }
-    }
 
+      const json = winner?.json;
+      const data = Array.isArray(json) ? json : json?.stock || json?.rows || null;
+
+      if (reqId !== stockReqIdRef.current) return;
+
+      setStockRows(Array.isArray(data) ? data : []);
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+      console.error("Error loading stock for history page:", err);
+
+      if (reqId !== stockReqIdRef.current) return;
+
+      setStockRows([]);
+    } finally {
+      if (reqId === stockReqIdRef.current) setLoadingStock(false);
+    }
+  }, [API_BASE, authHeadersNoJson, fetchJson, headersReady, shopId]);
+
+  useEffect(() => {
     loadStock();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shopId, API_BASE]);
+  }, [loadStock]);
 
   const stockByItemId = useMemo(() => {
     const map = {};
@@ -322,28 +371,59 @@ function SalesHistoryPage() {
   // -------------------------
   // Load sales for active date range (AUTH)
   // -------------------------
-  const loadSales = async () => {
+  const loadSales = useCallback(async () => {
     if (!shopId || !activeDateFrom || !activeDateTo) return;
+    if (!headersReady) return;
+
+    if (salesAbortRef.current) salesAbortRef.current.abort();
+    const controller = new AbortController();
+    salesAbortRef.current = controller;
+
+    const reqId = ++salesReqIdRef.current;
+
     setLoadingSales(true);
     setError("");
+
     try {
       const url = `${API_BASE}/sales/?shop_id=${shopId}&date_from=${activeDateFrom}&date_to=${activeDateTo}`;
-      const json = await fetchJson(url, authHeadersNoJson);
+      const json = await fetchJson(url, authHeadersNoJson, controller.signal);
       const list = Array.isArray(json) ? json : Array.isArray(json?.sales) ? json.sales : [];
+
+      if (reqId !== salesReqIdRef.current) return;
+
       setSales(list || []);
+      const nowIso = new Date().toISOString();
+      setLastSalesSyncAt(nowIso);
+
+      // 🔔 Frontend sync hook: other tabs (Daily Closure) can listen & refresh immediately
+      try {
+        window.dispatchEvent(
+          new CustomEvent("iclas:sales-history-synced", {
+            detail: {
+              shopId,
+              dateFrom: activeDateFrom,
+              dateTo: activeDateTo,
+              at: Date.now(),
+            },
+          })
+        );
+      } catch {}
     } catch (err) {
+      if (err?.name === "AbortError") return;
       console.error(err);
+
+      if (reqId !== salesReqIdRef.current) return;
+
       setSales([]);
       setError(err.message || "Failed to load sales history.");
     } finally {
-      setLoadingSales(false);
+      if (reqId === salesReqIdRef.current) setLoadingSales(false);
     }
-  };
+  }, [API_BASE, activeDateFrom, activeDateTo, authHeadersNoJson, fetchJson, headersReady, shopId]);
 
   useEffect(() => {
     loadSales();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shopId, activeDateFrom, activeDateTo]);
+  }, [loadSales]);
 
   // -------------------------
   // Auto-refresh Today tab
@@ -367,8 +447,7 @@ function SalesHistoryPage() {
         autoTimerRef.current = null;
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, autoRefreshToday, shopId, activeDateFrom, activeDateTo]);
+  }, [tab, autoRefreshToday, loadSales]);
 
   // -------------------------
   // Filter by payment / credit (normalized)
@@ -380,7 +459,6 @@ function SalesHistoryPage() {
       const paymentType = normalizePaymentType(sale?.payment_type);
       const creditOpen = isOpenCreditSale(sale);
 
-      // Credits tab forces credit-only view
       const effectivePaymentFilter = tab === "credits" ? "credit" : paymentFilter;
 
       if (effectivePaymentFilter === "credit") return creditOpen;
@@ -388,7 +466,6 @@ function SalesHistoryPage() {
       if (effectivePaymentFilter === "card") return !creditOpen && paymentType === "card";
       if (effectivePaymentFilter === "mobile") return !creditOpen && paymentType === "mobile";
 
-      // Search tab: apply query filter (customer + phone + receipt id + item names)
       if (tab === "search" && q) {
         const idHit = String(sale?.id ?? "").toLowerCase().includes(q);
         const nameHit = String(sale?.customer_name ?? "").toLowerCase().includes(q);
@@ -496,7 +573,6 @@ function SalesHistoryPage() {
       if (!map.has(day)) map.set(day, []);
       map.get(day).push(sale);
     }
-    // sort days desc
     const days = Array.from(map.keys()).sort((a, b) => String(b).localeCompare(String(a)));
     return { map, days };
   }, [filteredSales]);
@@ -533,7 +609,6 @@ function SalesHistoryPage() {
   // -------------------------
   const [openDays, setOpenDays] = useState({});
   useEffect(() => {
-    // reset open days when range changes
     setOpenDays({});
   }, [tab, activeDateFrom, activeDateTo]);
 
@@ -543,7 +618,7 @@ function SalesHistoryPage() {
   if (loadingShop) {
     return (
       <div style={{ padding: "24px" }}>
-        <p>Loading shop...</p>
+        <p>{headersReady ? "Loading shop..." : "Loading session..."}</p>
       </div>
     );
   }
@@ -816,6 +891,11 @@ function SalesHistoryPage() {
           <h1 style={{ fontSize: "28px", fontWeight: 800, letterSpacing: "0.02em", margin: 0 }}>{title}</h1>
           <p style={{ color: "#6b7280", marginTop: "0.5rem" }}>
             <strong>{shopName}</strong> • Range: <strong>{activeDateFrom}</strong> → <strong>{activeDateTo}</strong>
+            {lastSalesSyncAt && (
+              <span style={{ marginLeft: 10, fontSize: 12, color: "#9ca3af" }}>
+                • Synced: {formatTimeHM(lastSalesSyncAt)}
+              </span>
+            )}
           </p>
         </div>
 
@@ -833,7 +913,10 @@ function SalesHistoryPage() {
 
           <button
             type="button"
-            onClick={() => loadSales()}
+            onClick={() => {
+              loadSales();
+              loadStock(); // keeps item names fresh too
+            }}
             style={{
               padding: "8px 12px",
               borderRadius: 999,
@@ -877,9 +960,8 @@ function SalesHistoryPage() {
               onClick={() => {
                 setTab(t.key);
 
-                // sensible defaults per tab
                 if (t.key === "today") setSelectedDate(todayDateString());
-                if (t.key === "credits") setPaymentFilter("credit"); // show open credits
+                if (t.key === "credits") setPaymentFilter("credit");
                 if (t.key !== "credits" && paymentFilter === "credit") setPaymentFilter("all");
               }}
               style={{
@@ -902,7 +984,6 @@ function SalesHistoryPage() {
 
       {/* Controls row */}
       <div style={{ marginTop: 14, display: "flex", flexWrap: "wrap", gap: "10px 16px", alignItems: "center" }}>
-        {/* Date controls per tab */}
         {tab === "today" && (
           <div style={{ fontSize: "13px", color: "#6b7280" }}>
             Date:&nbsp;
@@ -1061,7 +1142,7 @@ function SalesHistoryPage() {
           </div>
         )}
 
-        {/* Payment filter (not needed on credits tab but harmless) */}
+        {/* Payment filter */}
         <div
           style={{
             display: "inline-flex",
@@ -1207,9 +1288,7 @@ function SalesHistoryPage() {
         >
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
             <div style={{ fontWeight: 900, fontSize: 13 }}>Daily totals</div>
-            <div style={{ fontSize: 12, color: "#6b7280" }}>
-              Tip: click a day to expand receipts
-            </div>
+            <div style={{ fontSize: 12, color: "#6b7280" }}>Tip: click a day to expand receipts</div>
           </div>
 
           {loadingSales ? (
@@ -1217,72 +1296,72 @@ function SalesHistoryPage() {
           ) : dailyTotalsTable.length === 0 ? (
             <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>No data in this range.</div>
           ) : (
-            <>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginTop: 8 }}>
-                <thead>
-                  <tr
-                    style={{
-                      textAlign: "left",
-                      borderBottom: "1px solid #e5e7eb",
-                      fontSize: "11px",
-                      textTransform: "uppercase",
-                      letterSpacing: "0.08em",
-                      color: "#6b7280",
-                    }}
-                  >
-                    <th style={{ padding: "6px 4px" }}>Day</th>
-                    <th style={{ padding: "6px 4px", textAlign: "right" }}>Receipts</th>
-                    <th style={{ padding: "6px 4px", textAlign: "right" }}>Total</th>
-                    <th style={{ padding: "6px 4px", textAlign: "right" }}>Profit</th>
-                    <th style={{ padding: "6px 4px", textAlign: "right" }}>Open credit</th>
-                    <th style={{ padding: "6px 4px" }}></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {dailyTotalsTable.map((r) => {
-                    const open = !!openDays[r.day];
-                    return (
-                      <React.Fragment key={r.day}>
-                        <tr style={{ borderBottom: "1px solid #f3f4f6" }}>
-                          <td style={{ padding: "8px 4px", fontWeight: 800 }}>{r.day}</td>
-                          <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(r.receipts)}</td>
-                          <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 800 }}>{formatMoney(r.total)}</td>
-                          <td style={{ padding: "8px 4px", textAlign: "right", color: "#16a34a", fontWeight: 800 }}>{formatMoney(r.profit)}</td>
-                          <td style={{ padding: "8px 4px", textAlign: "right", color: "#b91c1c", fontWeight: 900 }}>{formatMoney(r.openCredit)}</td>
-                          <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                            <button
-                              type="button"
-                              onClick={() => setOpenDays((prev) => ({ ...prev, [r.day]: !prev[r.day] }))}
-                              style={{
-                                padding: "6px 10px",
-                                borderRadius: 999,
-                                border: "1px solid #e5e7eb",
-                                background: "#fff",
-                                cursor: "pointer",
-                                fontSize: 12,
-                                fontWeight: 800,
-                              }}
-                            >
-                              {open ? "Hide" : "View"}
-                            </button>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginTop: 8 }}>
+              <thead>
+                <tr
+                  style={{
+                    textAlign: "left",
+                    borderBottom: "1px solid #e5e7eb",
+                    fontSize: "11px",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.08em",
+                    color: "#6b7280",
+                  }}
+                >
+                  <th style={{ padding: "6px 4px" }}>Day</th>
+                  <th style={{ padding: "6px 4px", textAlign: "right" }}>Receipts</th>
+                  <th style={{ padding: "6px 4px", textAlign: "right" }}>Total</th>
+                  <th style={{ padding: "6px 4px", textAlign: "right" }}>Profit</th>
+                  <th style={{ padding: "6px 4px", textAlign: "right" }}>Open credit</th>
+                  <th style={{ padding: "6px 4px" }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {dailyTotalsTable.map((r) => {
+                  const open = !!openDays[r.day];
+                  return (
+                    <React.Fragment key={r.day}>
+                      <tr style={{ borderBottom: "1px solid #f3f4f6" }}>
+                        <td style={{ padding: "8px 4px", fontWeight: 800 }}>{r.day}</td>
+                        <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(r.receipts)}</td>
+                        <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 800 }}>{formatMoney(r.total)}</td>
+                        <td style={{ padding: "8px 4px", textAlign: "right", color: "#16a34a", fontWeight: 800 }}>{formatMoney(r.profit)}</td>
+                        <td style={{ padding: "8px 4px", textAlign: "right", color: "#b91c1c", fontWeight: 900 }}>{formatMoney(r.openCredit)}</td>
+                        <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                          <button
+                            type="button"
+                            onClick={() => setOpenDays((prev) => ({ ...prev, [r.day]: !prev[r.day] }))}
+                            style={{
+                              padding: "6px 10px",
+                              borderRadius: 999,
+                              border: "1px solid #e5e7eb",
+                              background: "#fff",
+                              cursor: "pointer",
+                              fontSize: 12,
+                              fontWeight: 800,
+                            }}
+                          >
+                            {open ? "Hide" : "View"}
+                          </button>
+                        </td>
+                      </tr>
+
+                      {open && (
+                        <tr>
+                          <td colSpan={6} style={{ padding: "10px 4px" }}>
+                            <div style={{ borderRadius: 14, border: "1px solid #e5e7eb", background: "#fafafa", padding: 10 }}>
+                              {viewMode === "items"
+                                ? renderItemsTable()
+                                : renderReceiptsTable(groupedByDay.map.get(r.day) || [])}
+                            </div>
                           </td>
                         </tr>
-
-                        {open && (
-                          <tr>
-                            <td colSpan={6} style={{ padding: "10px 4px" }}>
-                              <div style={{ borderRadius: 14, border: "1px solid #e5e7eb", background: "#fafafa", padding: 10 }}>
-                                {viewMode === "items" ? renderItemsTable() : renderReceiptsTable(groupedByDay.map.get(r.day) || [])}
-                              </div>
-                            </td>
-                          </tr>
-                        )}
-                      </React.Fragment>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
           )}
         </div>
       )}
