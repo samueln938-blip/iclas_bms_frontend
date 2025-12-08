@@ -20,8 +20,9 @@ const PURCHASE_GRID_COLUMNS =
 
 function formatMoney(value) {
   if (value === null || value === undefined || value === "") return "0";
-  const num = Number(value) || 0;
-  return num.toLocaleString("en-RW", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  const num = Number(value);
+  const safe = Number.isFinite(num) ? num : 0;
+  return safe.toLocaleString("en-RW", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 }
 
 function formatQty(value) {
@@ -29,6 +30,29 @@ function formatQty(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return String(value);
   return n.toLocaleString("en-RW", { maximumFractionDigits: 2 });
+}
+
+/**
+ * ✅ Convert to finite number (or null)
+ */
+function toFiniteNumberOrNull(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * ✅ "Recent" fallback:
+ * If stock has a valid recent (>0), use it.
+ * Else fallback to the line's new value (>0).
+ * Else 0.
+ */
+function chooseRecent(stockVal, lineVal) {
+  const s = toFiniteNumberOrNull(stockVal);
+  if (s !== null && s > 0) return s;
+  const l = toFiniteNumberOrNull(lineVal);
+  if (l !== null && l > 0) return l;
+  return 0;
 }
 
 // ✅ local-safe today (no UTC shifting)
@@ -472,19 +496,31 @@ function ShopPurchasesPage() {
       if (!res.ok) return;
 
       const data = await res.json().catch(() => []);
-      const mapped = (data || []).map((pl) => ({
-        id: `db-${pl.id}`,
-        isFromDb: true,
-        dbId: pl.id,
-        itemId: pl.item_id,
-        qtyUnits: pl.quantity,
-        newUnitCost: pl.unit_cost_price,
-        // ✅ prefer DB saved values; fallback to stock
-        newWholesalePerPiece:
-          pl.wholesale_price_per_piece ?? stockByItemId[pl.item_id]?.wholesale_price_per_piece ?? "",
-        newRetailPerPiece:
-          pl.retail_price_per_piece ?? stockByItemId[pl.item_id]?.selling_price_per_piece ?? "",
-      }));
+      const mapped = (data || []).map((pl) => {
+        const wholesale =
+          pl.wholesale_price_per_piece ??
+          pl.wholesale_per_piece ??
+          stockByItemId[pl.item_id]?.wholesale_price_per_piece ??
+          "";
+
+        const retail =
+          pl.retail_price_per_piece ??
+          pl.selling_price_per_piece ??
+          pl.retail_per_piece ??
+          stockByItemId[pl.item_id]?.selling_price_per_piece ??
+          "";
+
+        return {
+          id: `db-${pl.id}`,
+          isFromDb: true,
+          dbId: pl.id,
+          itemId: pl.item_id,
+          qtyUnits: pl.quantity,
+          newUnitCost: pl.unit_cost_price,
+          newWholesalePerPiece: wholesale,
+          newRetailPerPiece: retail,
+        };
+      });
 
       setLines(mapped);
     } catch (err) {
@@ -730,9 +766,10 @@ function ShopPurchasesPage() {
 
       const piecesPerUnit = s.item_pieces_per_unit ?? metaFallback.piecesPerUnit ?? 1;
 
-      const recentUnitCost = Number(s.last_purchase_unit_price || 0);
-      const recentWholesalePerPiece = Number(s.wholesale_price_per_piece || 0);
-      const recentRetailPerPiece = Number(s.selling_price_per_piece || 0);
+      // ✅ FIX: recent values fall back to NEW values if stock has no history yet
+      const recentUnitCost = chooseRecent(s.last_purchase_unit_price, line.newUnitCost);
+      const recentWholesalePerPiece = chooseRecent(s.wholesale_price_per_piece, line.newWholesalePerPiece);
+      const recentRetailPerPiece = chooseRecent(s.selling_price_per_piece, line.newRetailPerPiece);
 
       const qtyUnits = Number(line.qtyUnits || 0);
       const newUnitCost = Number(line.newUnitCost || 0);
@@ -810,19 +847,32 @@ function ShopPurchasesPage() {
             const data = await res.json().catch(() => []);
             if (!Array.isArray(data)) return [];
 
-            return data.map((pl) => ({
-              id: `h-db-${pl.id}`,
-              isFromDb: true,
-              dbId: pl.id,
-              itemId: pl.item_id,
-              qtyUnits: pl.quantity,
-              newUnitCost: pl.unit_cost_price,
-              newWholesalePerPiece:
-                pl.wholesale_price_per_piece ?? stockByItemId[pl.item_id]?.wholesale_price_per_piece ?? "",
-              newRetailPerPiece:
-                pl.retail_price_per_piece ?? stockByItemId[pl.item_id]?.selling_price_per_piece ?? "",
-              purchaseDate: d,
-            }));
+            return data.map((pl) => {
+              const wholesale =
+                pl.wholesale_price_per_piece ??
+                pl.wholesale_per_piece ??
+                stockByItemId[pl.item_id]?.wholesale_price_per_piece ??
+                "";
+
+              const retail =
+                pl.retail_price_per_piece ??
+                pl.selling_price_per_piece ??
+                pl.retail_per_piece ??
+                stockByItemId[pl.item_id]?.selling_price_per_piece ??
+                "";
+
+              return {
+                id: `h-db-${pl.id}`,
+                isFromDb: true,
+                dbId: pl.id,
+                itemId: pl.item_id,
+                qtyUnits: pl.quantity,
+                newUnitCost: pl.unit_cost_price,
+                newWholesalePerPiece: wholesale,
+                newRetailPerPiece: retail,
+                purchaseDate: d,
+              };
+            });
           })
         );
 
@@ -860,9 +910,10 @@ function ShopPurchasesPage() {
 
       const piecesPerUnit = s.item_pieces_per_unit ?? metaFallback.piecesPerUnit ?? 1;
 
-      const recentUnitCost = Number(s.last_purchase_unit_price || 0);
-      const recentWholesalePerPiece = Number(s.wholesale_price_per_piece || 0);
-      const recentRetailPerPiece = Number(s.selling_price_per_piece || 0);
+      // ✅ FIX: same fallback logic for history view
+      const recentUnitCost = chooseRecent(s.last_purchase_unit_price, line.newUnitCost);
+      const recentWholesalePerPiece = chooseRecent(s.wholesale_price_per_piece, line.newWholesalePerPiece);
+      const recentRetailPerPiece = chooseRecent(s.selling_price_per_piece, line.newRetailPerPiece);
 
       const qtyUnits = Number(line.qtyUnits || 0);
       const newUnitCost = Number(line.newUnitCost || 0);
