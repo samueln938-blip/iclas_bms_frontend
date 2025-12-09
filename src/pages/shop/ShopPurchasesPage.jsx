@@ -18,6 +18,9 @@ const MAX_HISTORY_DAYS = 31;
 const PURCHASE_GRID_COLUMNS =
   "minmax(200px, 2.3fr) 90px 90px 110px 140px 140px 140px 130px 130px 130px 130px 110px 40px";
 
+// ✅ Single source of truth for minimum table width (prevents right-side columns from “falling outside”)
+const PURCHASE_TABLE_MIN_WIDTH = "max-content";
+
 function formatMoney(value) {
   if (value === null || value === undefined || value === "") return "0";
   const num = Number(value);
@@ -1753,6 +1756,7 @@ function ShopPurchasesPage() {
                   maxHeight: "420px",
                   overflowY: "auto",
                   overflowX: "auto",
+                  scrollbarGutter: "stable",
                   borderRadius: "12px",
                   border: "1px solid #e5e7eb",
                   padding: "0 8px 4px 0",
@@ -1763,7 +1767,7 @@ function ShopPurchasesPage() {
                   style={{
                     display: "grid",
                     gridTemplateColumns: PURCHASE_GRID_COLUMNS,
-                    minWidth: "1260px",
+                    minWidth: PURCHASE_TABLE_MIN_WIDTH,
                     alignItems: "center",
                     padding: "6px 4px 6px 8px",
                     borderBottom: "1px solid #e5e7eb",
@@ -1814,7 +1818,7 @@ function ShopPurchasesPage() {
                       style={{
                         display: "grid",
                         gridTemplateColumns: PURCHASE_GRID_COLUMNS,
-                        minWidth: "1260px",
+                        minWidth: PURCHASE_TABLE_MIN_WIDTH,
                         alignItems: "center",
                         padding: "8px 4px 8px 8px",
                         borderBottom: "1px solid #f3f4f6",
@@ -2154,12 +2158,12 @@ function ShopPurchasesPage() {
                               {rawLines ? "No matching items." : "No lines found for this day."}
                             </div>
                           ) : (
-                            <div style={{ maxHeight: "520px", overflowY: "auto", overflowX: "auto", borderRadius: "12px", border: "1px solid #e5e7eb", padding: "0 8px 4px 0", backgroundColor: "#fcfcff" }}>
+                            <div style={{ maxHeight: "520px", overflowY: "auto", overflowX: "auto", scrollbarGutter: "stable", borderRadius: "12px", border: "1px solid #e5e7eb", padding: "0 8px 4px 0", backgroundColor: "#fcfcff" }}>
                               <div
                                 style={{
                                   display: "grid",
                                   gridTemplateColumns: PURCHASE_GRID_COLUMNS,
-                                  minWidth: "1260px",
+                                  minWidth: PURCHASE_TABLE_MIN_WIDTH,
                                   alignItems: "center",
                                   padding: "6px 4px 6px 8px",
                                   borderBottom: "1px solid #e5e7eb",
@@ -2200,7 +2204,7 @@ function ShopPurchasesPage() {
                                     style={{
                                       display: "grid",
                                       gridTemplateColumns: PURCHASE_GRID_COLUMNS,
-                                      minWidth: "1260px",
+                                      minWidth: PURCHASE_TABLE_MIN_WIDTH,
                                       alignItems: "center",
                                       padding: "8px 4px 8px 8px",
                                       borderBottom: "1px solid #f3f4f6",
