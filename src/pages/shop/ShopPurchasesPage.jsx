@@ -1058,6 +1058,24 @@ function ShopPurchasesPage() {
     }
   };
 
+  // ✅ FIX (React #310): this useMemo must be ABOVE the early return
+  const filteredHistoryDays = useMemo(() => {
+    const term = historySearchTerm.trim().toLowerCase();
+    if (!term) return historyDays;
+
+    return (historyDays || []).filter((d) => {
+      const day = String(d.purchase_date || "");
+      if (day.includes(term)) return true;
+
+      const loaded = historyDayLines[toISODate(day)] || null;
+      if (!loaded) return false;
+
+      const enriched = enrichHistoryLines(loaded);
+      return enriched.some((ln) => (ln.meta.itemName || "").toLowerCase().includes(term));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyDays, historySearchTerm, historyDayLines, stockByItemId, itemMetaById]);
+
   // ✅ Early returns
   if (loading) {
     return (
@@ -1125,24 +1143,6 @@ function ShopPurchasesPage() {
     fontSize: "12px",
     cursor: "pointer",
   });
-
-  // ✅ Filter days based on search term (either by date match or by item match in loaded lines)
-  const filteredHistoryDays = useMemo(() => {
-    const term = historySearchTerm.trim().toLowerCase();
-    if (!term) return historyDays;
-
-    return (historyDays || []).filter((d) => {
-      const day = String(d.purchase_date || "");
-      if (day.includes(term)) return true;
-
-      const loaded = historyDayLines[toISODate(day)] || null;
-      if (!loaded) return false;
-
-      const enriched = enrichHistoryLines(loaded);
-      return enriched.some((ln) => (ln.meta.itemName || "").toLowerCase().includes(term));
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [historyDays, historySearchTerm, historyDayLines, stockByItemId, itemMetaById]);
 
   return (
     <div style={{ padding: "16px 24px 24px" }}>
