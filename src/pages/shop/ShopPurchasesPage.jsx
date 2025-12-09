@@ -18,8 +18,8 @@ const MAX_HISTORY_DAYS = 31;
 const PURCHASE_GRID_COLUMNS =
   "minmax(200px, 2.3fr) 90px 90px 110px 140px 140px 140px 130px 130px 130px 130px 110px 40px";
 
-// ✅ Single source of truth for minimum table width (prevents right-side columns from “falling outside”)
-const PURCHASE_TABLE_MIN_WIDTH = "max-content";
+// ✅ Minimum width that matches the column sum so last columns never “fall outside”
+const PURCHASE_GRID_MIN_WIDTH = "1580px";
 
 function formatMoney(value) {
   if (value === null || value === undefined || value === "") return "0";
@@ -450,9 +450,10 @@ function ShopPurchasesPage() {
 
         let itemsData = [];
         try {
-          const itemsResShop = await fetch(`${API_BASE}/items/?shop_id=${shopId}`, {
-            headers: authHeadersNoJson,
-          });
+          const itemsResShop = await fetch(
+            `${API_BASE}/items/?shop_id=${shopId}`,
+            { headers: authHeadersNoJson }
+          );
           if (itemsResShop.ok) {
             itemsData = await itemsResShop.json().catch(() => []);
           } else {
@@ -692,8 +693,6 @@ function ShopPurchasesPage() {
         return;
       }
 
-      // Build query safely (prevents 422 from empty/invalid query strings)
-      // Also send both styles to support older backend versions if needed.
       const sp = new URLSearchParams();
       sp.set("shop_id", String(shopId));
 
@@ -810,7 +809,6 @@ function ShopPurchasesPage() {
       return next;
     });
 
-    // If expanding and not loaded yet => load
     const already = historyDayLines[toISODate(dayISO)];
     if (!already) {
       await loadHistoryDayLines(d);
@@ -844,14 +842,11 @@ function ShopPurchasesPage() {
       setMessage("Saved purchase line deleted and stock recalculated.");
       cancelAnyEdit();
 
-      // ✅ Refresh Today tab lines if relevant
       await loadExistingLines();
 
-      // ✅ Refresh history view (only if we are on Tab 2)
       if (activeTab === 2) {
         const dayISO = toISODate(purchaseDateForRefresh);
         if (dayISO) {
-          // refresh that day's lines + day summaries
           await loadHistoryDayLines(dayISO);
         }
         await loadHistoryDays();
@@ -979,7 +974,6 @@ function ShopPurchasesPage() {
       const piecesPerUnit =
         s.item_pieces_per_unit ?? metaFallback.piecesPerUnit ?? 1;
 
-      // ✅ FIX: recent values fall back to NEW values if stock has no history yet
       const recentUnitCost = chooseRecent(
         s.last_purchase_unit_price,
         line.newUnitCost
@@ -1066,7 +1060,6 @@ function ShopPurchasesPage() {
       const piecesPerUnit =
         s.item_pieces_per_unit ?? metaFallback.piecesPerUnit ?? 1;
 
-      // ✅ Same fallback logic for history
       const recentUnitCost = chooseRecent(
         s.last_purchase_unit_price,
         line.newUnitCost
@@ -1227,6 +1220,7 @@ function ShopPurchasesPage() {
     outline: "none",
     backgroundColor: "#ffffff",
     color: "#111827",
+    boxSizing: "border-box",
   };
 
   const labelStyle = {
@@ -1277,13 +1271,11 @@ function ShopPurchasesPage() {
   return (
     <div
       style={{
-        // ✅ full-bleed to viewport so the table can fit the whole screen
-        width: "100vw",
-        marginLeft: "calc(50% - 50vw)",
-        marginRight: "calc(50% - 50vw)",
+        // ✅ IMPORTANT FIX: do NOT use 100vw/negative margins inside AppLayout.
+        // This page must respect the sidebar width and main padding.
+        width: "100%",
+        maxWidth: "100%",
         boxSizing: "border-box",
-
-        padding: "16px 24px 24px",
       }}
     >
       {/* Header */}
@@ -1306,6 +1298,7 @@ function ShopPurchasesPage() {
             justifyContent: "space-between",
             gap: "12px",
             marginBottom: "6px",
+            flexWrap: "wrap",
           }}
         >
           <div
@@ -1313,6 +1306,7 @@ function ShopPurchasesPage() {
               display: "flex",
               flexDirection: "column",
               alignItems: "flex-start",
+              minWidth: 0,
             }}
           >
             <button
@@ -1346,6 +1340,7 @@ function ShopPurchasesPage() {
                 fontSize: "13px",
                 fontWeight: 600,
                 color: "#2563eb",
+                wordBreak: "break-word",
               }}
             >
               {shopName}
@@ -1397,6 +1392,7 @@ function ShopPurchasesPage() {
           <div
             style={{
               minWidth: "260px",
+              maxWidth: "100%",
               backgroundColor: "#ffffff",
               borderRadius: "16px",
               padding: "10px 14px",
@@ -1439,11 +1435,11 @@ function ShopPurchasesPage() {
           </div>
         </div>
 
-        {/* Keep your top inputs (still useful) */}
+        {/* ✅ Make header inputs responsive instead of forcing 3 columns always */}
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "160px minmax(0, 1fr) 220px",
+            gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
             gap: "12px",
             marginBottom: "8px",
           }}
@@ -1458,6 +1454,8 @@ function ShopPurchasesPage() {
               border: "1px solid #d1d5db",
               fontSize: "13px",
               backgroundColor: "#ffffff",
+              width: "100%",
+              boxSizing: "border-box",
             }}
           />
           <input
@@ -1472,6 +1470,7 @@ function ShopPurchasesPage() {
               border: "1px solid #d1d5db",
               fontSize: "13px",
               backgroundColor: "#ffffff",
+              boxSizing: "border-box",
             }}
           />
           <input
@@ -1486,6 +1485,7 @@ function ShopPurchasesPage() {
               border: "1px solid #d1d5db",
               fontSize: "13px",
               backgroundColor: "#ffffff",
+              boxSizing: "border-box",
             }}
           />
         </div>
@@ -1532,6 +1532,8 @@ function ShopPurchasesPage() {
               border: padBorder,
               color: padText,
               scrollMarginTop: HEADER_IS_STICKY ? `${headerHeight + 12}px` : "12px",
+              maxWidth: "100%",
+              boxSizing: "border-box",
             }}
           >
             <div
@@ -1543,6 +1545,7 @@ function ShopPurchasesPage() {
                 justifyContent: "space-between",
                 alignItems: "center",
                 gap: "8px",
+                flexWrap: "wrap",
               }}
             >
               <span>{padTitle}</span>
@@ -1647,12 +1650,12 @@ function ShopPurchasesPage() {
               </div>
             </div>
 
+            {/* ✅ IMPORTANT FIX: pad inputs wrap instead of overflowing off-screen */}
             <div
               style={{
                 marginTop: "12px",
                 display: "grid",
-                gridTemplateColumns:
-                  "140px minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr)",
+                gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
                 gap: "12px",
                 alignItems: "end",
               }}
@@ -1730,6 +1733,8 @@ function ShopPurchasesPage() {
                   alignItems: "center",
                   marginBottom: "6px",
                   marginTop: "2px",
+                  gap: "10px",
+                  flexWrap: "wrap",
                 }}
               >
                 <div style={{ fontSize: "12px", color: "#6b7280" }}>
@@ -1743,10 +1748,12 @@ function ShopPurchasesPage() {
                   onChange={(e) => setSearchTerm(e.target.value)}
                   style={{
                     width: "240px",
+                    maxWidth: "100%",
                     padding: "6px 10px",
                     borderRadius: "999px",
                     border: "1px solid #d1d5db",
                     fontSize: "12px",
+                    boxSizing: "border-box",
                   }}
                 />
               </div>
@@ -1756,18 +1763,19 @@ function ShopPurchasesPage() {
                   maxHeight: "420px",
                   overflowY: "auto",
                   overflowX: "auto",
-                  scrollbarGutter: "stable",
                   borderRadius: "12px",
                   border: "1px solid #e5e7eb",
                   padding: "0 8px 4px 0",
                   backgroundColor: "#fcfcff",
+                  maxWidth: "100%",
+                  boxSizing: "border-box",
                 }}
               >
                 <div
                   style={{
                     display: "grid",
                     gridTemplateColumns: PURCHASE_GRID_COLUMNS,
-                    minWidth: PURCHASE_TABLE_MIN_WIDTH,
+                    minWidth: PURCHASE_GRID_MIN_WIDTH,
                     alignItems: "center",
                     padding: "6px 4px 6px 8px",
                     borderBottom: "1px solid #e5e7eb",
@@ -1818,7 +1826,7 @@ function ShopPurchasesPage() {
                       style={{
                         display: "grid",
                         gridTemplateColumns: PURCHASE_GRID_COLUMNS,
-                        minWidth: PURCHASE_TABLE_MIN_WIDTH,
+                        minWidth: PURCHASE_GRID_MIN_WIDTH,
                         alignItems: "center",
                         padding: "8px 4px 8px 8px",
                         borderBottom: "1px solid #f3f4f6",
@@ -1941,7 +1949,7 @@ function ShopPurchasesPage() {
             </>
           )}
 
-          <div style={{ display: "flex", justifyContent: "flex-end", gap: "12px", marginTop: "14px" }}>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: "12px", marginTop: "14px", flexWrap: "wrap" }}>
             <button
               type="button"
               onClick={() => navigate(`/shops/${shopId}/stock`)}
@@ -2047,7 +2055,7 @@ function ShopPurchasesPage() {
               placeholder="Search item or date…"
               value={historySearchTerm}
               onChange={(e) => setHistorySearchTerm(e.target.value)}
-              style={{ width: "260px", padding: "6px 10px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "12px" }}
+              style={{ width: "260px", maxWidth: "100%", padding: "6px 10px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "12px" }}
             />
           </div>
 
@@ -2092,6 +2100,7 @@ function ShopPurchasesPage() {
                           padding: "10px 12px",
                           background: "#f9fafb",
                           borderBottom: isOpen ? "1px solid #e5e7eb" : "none",
+                          flexWrap: "wrap",
                         }}
                       >
                         <button
@@ -2158,12 +2167,12 @@ function ShopPurchasesPage() {
                               {rawLines ? "No matching items." : "No lines found for this day."}
                             </div>
                           ) : (
-                            <div style={{ maxHeight: "520px", overflowY: "auto", overflowX: "auto", scrollbarGutter: "stable", borderRadius: "12px", border: "1px solid #e5e7eb", padding: "0 8px 4px 0", backgroundColor: "#fcfcff" }}>
+                            <div style={{ maxHeight: "520px", overflowY: "auto", overflowX: "auto", borderRadius: "12px", border: "1px solid #e5e7eb", padding: "0 8px 4px 0", backgroundColor: "#fcfcff" }}>
                               <div
                                 style={{
                                   display: "grid",
                                   gridTemplateColumns: PURCHASE_GRID_COLUMNS,
-                                  minWidth: PURCHASE_TABLE_MIN_WIDTH,
+                                  minWidth: PURCHASE_GRID_MIN_WIDTH,
                                   alignItems: "center",
                                   padding: "6px 4px 6px 8px",
                                   borderBottom: "1px solid #e5e7eb",
@@ -2204,7 +2213,7 @@ function ShopPurchasesPage() {
                                     style={{
                                       display: "grid",
                                       gridTemplateColumns: PURCHASE_GRID_COLUMNS,
-                                      minWidth: PURCHASE_TABLE_MIN_WIDTH,
+                                      minWidth: PURCHASE_GRID_MIN_WIDTH,
                                       alignItems: "center",
                                       padding: "8px 4px 8px 8px",
                                       borderBottom: "1px solid #f3f4f6",
