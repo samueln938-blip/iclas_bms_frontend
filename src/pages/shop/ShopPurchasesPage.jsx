@@ -22,7 +22,10 @@ function formatMoney(value) {
   if (value === null || value === undefined || value === "") return "0";
   const num = Number(value);
   const safe = Number.isFinite(num) ? num : 0;
-  return safe.toLocaleString("en-RW", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  return safe.toLocaleString("en-RW", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  });
 }
 
 function formatQty(value) {
@@ -116,8 +119,20 @@ function addDaysISO(iso, deltaDays) {
 function listDaysInclusive(fromISO, toISO, maxDaysHard = MAX_HISTORY_DAYS) {
   const f = parseISOToDate(fromISO);
   const t = parseISOToDate(toISO);
-  if (!f || !t) return { ok: false, error: "Choose valid From and To dates.", days: [], daysCount: 0 };
-  if (f.getTime() > t.getTime()) return { ok: false, error: '"From" date must be <= "To" date.', days: [], daysCount: 0 };
+  if (!f || !t)
+    return {
+      ok: false,
+      error: "Choose valid From and To dates.",
+      days: [],
+      daysCount: 0,
+    };
+  if (f.getTime() > t.getTime())
+    return {
+      ok: false,
+      error: '"From" date must be <= "To" date.',
+      days: [],
+      daysCount: 0,
+    };
 
   const msPerDay = 24 * 60 * 60 * 1000;
   const diffDays = Math.floor((t.getTime() - f.getTime()) / msPerDay) + 1;
@@ -160,12 +175,15 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
     if (!s) return items.slice(0, 800);
-    return items.filter((it) => String(it.label || "").toLowerCase().includes(s)).slice(0, 800);
+    return items
+      .filter((it) => String(it.label || "").toLowerCase().includes(s))
+      .slice(0, 800);
   }, [items, q]);
 
   useEffect(() => {
     const onDown = (e) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
+      if (wrapRef.current && !wrapRef.current.contains(e.target))
+        setOpen(false);
     };
     document.addEventListener("pointerdown", onDown);
     return () => document.removeEventListener("pointerdown", onDown);
@@ -181,7 +199,7 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
     <div ref={wrapRef} style={{ position: "relative", width: "100%" }}>
       <div style={{ position: "relative" }}>
         <input
-          value={disabled ? (selected?.label || "") : q}
+          value={disabled ? selected?.label || "" : q}
           onChange={(e) => {
             setQ(e.target.value);
             setOpen(true);
@@ -261,7 +279,15 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
           }}
         >
           {filtered.length === 0 ? (
-            <div style={{ padding: "10px 12px", fontSize: "13px", color: "#6b7280" }}>No matching items</div>
+            <div
+              style={{
+                padding: "10px 12px",
+                fontSize: "13px",
+                color: "#6b7280",
+              }}
+            >
+              No matching items
+            </div>
           ) : (
             filtered.map((it) => (
               <button
@@ -352,7 +378,8 @@ function ShopPurchasesPage() {
   useEffect(() => {
     if (!HEADER_IS_STICKY) return;
     const calc = () => {
-      if (headerRef.current) setHeaderHeight(headerRef.current.offsetHeight || 180);
+      if (headerRef.current)
+        setHeaderHeight(headerRef.current.offsetHeight || 180);
     };
     calc();
     window.addEventListener("resize", calc);
@@ -360,7 +387,9 @@ function ShopPurchasesPage() {
   }, []);
 
   // ✅ All purchases (range) state — default last 31 days
-  const [historyFrom, setHistoryFrom] = useState(() => addDaysISO(todayISO(), -(MAX_HISTORY_DAYS - 1)));
+  const [historyFrom, setHistoryFrom] = useState(() =>
+    addDaysISO(todayISO(), -(MAX_HISTORY_DAYS - 1))
+  );
   const [historyTo, setHistoryTo] = useState(() => todayISO());
   const [historyRunToken, setHistoryRunToken] = useState(0);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -404,21 +433,30 @@ function ShopPurchasesPage() {
       setMessage("");
 
       try {
-        const shopRes = await fetch(`${API_BASE}/shops/${shopId}`, { headers: authHeadersNoJson });
+        const shopRes = await fetch(`${API_BASE}/shops/${shopId}`, {
+          headers: authHeadersNoJson,
+        });
         if (!shopRes.ok) throw new Error("Failed to load shop.");
         const shopData = await shopRes.json();
 
-        const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`, { headers: authHeadersNoJson });
+        const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`, {
+          headers: authHeadersNoJson,
+        });
         if (!stockRes.ok) throw new Error("Failed to load stock.");
         const stockData = await stockRes.json();
 
         let itemsData = [];
         try {
-          const itemsResShop = await fetch(`${API_BASE}/items/?shop_id=${shopId}`, { headers: authHeadersNoJson });
+          const itemsResShop = await fetch(
+            `${API_BASE}/items/?shop_id=${shopId}`,
+            { headers: authHeadersNoJson }
+          );
           if (itemsResShop.ok) {
             itemsData = await itemsResShop.json().catch(() => []);
           } else {
-            const itemsRes = await fetch(`${API_BASE}/items/`, { headers: authHeadersNoJson });
+            const itemsRes = await fetch(`${API_BASE}/items/`, {
+              headers: authHeadersNoJson,
+            });
             if (itemsRes.ok) itemsData = await itemsRes.json().catch(() => []);
           }
         } catch {
@@ -570,7 +608,11 @@ function ShopPurchasesPage() {
         };
       }
 
-      if (["qtyUnits", "newUnitCost", "newWholesalePerPiece", "newRetailPerPiece"].includes(field)) {
+      if (
+        ["qtyUnits", "newUnitCost", "newWholesalePerPiece", "newRetailPerPiece"].includes(
+          field
+        )
+      ) {
         const value = rawValue === "" ? "" : Number(rawValue);
         return { ...prev, [field]: value };
       }
@@ -627,6 +669,7 @@ function ShopPurchasesPage() {
     if (selectedLineId === id) setSelectedLineId(null);
   };
 
+  // ✅ FIXED: /purchases/days error handling + supports both param names + avoids date_from=""
   const loadHistoryDays = async () => {
     setHistoryLoading(true);
     setHistoryError("");
@@ -647,11 +690,42 @@ function ShopPurchasesPage() {
         return;
       }
 
-      const url = `${API_BASE}/purchases/days/?shop_id=${shopId}&date_from=${fromISO}&date_to=${toISO}`;
+      // Build query safely (prevents 422 from empty/invalid query strings)
+      // Also send both styles to support older backend versions if needed.
+      const sp = new URLSearchParams();
+      sp.set("shop_id", String(shopId));
+
+      if (fromISO) {
+        sp.set("date_from", fromISO);
+        sp.set("purchase_date_from", fromISO);
+      }
+      if (toISO) {
+        sp.set("date_to", toISO);
+        sp.set("purchase_date_to", toISO);
+      }
+
+      const url = `${API_BASE}/purchases/days/?${sp.toString()}`;
       const res = await fetch(url, { headers: authHeadersNoJson });
+
       if (!res.ok) {
-        const errData = await res.json().catch(() => null);
-        throw new Error(errData?.detail || `Failed to load purchase days. Status: ${res.status}`);
+        let body = null;
+        try {
+          body = await res.json();
+        } catch {
+          body = null;
+        }
+
+        console.error("❌ /purchases/days error:", res.status, body);
+
+        let msg = `Failed to load purchase days. Status: ${res.status}`;
+        const detail = body?.detail;
+
+        if (typeof detail === "string") msg = detail;
+        else if (Array.isArray(detail))
+          msg = detail.map((d) => d?.msg || JSON.stringify(d)).join(" | ");
+        else if (detail && typeof detail === "object") msg = JSON.stringify(detail);
+
+        throw new Error(msg);
       }
 
       const data = await res.json().catch(() => []);
@@ -759,7 +833,9 @@ function ShopPurchasesPage() {
 
       if (!res.ok) {
         const errData = await res.json().catch(() => null);
-        throw new Error(errData?.detail || `Failed to delete line. Status: ${res.status}`);
+        throw new Error(
+          errData?.detail || `Failed to delete line. Status: ${res.status}`
+        );
       }
 
       await res.json().catch(() => null);
@@ -834,7 +910,10 @@ function ShopPurchasesPage() {
 
         if (!res.ok) {
           const errData = await res.json().catch(() => null);
-          throw new Error(errData?.detail || `Failed to update saved line. Status: ${res.status}`);
+          throw new Error(
+            errData?.detail ||
+              `Failed to update saved line. Status: ${res.status}`
+          );
         }
 
         await res.json().catch(() => null);
@@ -931,11 +1010,16 @@ function ShopPurchasesPage() {
   const filteredLinesWithComputed = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
     if (!term) return linesWithComputed;
-    return linesWithComputed.filter((line) => (line.meta.itemName || "").toLowerCase().includes(term));
+    return linesWithComputed.filter((line) =>
+      (line.meta.itemName || "").toLowerCase().includes(term)
+    );
   }, [linesWithComputed, searchTerm]);
 
   const purchaseTotal = useMemo(() => {
-    return linesWithComputed.reduce((sum, line) => sum + (line.computed.lineTotal || 0), 0);
+    return linesWithComputed.reduce(
+      (sum, line) => sum + (line.computed.lineTotal || 0),
+      0
+    );
   }, [linesWithComputed]);
 
   const padStock = pad.itemId ? stockByItemId[pad.itemId] : null;
@@ -1024,9 +1108,13 @@ function ShopPurchasesPage() {
           quantity: Number(l.qtyUnits || 0),
           unit_cost_price: Number(l.newUnitCost || 0),
           wholesale_price_per_piece:
-            l.newWholesalePerPiece === "" || l.newWholesalePerPiece == null ? null : Number(l.newWholesalePerPiece),
+            l.newWholesalePerPiece === "" || l.newWholesalePerPiece == null
+              ? null
+              : Number(l.newWholesalePerPiece),
           retail_price_per_piece:
-            l.newRetailPerPiece === "" || l.newRetailPerPiece == null ? null : Number(l.newRetailPerPiece),
+            l.newRetailPerPiece === "" || l.newRetailPerPiece == null
+              ? null
+              : Number(l.newRetailPerPiece),
         })),
       };
 
@@ -1038,7 +1126,9 @@ function ShopPurchasesPage() {
 
       if (!res.ok) {
         const errData = await res.json().catch(() => null);
-        throw new Error(errData?.detail || `Failed to save purchase. Status: ${res.status}`);
+        throw new Error(
+          errData?.detail || `Failed to save purchase. Status: ${res.status}`
+        );
       }
 
       await res.json().catch(() => null);
@@ -1057,24 +1147,6 @@ function ShopPurchasesPage() {
       setSaving(false);
     }
   };
-
-  // ✅ FIX (React #310): this useMemo must be ABOVE the early return
-  const filteredHistoryDays = useMemo(() => {
-    const term = historySearchTerm.trim().toLowerCase();
-    if (!term) return historyDays;
-
-    return (historyDays || []).filter((d) => {
-      const day = String(d.purchase_date || "");
-      if (day.includes(term)) return true;
-
-      const loaded = historyDayLines[toISODate(day)] || null;
-      if (!loaded) return false;
-
-      const enriched = enrichHistoryLines(loaded);
-      return enriched.some((ln) => (ln.meta.itemName || "").toLowerCase().includes(term));
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [historyDays, historySearchTerm, historyDayLines, stockByItemId, itemMetaById]);
 
   // ✅ Early returns
   if (loading) {
@@ -1144,6 +1216,26 @@ function ShopPurchasesPage() {
     cursor: "pointer",
   });
 
+  // ✅ Filter days based on search term (either by date match or by item match in loaded lines)
+  const filteredHistoryDays = useMemo(() => {
+    const term = historySearchTerm.trim().toLowerCase();
+    if (!term) return historyDays;
+
+    return (historyDays || []).filter((d) => {
+      const day = String(d.purchase_date || "");
+      if (day.includes(term)) return true;
+
+      const loaded = historyDayLines[toISODate(day)] || null;
+      if (!loaded) return false;
+
+      const enriched = enrichHistoryLines(loaded);
+      return enriched.some((ln) =>
+        (ln.meta.itemName || "").toLowerCase().includes(term)
+      );
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyDays, historySearchTerm, historyDayLines, stockByItemId, itemMetaById]);
+
   return (
     <div style={{ padding: "16px 24px 24px" }}>
       {/* Header */}
@@ -1155,23 +1247,71 @@ function ShopPurchasesPage() {
           zIndex: 15,
           paddingBottom: "8px",
           marginBottom: "8px",
-          background: "linear-gradient(to bottom, #f3f4f6 0%, #f3f4f6 65%, rgba(243,244,246,0) 100%)",
+          background:
+            "linear-gradient(to bottom, #f3f4f6 0%, #f3f4f6 65%, rgba(243,244,246,0) 100%)",
         }}
       >
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px", marginBottom: "6px" }}>
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "space-between",
+            gap: "12px",
+            marginBottom: "6px",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "flex-start",
+            }}
+          >
             <button
               onClick={() => navigate(`/shops/${shopId}`)}
-              style={{ border: "none", background: "transparent", padding: 0, marginBottom: "6px", fontSize: "12px", color: "#2563eb", cursor: "pointer" }}
+              style={{
+                border: "none",
+                background: "transparent",
+                padding: 0,
+                marginBottom: "6px",
+                fontSize: "12px",
+                color: "#2563eb",
+                cursor: "pointer",
+              }}
             >
               ← Back to shop workspace
             </button>
 
-            <h1 style={{ fontSize: "30px", fontWeight: 800, letterSpacing: "0.03em", margin: 0 }}>Purchases</h1>
-            <div style={{ marginTop: "2px", fontSize: "13px", fontWeight: 600, color: "#2563eb" }}>{shopName}</div>
+            <h1
+              style={{
+                fontSize: "30px",
+                fontWeight: 800,
+                letterSpacing: "0.03em",
+                margin: 0,
+              }}
+            >
+              Purchases
+            </h1>
+            <div
+              style={{
+                marginTop: "2px",
+                fontSize: "13px",
+                fontWeight: 600,
+                color: "#2563eb",
+              }}
+            >
+              {shopName}
+            </div>
 
             {/* ✅ Only 2 tabs (less noisy) */}
-            <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            <div
+              style={{
+                marginTop: "10px",
+                display: "flex",
+                gap: "8px",
+                flexWrap: "wrap",
+              }}
+            >
               <button
                 type="button"
                 style={tabBtn(activeTab === 1)}
@@ -1219,38 +1359,86 @@ function ShopPurchasesPage() {
               fontSize: "12px",
             }}
           >
-            <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>Purchase summary</div>
-            <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.14em", color: "#9ca3af", marginBottom: "4px" }}>
+            <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>
+              Purchase summary
+            </div>
+            <div
+              style={{
+                fontSize: "10px",
+                textTransform: "uppercase",
+                letterSpacing: "0.14em",
+                color: "#9ca3af",
+                marginBottom: "4px",
+              }}
+            >
               Date: {toISODate(purchaseDate) || purchaseDate}
             </div>
             <div>
-              <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.1em", color: "#6b7280" }}>Total amount</div>
-              <div style={{ fontSize: "18px", fontWeight: 800, color: "#111827" }}>{formatMoney(purchaseTotal)}</div>
+              <div
+                style={{
+                  fontSize: "10px",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.1em",
+                  color: "#6b7280",
+                }}
+              >
+                Total amount
+              </div>
+              <div style={{ fontSize: "18px", fontWeight: 800, color: "#111827" }}>
+                {formatMoney(purchaseTotal)}
+              </div>
             </div>
           </div>
         </div>
 
         {/* Keep your top inputs (still useful) */}
-        <div style={{ display: "grid", gridTemplateColumns: "160px minmax(0, 1fr) 220px", gap: "12px", marginBottom: "8px" }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "160px minmax(0, 1fr) 220px",
+            gap: "12px",
+            marginBottom: "8px",
+          }}
+        >
           <input
             type="date"
             value={toISODate(purchaseDate)}
             onChange={(e) => setPurchaseDate(e.target.value)}
-            style={{ padding: "8px 12px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px", backgroundColor: "#ffffff" }}
+            style={{
+              padding: "8px 12px",
+              borderRadius: "999px",
+              border: "1px solid #d1d5db",
+              fontSize: "13px",
+              backgroundColor: "#ffffff",
+            }}
           />
           <input
             type="text"
             placeholder="Supplier name (optional)"
             value={supplierName}
             onChange={(e) => setSupplierName(e.target.value)}
-            style={{ width: "100%", padding: "8px 12px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px", backgroundColor: "#ffffff" }}
+            style={{
+              width: "100%",
+              padding: "8px 12px",
+              borderRadius: "999px",
+              border: "1px solid #d1d5db",
+              fontSize: "13px",
+              backgroundColor: "#ffffff",
+            }}
           />
           <input
             type="text"
             placeholder="Invoice number (optional)"
             value={invoiceNumber}
             onChange={(e) => setInvoiceNumber(e.target.value)}
-            style={{ width: "100%", padding: "8px 12px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px", backgroundColor: "#ffffff" }}
+            style={{
+              width: "100%",
+              padding: "8px 12px",
+              borderRadius: "999px",
+              border: "1px solid #d1d5db",
+              fontSize: "13px",
+              backgroundColor: "#ffffff",
+            }}
           />
         </div>
       </div>
@@ -1261,8 +1449,8 @@ function ShopPurchasesPage() {
             marginBottom: "1rem",
             padding: "0.6rem 0.8rem",
             borderRadius: "0.75rem",
-            backgroundColor: (error || historyError) ? "#fef2f2" : "#ecfdf3",
-            color: (error || historyError) ? "#b91c1c" : "#166534",
+            backgroundColor: error || historyError ? "#fef2f2" : "#ecfdf3",
+            color: error || historyError ? "#b91c1c" : "#166534",
             fontSize: "0.9rem",
           }}
         >
@@ -1272,7 +1460,14 @@ function ShopPurchasesPage() {
 
       {/* ======================= TAB 1: TODAY ======================= */}
       {activeTab === 1 && (
-        <div style={{ backgroundColor: "#ffffff", borderRadius: "20px", boxShadow: "0 10px 30px rgba(15,37,128,0.06)", padding: "16px 18px 14px" }}>
+        <div
+          style={{
+            backgroundColor: "#ffffff",
+            borderRadius: "20px",
+            boxShadow: "0 10px 30px rgba(15,37,128,0.06)",
+            padding: "16px 18px 14px",
+          }}
+        >
           <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>
             Purchases for {toISODate(purchaseDate) || purchaseDate}
           </h2>
@@ -1291,7 +1486,17 @@ function ShopPurchasesPage() {
               scrollMarginTop: HEADER_IS_STICKY ? `${headerHeight + 12}px` : "12px",
             }}
           >
-            <div style={{ fontSize: "13px", fontWeight: 700, marginBottom: "10px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
+            <div
+              style={{
+                fontSize: "13px",
+                fontWeight: 700,
+                marginBottom: "10px",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: "8px",
+              }}
+            >
               <span>{padTitle}</span>
 
               <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
@@ -1340,8 +1545,20 @@ function ShopPurchasesPage() {
             </div>
 
             {isEditingSaved && (
-              <div style={{ marginBottom: "10px", padding: "8px 10px", borderRadius: "12px", border: "1px solid #e5e7eb", background: "#f9fafb", color: "#6b7280", fontSize: "12px", lineHeight: 1.35 }}>
-                Note: Item cannot be changed when editing a saved line. If you need a different item, delete the saved line and add a new one.
+              <div
+                style={{
+                  marginBottom: "10px",
+                  padding: "8px 10px",
+                  borderRadius: "12px",
+                  border: "1px solid #e5e7eb",
+                  background: "#f9fafb",
+                  color: "#6b7280",
+                  fontSize: "12px",
+                  lineHeight: 1.35,
+                }}
+              >
+                Note: Item cannot be changed when editing a saved line. If you need a different
+                item, delete the saved line and add a new one.
               </div>
             )}
 
@@ -1356,16 +1573,26 @@ function ShopPurchasesPage() {
 
               <div style={helperGridStyle}>
                 <div>
-                  Pieces / unit: <strong style={{ color: padText }}>{pad.itemId ? padPiecesPerUnit : "—"}</strong>
+                  Pieces / unit:{" "}
+                  <strong style={{ color: padText }}>{pad.itemId ? padPiecesPerUnit : "—"}</strong>
                 </div>
                 <div>
-                  Recent unit cost: <strong style={{ color: padText }}>{padStock ? formatMoney(padStock.last_purchase_unit_price || 0) : "—"}</strong>
+                  Recent unit cost:{" "}
+                  <strong style={{ color: padText }}>
+                    {padStock ? formatMoney(padStock.last_purchase_unit_price || 0) : "—"}
+                  </strong>
                 </div>
                 <div>
-                  Recent wholesale / piece: <strong style={{ color: padText }}>{padStock ? formatMoney(padStock.wholesale_price_per_piece || 0) : "—"}</strong>
+                  Recent wholesale / piece:{" "}
+                  <strong style={{ color: padText }}>
+                    {padStock ? formatMoney(padStock.wholesale_price_per_piece || 0) : "—"}
+                  </strong>
                 </div>
                 <div>
-                  Recent retail / piece: <strong style={{ color: padText }}>{padStock ? formatMoney(padStock.selling_price_per_piece || 0) : "—"}</strong>
+                  Recent retail / piece:{" "}
+                  <strong style={{ color: padText }}>
+                    {padStock ? formatMoney(padStock.selling_price_per_piece || 0) : "—"}
+                  </strong>
                 </div>
               </div>
             </div>
@@ -1374,34 +1601,66 @@ function ShopPurchasesPage() {
               style={{
                 marginTop: "12px",
                 display: "grid",
-                gridTemplateColumns: "140px minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr)",
+                gridTemplateColumns:
+                  "140px minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr)",
                 gap: "12px",
                 alignItems: "end",
               }}
             >
               <div>
                 <label style={labelStyle}>Qty units</label>
-                <input type="number" min={0.01} step="0.01" value={pad.qtyUnits} onChange={(e) => updatePad("qtyUnits", e.target.value)} style={inputBase} />
+                <input
+                  type="number"
+                  min={0.01}
+                  step="0.01"
+                  value={pad.qtyUnits}
+                  onChange={(e) => updatePad("qtyUnits", e.target.value)}
+                  style={inputBase}
+                />
               </div>
 
               <div>
                 <label style={labelStyle}>Purchase cost (unit)</label>
-                <input type="number" value={pad.newUnitCost} onChange={(e) => updatePad("newUnitCost", e.target.value)} placeholder="0" style={inputBase} />
+                <input
+                  type="number"
+                  value={pad.newUnitCost}
+                  onChange={(e) => updatePad("newUnitCost", e.target.value)}
+                  placeholder="0"
+                  style={inputBase}
+                />
               </div>
 
               <div>
                 <label style={labelStyle}>Purchase cost / piece</label>
-                <input type="text" readOnly value={pad.itemId ? formatMoney(padPurchaseCostPerPiece) : ""} placeholder="—" style={{ ...inputBase, backgroundColor: "#f3f4f6", fontWeight: 800 }} />
+                <input
+                  type="text"
+                  readOnly
+                  value={pad.itemId ? formatMoney(padPurchaseCostPerPiece) : ""}
+                  placeholder="—"
+                  style={{ ...inputBase, backgroundColor: "#f3f4f6", fontWeight: 800 }}
+                />
               </div>
 
               <div>
                 <label style={labelStyle}>New wholesale / piece</label>
-                <input type="number" value={pad.newWholesalePerPiece} onChange={(e) => updatePad("newWholesalePerPiece", e.target.value)} placeholder="0" style={inputBase} />
+                <input
+                  type="number"
+                  value={pad.newWholesalePerPiece}
+                  onChange={(e) => updatePad("newWholesalePerPiece", e.target.value)}
+                  placeholder="0"
+                  style={inputBase}
+                />
               </div>
 
               <div>
                 <label style={labelStyle}>New retail / piece</label>
-                <input type="number" value={pad.newRetailPerPiece} onChange={(e) => updatePad("newRetailPerPiece", e.target.value)} placeholder="0" style={inputBase} />
+                <input
+                  type="number"
+                  value={pad.newRetailPerPiece}
+                  onChange={(e) => updatePad("newRetailPerPiece", e.target.value)}
+                  placeholder="0"
+                  style={inputBase}
+                />
               </div>
             </div>
           </div>
@@ -1409,24 +1668,50 @@ function ShopPurchasesPage() {
           {/* LIST */}
           {linesWithComputed.length === 0 ? (
             <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
-              No items for this date yet. Use the pad above and click <strong>{padButtonText}</strong>.
+              No items for this date yet. Use the pad above and click{" "}
+              <strong>{padButtonText}</strong>.
             </div>
           ) : (
             <>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px", marginTop: "2px" }}>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: "6px",
+                  marginTop: "2px",
+                }}
+              >
                 <div style={{ fontSize: "12px", color: "#6b7280" }}>
-                  Items: {linesWithComputed.length} {searchTerm ? `(showing ${filteredLinesWithComputed.length} after filter)` : ""}
+                  Items: {linesWithComputed.length}{" "}
+                  {searchTerm ? `(showing ${filteredLinesWithComputed.length} after filter)` : ""}
                 </div>
                 <input
                   type="text"
                   placeholder="Search in items..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  style={{ width: "240px", padding: "6px 10px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "12px" }}
+                  style={{
+                    width: "240px",
+                    padding: "6px 10px",
+                    borderRadius: "999px",
+                    border: "1px solid #d1d5db",
+                    fontSize: "12px",
+                  }}
                 />
               </div>
 
-              <div style={{ maxHeight: "420px", overflowY: "auto", overflowX: "auto", borderRadius: "12px", border: "1px solid #e5e7eb", padding: "0 8px 4px 0", backgroundColor: "#fcfcff" }}>
+              <div
+                style={{
+                  maxHeight: "420px",
+                  overflowY: "auto",
+                  overflowX: "auto",
+                  borderRadius: "12px",
+                  border: "1px solid #e5e7eb",
+                  padding: "0 8px 4px 0",
+                  backgroundColor: "#fcfcff",
+                }}
+              >
                 <div
                   style={{
                     display: "grid",
@@ -1489,17 +1774,47 @@ function ShopPurchasesPage() {
                           <button
                             type="button"
                             onClick={() => startEditSavedLine(line)}
-                            style={{ padding: 0, margin: 0, border: "none", background: "transparent", color: "#111827", fontWeight: 700, fontSize: "13px", cursor: "pointer", textAlign: "left" }}
+                            style={{
+                              padding: 0,
+                              margin: 0,
+                              border: "none",
+                              background: "transparent",
+                              color: "#111827",
+                              fontWeight: 700,
+                              fontSize: "13px",
+                              cursor: "pointer",
+                              textAlign: "left",
+                            }}
                             title="Edit saved purchase line"
                           >
                             {itemName || "Unknown item"}{" "}
-                            {isEditingThisSaved ? <span style={{ color: "#2563eb", fontWeight: 800, marginLeft: 6 }}>(editing)</span> : null}
+                            {isEditingThisSaved ? (
+                              <span
+                                style={{
+                                  color: "#2563eb",
+                                  fontWeight: 800,
+                                  marginLeft: 6,
+                                }}
+                              >
+                                (editing)
+                              </span>
+                            ) : null}
                           </button>
                         ) : (
                           <button
                             type="button"
                             onClick={() => startEditNewLine(line.id)}
-                            style={{ padding: 0, margin: 0, border: "none", background: "transparent", color: "#2563eb", fontWeight: 600, fontSize: "13px", cursor: "pointer", textAlign: "left" }}
+                            style={{
+                              padding: 0,
+                              margin: 0,
+                              border: "none",
+                              background: "transparent",
+                              color: "#2563eb",
+                              fontWeight: 600,
+                              fontSize: "13px",
+                              cursor: "pointer",
+                              textAlign: "left",
+                            }}
                             title="Edit new (unsaved) line"
                           >
                             {itemName || "Unknown item"}
@@ -1526,7 +1841,17 @@ function ShopPurchasesPage() {
                             onClick={() => deleteSavedLine(line.dbId, toISODate(purchaseDate))}
                             disabled={padSaving}
                             title="Delete saved line"
-                            style={{ width: "28px", height: "28px", borderRadius: "9999px", border: "1px solid #fee2e2", backgroundColor: "#fef2f2", color: "#b91c1c", fontSize: "14px", cursor: padSaving ? "not-allowed" : "pointer", opacity: padSaving ? 0.7 : 1 }}
+                            style={{
+                              width: "28px",
+                              height: "28px",
+                              borderRadius: "9999px",
+                              border: "1px solid #fee2e2",
+                              backgroundColor: "#fef2f2",
+                              color: "#b91c1c",
+                              fontSize: "14px",
+                              cursor: padSaving ? "not-allowed" : "pointer",
+                              opacity: padSaving ? 0.7 : 1,
+                            }}
                           >
                             🗑
                           </button>
@@ -1534,7 +1859,16 @@ function ShopPurchasesPage() {
                           <button
                             type="button"
                             onClick={() => removeLine(line.id)}
-                            style={{ width: "28px", height: "28px", borderRadius: "9999px", border: "1px solid #fee2e2", backgroundColor: "#fef2f2", color: "#b91c1c", fontSize: "16px", cursor: "pointer" }}
+                            style={{
+                              width: "28px",
+                              height: "28px",
+                              borderRadius: "9999px",
+                              border: "1px solid #fee2e2",
+                              backgroundColor: "#fef2f2",
+                              color: "#b91c1c",
+                              fontSize: "16px",
+                              cursor: "pointer",
+                            }}
                             title="Remove new line (not saved yet)"
                           >
                             ✕
@@ -1552,7 +1886,16 @@ function ShopPurchasesPage() {
             <button
               type="button"
               onClick={() => navigate(`/shops/${shopId}/stock`)}
-              style={{ padding: "0.6rem 1.4rem", borderRadius: "999px", border: "1px solid #d1d5db", backgroundColor: "#ffffff", color: "#111827", fontWeight: 600, fontSize: "0.95rem", cursor: "pointer" }}
+              style={{
+                padding: "0.6rem 1.4rem",
+                borderRadius: "999px",
+                border: "1px solid #d1d5db",
+                backgroundColor: "#ffffff",
+                color: "#111827",
+                fontWeight: 600,
+                fontSize: "0.95rem",
+                cursor: "pointer",
+              }}
             >
               View stock
             </button>
@@ -1560,7 +1903,16 @@ function ShopPurchasesPage() {
               type="button"
               onClick={handleSave}
               disabled={saving}
-              style={{ padding: "0.6rem 1.8rem", borderRadius: "999px", border: "none", backgroundColor: saving ? "#2563eb99" : "#2563eb", color: "white", fontWeight: 700, fontSize: "0.95rem", cursor: saving ? "not-allowed" : "pointer" }}
+              style={{
+                padding: "0.6rem 1.8rem",
+                borderRadius: "999px",
+                border: "none",
+                backgroundColor: saving ? "#2563eb99" : "#2563eb",
+                color: "white",
+                fontWeight: 700,
+                fontSize: "0.95rem",
+                cursor: saving ? "not-allowed" : "pointer",
+              }}
             >
               {saving ? "Saving..." : "Save purchase"}
             </button>
@@ -1570,7 +1922,14 @@ function ShopPurchasesPage() {
 
       {/* ======================= TAB 2: ALL PURCHASES (Days + expand) ======================= */}
       {activeTab === 2 && (
-        <div style={{ backgroundColor: "#ffffff", borderRadius: "20px", boxShadow: "0 10px 30px rgba(15,37,128,0.06)", padding: "16px 18px 14px" }}>
+        <div
+          style={{
+            backgroundColor: "#ffffff",
+            borderRadius: "20px",
+            boxShadow: "0 10px 30px rgba(15,37,128,0.06)",
+            padding: "16px 18px 14px",
+          }}
+        >
           <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", flexWrap: "wrap", alignItems: "end" }}>
             <div>
               <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>All purchases</h2>
@@ -1635,9 +1994,7 @@ function ShopPurchasesPage() {
             {historyLoading ? (
               <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>Loading…</div>
             ) : filteredHistoryDays.length === 0 ? (
-              <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
-                No purchases found in this date range.
-              </div>
+              <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>No purchases found in this date range.</div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                 {filteredHistoryDays.map((d) => {
@@ -1702,9 +2059,7 @@ function ShopPurchasesPage() {
                         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                           <div style={{ textAlign: "right" }}>
                             <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.1em", color: "#6b7280" }}>Total</div>
-                            <div style={{ fontSize: "14px", fontWeight: 900, color: "#111827" }}>
-                              {formatMoney(d.total_amount || 0)}
-                            </div>
+                            <div style={{ fontSize: "14px", fontWeight: 900, color: "#111827" }}>{formatMoney(d.total_amount || 0)}</div>
                           </div>
 
                           <button
