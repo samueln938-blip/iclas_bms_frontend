@@ -134,7 +134,9 @@ function SalesHistoryPage() {
   const navigate = useNavigate();
 
   // ✅ Use the same auth headers as Sales & POS
-  const { authHeadersNoJson } = useAuth();
+  // Some pages expose authHeadersNoJson, others expose authHeaders.
+  const auth = useAuth();
+  const authHeadersNoJson = auth?.authHeadersNoJson || auth?.authHeaders || {};
 
   const [shop, setShop] = useState(null);
   const [loadingShop, setLoadingShop] = useState(true);
@@ -187,6 +189,22 @@ function SalesHistoryPage() {
   const headersReady = useMemo(() => {
     return !!authHeadersNoJson && typeof authHeadersNoJson === "object" && Object.keys(authHeadersNoJson).length > 0;
   }, [authHeadersNoJson]);
+
+  // ✅ IMPORTANT: avoid infinite "Loading session..."
+  // If headers aren't ready yet, stop blocking the whole page.
+  useEffect(() => {
+    if (!headersReady) {
+      setLoadingShop(false);
+      setShop(null);
+      setError("Session not ready. Please refresh the page or login again.");
+    } else {
+      // clear the session warning once headers appear
+      if (error === "Session not ready. Please refresh the page or login again.") {
+        setError("");
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [headersReady]);
 
   // -------------------------
   // Decide active date range based on tab
@@ -253,7 +271,14 @@ function SalesHistoryPage() {
   // -------------------------
   const loadShop = useCallback(async () => {
     if (!shopId) return;
-    if (!headersReady) return;
+
+    // ✅ Don't keep spinner forever if auth headers are not ready
+    if (!headersReady) {
+      setLoadingShop(false);
+      setShop(null);
+      setError("Session not ready. Please refresh the page or login again.");
+      return;
+    }
 
     if (shopAbortRef.current) shopAbortRef.current.abort();
     const controller = new AbortController();
@@ -271,7 +296,6 @@ function SalesHistoryPage() {
         `${API_BASE}/shops/detail/${shopId}`,
       ];
 
-      // Try in parallel; first success wins (reduces “delay” when one endpoint is slow)
       const tasks = candidates.map((url) =>
         fetchJson(url, authHeadersNoJson, controller.signal).then((json) => ({ url, json }))
       );
@@ -286,7 +310,6 @@ function SalesHistoryPage() {
       if (!winner?.json) throw new Error("Failed to load shop.");
       const data = winner.json?.shop || winner.json;
 
-      // latest-wins guard
       if (reqId !== shopReqIdRef.current) return;
 
       setShop(data);
@@ -395,7 +418,6 @@ function SalesHistoryPage() {
       const nowIso = new Date().toISOString();
       setLastSalesSyncAt(nowIso);
 
-      // 🔔 Frontend sync hook: other tabs (Daily Closure) can listen & refresh immediately
       try {
         window.dispatchEvent(
           new CustomEvent("iclas:sales-history-synced", {
@@ -627,9 +649,9 @@ function SalesHistoryPage() {
     return (
       <div style={{ padding: "24px", color: "red" }}>
         <p>{error}</p>
-        <div style={{ marginTop: 10 }}>
+        <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
           <button
-            onClick={() => loadSales()}
+            onClick={() => loadShop()}
             style={{
               padding: "8px 12px",
               borderRadius: 12,
@@ -640,6 +662,20 @@ function SalesHistoryPage() {
             }}
           >
             Retry
+          </button>
+
+          <button
+            onClick={() => navigate("/login")}
+            style={{
+              padding: "8px 12px",
+              borderRadius: 12,
+              border: "1px solid #e5e7eb",
+              background: "#fff",
+              cursor: "pointer",
+              fontWeight: 700,
+            }}
+          >
+            Login
           </button>
         </div>
       </div>
