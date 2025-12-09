@@ -75,9 +75,41 @@ export function formatQty(value, maxFractionDigits = 2) {
 
 export function formatTimeHM(isoString) {
   if (!isoString) return "";
-  const d = new Date(isoString);
+
+  const raw = String(isoString).trim();
+  if (!raw) return "";
+
+  // ✅ If backend sends a "naive" datetime (no timezone), treat it as Kigali time (+02:00)
+  // Handles:
+  // - "2025-12-09T10:30:00"
+  // - "2025-12-09 10:30:00"
+  // Leaves alone:
+  // - "...Z"
+  // - "...+02:00" / "...+0200"
+  const hasTZ = /([zZ]|[+\-]\d{2}:?\d{2})$/.test(raw);
+  const hasTime = raw.includes("T") || /\d{2}:\d{2}/.test(raw);
+
+  let parseable = raw;
+
+  if (hasTime && !hasTZ) {
+    // normalize space to T if needed
+    if (!parseable.includes("T") && parseable.includes(" ")) {
+      parseable = parseable.replace(" ", "T");
+    }
+    // append Kigali offset
+    parseable = `${parseable}+02:00`;
+  }
+
+  const d = new Date(parseable);
   if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString("en-RW", { hour: "2-digit", minute: "2-digit" });
+
+  // ✅ Always display in Rwanda time (Africa/Kigali)
+  return new Intl.DateTimeFormat("en-RW", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "Africa/Kigali",
+  }).format(d);
 }
 
 export function todayDateString() {
