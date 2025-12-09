@@ -65,58 +65,105 @@ export function formatQty(value, maxFractionDigits = 2) {
   if (!Number.isFinite(n)) return "0";
   return n.toLocaleString("en-RW", {
     minimumFractionDigits: 0,
-    maximumFractionDigits,
+    maximumFractionDigits: maxFractionDigits,
   });
 }
 
 // =========================
-// Time helpers
+// Time helpers (Kigali)
 // =========================
+
+const KIGALI_TZ = "Africa/Kigali";
+
+function _hasTZInfo(s) {
+  return /([zZ]|[+-]\d{2}:\d{2})$/.test(String(s || "").trim());
+}
+
+/**
+ * Parse backend timestamps safely:
+ * - If it has timezone (Z or +02:00), normal Date parsing is fine.
+ * - If it's naive (no timezone), assume Kigali local time (UTC+2).
+ */
+function parseDateAssumeKigali(raw) {
+  if (!raw) return null;
+  if (raw instanceof Date) return raw;
+
+  const s0 = String(raw).trim();
+  if (!s0) return null;
+
+  const s = s0.includes("T") ? s0 : s0.replace(" ", "T");
+
+  if (_hasTZInfo(s)) {
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  const mDate = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (mDate) {
+    const y = Number(mDate[1]);
+    const mo = Number(mDate[2]);
+    const da = Number(mDate[3]);
+    if (!y || !mo || !da) return null;
+    return new Date(Date.UTC(y, mo - 1, da, -2, 0, 0, 0));
+  }
+
+  const mDT =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/.exec(
+      s
+    );
+  if (mDT) {
+    const y = Number(mDT[1]);
+    const mo = Number(mDT[2]);
+    const da = Number(mDT[3]);
+    const hh = Number(mDT[4]);
+    const mi = Number(mDT[5]);
+    const ss = Number(mDT[6] || 0);
+    const ms = Number(mDT[7] || 0);
+    if (!y || !mo || !da) return null;
+    return new Date(Date.UTC(y, mo - 1, da, hh - 2, mi, ss, ms));
+  }
+
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
 
 export function formatTimeHM(isoString) {
   if (!isoString) return "";
-
-  const raw = String(isoString).trim();
-  if (!raw) return "";
-
-  // ✅ If backend sends a "naive" datetime (no timezone), treat it as Kigali time (+02:00)
-  // Handles:
-  // - "2025-12-09T10:30:00"
-  // - "2025-12-09 10:30:00"
-  // Leaves alone:
-  // - "...Z"
-  // - "...+02:00" / "...+0200"
-  const hasTZ = /([zZ]|[+\-]\d{2}:?\d{2})$/.test(raw);
-  const hasTime = raw.includes("T") || /\d{2}:\d{2}/.test(raw);
-
-  let parseable = raw;
-
-  if (hasTime && !hasTZ) {
-    // normalize space to T if needed
-    if (!parseable.includes("T") && parseable.includes(" ")) {
-      parseable = parseable.replace(" ", "T");
-    }
-    // append Kigali offset
-    parseable = `${parseable}+02:00`;
+  const d = parseDateAssumeKigali(isoString);
+  if (!d) return "";
+  try {
+    return new Intl.DateTimeFormat("en-RW", {
+      timeZone: KIGALI_TZ,
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(d);
+  } catch {
+    return "";
   }
-
-  const d = new Date(parseable);
-  if (Number.isNaN(d.getTime())) return "";
-
-  // ✅ Always display in Rwanda time (Africa/Kigali)
-  return new Intl.DateTimeFormat("en-RW", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-    timeZone: "Africa/Kigali",
-  }).format(d);
 }
 
 export function todayDateString() {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
+  // Kigali date even if device timezone is wrong
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: KIGALI_TZ,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date());
+
+    const y = parts.find((p) => p.type === "year")?.value;
+    const m = parts.find((p) => p.type === "month")?.value;
+    const d = parts.find((p) => p.type === "day")?.value;
+    if (y && m && d) return `${y}-${m}-${d}`;
+  } catch {
+    // ignore
+  }
+
+  const dt = new Date();
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const day = String(dt.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
 
