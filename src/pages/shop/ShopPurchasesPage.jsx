@@ -993,7 +993,8 @@ function ShopPurchasesPage() {
       const qtyUnits = Number(line.qtyUnits || 0);
       const newUnitCost = Number(line.newUnitCost || 0);
 
-      const newCostPerPiece = piecesPerUnit > 0 ? newUnitCost / piecesPerUnit : 0;
+      const newCostPerPiece =
+        piecesPerUnit > 0 ? newUnitCost / piecesPerUnit : 0;
       const lineTotal = qtyUnits * newUnitCost;
       const allPieces = qtyUnits * piecesPerUnit;
 
@@ -1073,7 +1074,8 @@ function ShopPurchasesPage() {
       const qtyUnits = Number(line.qtyUnits || 0);
       const newUnitCost = Number(line.newUnitCost || 0);
 
-      const newCostPerPiece = piecesPerUnit > 0 ? newUnitCost / piecesPerUnit : 0;
+      const newCostPerPiece =
+        piecesPerUnit > 0 ? newUnitCost / piecesPerUnit : 0;
       const lineTotal = qtyUnits * newUnitCost;
       const allPieces = qtyUnits * piecesPerUnit;
 
@@ -1105,9 +1107,8 @@ function ShopPurchasesPage() {
     setMessage("");
   };
 
-  // ✅ IMPORTANT FIX (React #310):
-  // This useMemo MUST be above any early return (like `if (loading) return ...`)
-  const filteredHistoryDays = useMemo(() => {
+  // ✅ FIX (React #310): do NOT use a hook here; compute as a plain value
+  const filteredHistoryDays = (() => {
     const term = historySearchTerm.trim().toLowerCase();
     if (!term) return historyDays;
 
@@ -1123,8 +1124,7 @@ function ShopPurchasesPage() {
         (ln.meta.itemName || "").toLowerCase().includes(term)
       );
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [historyDays, historySearchTerm, historyDayLines, stockByItemId, itemMetaById]);
+  })();
 
   // ✅ Save purchase = POST to backend (this is what “saves everything”)
   const handleSave = async () => {
