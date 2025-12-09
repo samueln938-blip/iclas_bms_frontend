@@ -831,6 +831,9 @@ export default function CurrentSaleTab({
 
     setSaving(true);
 
+    // ✅ Track whether the sale actually saved, so navigation happens reliably
+    let savedOk = false;
+
     try {
       const saleDate =
         isEditingExistingSale && editSourceSale?.sale_date ? editSourceSale.sale_date : new Date().toISOString();
@@ -887,22 +890,36 @@ export default function CurrentSaleTab({
       }
 
       await res.json();
+      savedOk = true;
 
       fireFlash(isEditingExistingSale ? "Changes saved ✅" : "Sale saved ✅");
 
       clearEditHandoffStorage();
       resetCurrentSaleState();
 
-      await onRefreshStock?.();
-      await loadCustomers();
+      // ✅ These are nice-to-have, but must NOT block navigation to "My Sales Today"
+      try {
+        await onRefreshStock?.();
+      } catch (e) {
+        console.warn("onRefreshStock failed after saving sale:", e);
+      }
 
-      onGoToday?.();
-      onEditDone?.();
+      try {
+        await loadCustomers();
+      } catch (e) {
+        console.warn("loadCustomers failed after saving sale:", e);
+      }
     } catch (err) {
       console.error(err);
       setError?.(err.message || "Failed to save sale.");
     } finally {
       setSaving(false);
+
+      // ✅ Always go to My Sales Today after successful save
+      if (savedOk) {
+        onGoToday?.();
+        onEditDone?.();
+      }
     }
   };
 
