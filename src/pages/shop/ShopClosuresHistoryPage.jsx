@@ -1,5 +1,5 @@
 // src/pages/shop/ShopClosuresHistoryPage.jsx
-import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext.jsx";
 
@@ -44,15 +44,35 @@ function DailyClosureHistoryPage() {
   const { shopId } = useParams();
   const navigate = useNavigate();
 
-  // ✅ AUTH (same pattern as other shop pages)
+  // ✅ Use same auth headers as other protected shop pages
   const { authHeadersNoJson } = useAuth();
+
+  // ✅ Support BOTH styles:
+  // - authHeadersNoJson is an object
+  // - authHeadersNoJson is a function returning an object
+  const headersNoJson = useMemo(() => {
+    try {
+      if (typeof authHeadersNoJson === "function") return authHeadersNoJson();
+      return authHeadersNoJson;
+    } catch {
+      return null;
+    }
+  }, [authHeadersNoJson]);
+
   const headersReady = useMemo(() => {
     return (
-      !!authHeadersNoJson &&
-      typeof authHeadersNoJson === "object" &&
-      Object.keys(authHeadersNoJson).length > 0
+      !!headersNoJson &&
+      typeof headersNoJson === "object" &&
+      Object.keys(headersNoJson).length > 0
     );
-  }, [authHeadersNoJson]);
+  }, [headersNoJson]);
+
+  // If session never becomes ready, don't hang forever
+  const [sessionWaited, setSessionWaited] = useState(false);
+  useEffect(() => {
+    const t = window.setTimeout(() => setSessionWaited(true), 3000);
+    return () => window.clearTimeout(t);
+  }, []);
 
   const [shop, setShop] = useState(null);
   const [loadingShop, setLoadingShop] = useState(true);
@@ -73,104 +93,46 @@ function DailyClosureHistoryPage() {
 
   const [viewMode, setViewMode] = useState("system"); // "system" | "saved"
 
+  const shopName = shop?.name || `Shop ${shopId}`;
+
   // --------------------------------------------------
-  // Helpers
+  // Small helper: authenticated fetch (no-store)
   // --------------------------------------------------
-  const tryJsonCandidates = useCallback(
-    async (candidates, { method = "GET" } = {}) => {
-      let saw404 = false;
+  const authedFetch = useCallback(
+    async (url, options = {}) => {
+      const res = await fetch(url, {
+        cache: "no-store",
+        ...options,
+        headers: {
+          ...(headersNoJson || {}),
+          ...(options.headers || {}),
+        },
+      });
 
-      for (const url of candidates) {
-        try {
-          const res = await fetch(url, {
-            method,
-            headers: authHeadersNoJson,
-            cache: "no-store",
-          });
-
-          if (res.status === 404) {
-            saw404 = true;
-            continue; // try next candidate
-          }
-
-          if (res.status === 401) {
-            throw new Error("Unauthorized (401). Please logout and login again.");
-          }
-
-          if (!res.ok) {
-            const txt = await res.text().catch(() => "");
-            throw new Error(`Request failed (HTTP ${res.status}): ${txt || url}`);
-          }
-
-          const data = await res.json();
-          return { data, saw404: false };
-        } catch (e) {
-          // If it was 404 we already handled by continue.
-          // For other errors, stop early (real issue).
-          if (String(e?.message || "").includes("Unauthorized (401)")) throw e;
-          if (String(e?.message || "").startsWith("Request failed")) throw e;
-          // network parsing errors: try next candidate
-          continue;
-        }
+      if (res.status === 401) {
+        throw new Error("Session expired (401). Please logout and login again.");
       }
-
-      return { data: null, saw404 };
+      return res;
     },
-    [authHeadersNoJson]
+    [headersNoJson]
   );
 
   // --------------------------------------------------
   // Load shop info (AUTH)
   // --------------------------------------------------
-  const shopAbortRef = useRef(null);
-
   useEffect(() => {
     async function loadShop() {
       if (!shopId) return;
       if (!headersReady) return;
 
-      if (shopAbortRef.current) shopAbortRef.current.abort();
-      const controller = new AbortController();
-      shopAbortRef.current = controller;
-
       setLoadingShop(true);
       setError("");
-
       try {
-        const candidates = [
-          `${API_BASE}/shops/${shopId}`,
-          `${API_BASE}/shops/${shopId}/`,
-        ];
-
-        // try sequentially (simple + stable)
-        let lastErr = null;
-        let data = null;
-
-        for (const url of candidates) {
-          const res = await fetch(url, {
-            headers: authHeadersNoJson,
-            signal: controller.signal,
-            cache: "no-store",
-          });
-
-          if (res.status === 401) {
-            throw new Error("Unauthorized (401). Please logout and login again.");
-          }
-
-          if (!res.ok) {
-            lastErr = new Error("Failed to load shop.");
-            continue;
-          }
-
-          data = await res.json();
-          break;
-        }
-
-        if (!data) throw lastErr || new Error("Failed to load shop.");
-
-        setShop(data);
+        const res = await authedFetch(`${API_BASE}/shops/${shopId}`);
+        if (!res.ok) throw new Error("Failed to load shop.");
+        const data = await res.json();
+        setShop(data?.shop || data);
       } catch (err) {
-        if (err?.name === "AbortError") return;
         console.error(err);
         setShop(null);
         setError(err.message || "Failed to load shop.");
@@ -180,10 +142,7 @@ function DailyClosureHistoryPage() {
     }
 
     loadShop();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shopId, headersReady, API_BASE, authHeadersNoJson]);
-
-  const shopName = shop?.name || `Shop ${shopId}`;
+  }, [API_BASE, authedFetch, headersReady, shopId]);
 
   // --------------------------------------------------
   // Load daily closures history (saved values) (AUTH)
@@ -194,52 +153,33 @@ function DailyClosureHistoryPage() {
 
     setLoadingClosures(true);
     setError("");
-
     try {
-      const qs = `shop_id=${shopId}&date_from=${dateFrom}&date_to=${dateTo}`;
+      const url = `${API_BASE}/daily-closures/?shop_id=${shopId}&date_from=${dateFrom}&date_to=${dateTo}`;
+      const res = await authedFetch(url);
 
-      // ✅ Try both dash and underscore routes (prevents “looks lost” on 404 mismatch)
-      const candidates = [
-        `${API_BASE}/daily-closures/?${qs}`,
-        `${API_BASE}/daily-closures?${qs}`,
-        `${API_BASE}/daily_closures/?${qs}`,
-        `${API_BASE}/daily_closures?${qs}`,
-      ];
-
-      const { data, saw404 } = await tryJsonCandidates(candidates);
-
-      if (data == null) {
-        // all candidates 404 or unreachable
-        setClosures([]);
-        setSelectedClosureId(null);
-        if (saw404) {
-          setError(
-            "Daily closure history endpoint not found (404). Backend route mismatch (daily-closures vs daily_closures)."
-          );
+      if (!res.ok) {
+        if (res.status === 404) {
+          setClosures([]);
+          setSelectedClosureId(null);
+        } else {
+          throw new Error(`Failed to load daily closure history. Status: ${res.status}`);
         }
-        return;
+      } else {
+        const data = await res.json();
+        const rows = data?.closures || data || [];
+        setClosures(Array.isArray(rows) ? rows : []);
+        if (Array.isArray(rows) && rows.length > 0) setSelectedClosureId(rows[0].id);
+        else setSelectedClosureId(null);
       }
-
-      const rows = Array.isArray(data)
-        ? data
-        : Array.isArray(data?.closures)
-        ? data.closures
-        : Array.isArray(data?.rows)
-        ? data.rows
-        : [];
-
-      setClosures(rows || []);
-      if (rows && rows.length > 0) setSelectedClosureId(rows[0].id);
-      else setSelectedClosureId(null);
     } catch (err) {
       console.error(err);
-      setError(err.message || "Failed to load daily closure history.");
       setClosures([]);
       setSelectedClosureId(null);
+      setError(err.message || "Failed to load daily closure history.");
     } finally {
       setLoadingClosures(false);
     }
-  }, [shopId, dateFrom, dateTo, headersReady, API_BASE, tryJsonCandidates]);
+  }, [API_BASE, authedFetch, dateFrom, dateTo, headersReady, shopId]);
 
   useEffect(() => {
     loadClosures();
@@ -250,10 +190,11 @@ function DailyClosureHistoryPage() {
   // --------------------------------------------------
   const loadSystemTotalsForClosures = useCallback(
     async (rows) => {
-      if (!shopId || !headersReady || !rows || rows.length === 0) {
+      if (!shopId || !rows || rows.length === 0) {
         setSystemByDate({});
         return;
       }
+      if (!headersReady) return;
 
       setLoadingSystem(true);
       try {
@@ -263,14 +204,11 @@ function DailyClosureHistoryPage() {
 
         const entries = await Promise.all(
           uniqueDates.map(async (dStr) => {
-            const qs = `shop_id=${shopId}&closure_date=${dStr}`;
-            const candidates = [
-              `${API_BASE}/daily-closures/system-totals?${qs}`,
-              `${API_BASE}/daily_closures/system-totals?${qs}`,
-            ];
-
+            const url = `${API_BASE}/daily-closures/system-totals?shop_id=${shopId}&closure_date=${dStr}`;
             try {
-              const { data } = await tryJsonCandidates(candidates);
+              const res = await authedFetch(url);
+              if (!res.ok) return [dStr, null];
+              const data = await res.json();
               return [dStr, data || null];
             } catch {
               return [dStr, null];
@@ -285,7 +223,7 @@ function DailyClosureHistoryPage() {
         setLoadingSystem(false);
       }
     },
-    [shopId, headersReady, API_BASE, tryJsonCandidates]
+    [API_BASE, authedFetch, headersReady, shopId]
   );
 
   useEffect(() => {
@@ -301,56 +239,19 @@ function DailyClosureHistoryPage() {
 
     setError("");
     try {
-      const qs = `shop_id=${shopId}&date_from=${dateFrom}&date_to=${dateTo}`;
+      const url = `${API_BASE}/daily-closures/rebuild-range?shop_id=${shopId}&date_from=${dateFrom}&date_to=${dateTo}`;
+      const res = await authedFetch(url, { method: "POST" });
 
-      const candidates = [
-        `${API_BASE}/daily-closures/rebuild-range?${qs}`,
-        `${API_BASE}/daily_closures/rebuild-range?${qs}`,
-      ];
-
-      // Try both; first OK wins
-      let ok = false;
-      let lastStatus = null;
-      let lastText = "";
-
-      for (const url of candidates) {
-        const res = await fetch(url, {
-          method: "POST",
-          headers: authHeadersNoJson,
-          cache: "no-store",
-        });
-
-        if (res.status === 404) {
-          lastStatus = 404;
-          continue;
-        }
-        if (res.status === 401) {
-          throw new Error("Unauthorized (401). Please logout and login again.");
-        }
-        if (!res.ok) {
-          lastStatus = res.status;
-          lastText = await res.text().catch(() => "");
-          continue;
-        }
-        ok = true;
-        break;
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(`Rebuild failed (HTTP ${res.status}): ${txt}`);
       }
-
-      if (!ok) {
-        if (lastStatus === 404) {
-          throw new Error(
-            "Rebuild endpoint not found (404). Backend route mismatch (daily-closures vs daily_closures)."
-          );
-        }
-        throw new Error(`Rebuild failed (HTTP ${lastStatus || "?"}): ${lastText || "Unknown error"}`);
-      }
-
       await loadClosures();
     } catch (err) {
       console.error(err);
       setError(err.message || "Failed to rebuild range.");
     }
-  }, [shopId, dateFrom, dateTo, headersReady, API_BASE, authHeadersNoJson, loadClosures]);
+  }, [API_BASE, authedFetch, dateFrom, dateTo, headersReady, loadClosures, shopId]);
 
   // --------------------------------------------------
   // Period summary
@@ -381,7 +282,6 @@ function DailyClosureHistoryPage() {
   }, [closures]);
 
   const systemSummary = useMemo(() => {
-    // We recompute "difference" from system totals (more trustworthy)
     let totalSold = 0;
     let totalProfit = 0;
     let totalExpenses = 0;
@@ -426,10 +326,51 @@ function DailyClosureHistoryPage() {
     return closures.find((c) => c.id === selectedClosureId) || null;
   }, [closures, selectedClosureId]);
 
+  // --------------------------------------------------
+  // Guards
+  // --------------------------------------------------
+  if (!headersReady) {
+    return (
+      <div style={{ padding: "24px" }}>
+        <p>{sessionWaited ? "Session not ready. Please refresh or login again." : "Loading session..."}</p>
+        {sessionWaited && (
+          <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <button
+              onClick={() => window.location.reload()}
+              style={{
+                padding: "8px 12px",
+                borderRadius: 12,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                cursor: "pointer",
+                fontWeight: 700,
+              }}
+            >
+              Reload
+            </button>
+            <button
+              onClick={() => navigate("/")}
+              style={{
+                padding: "8px 12px",
+                borderRadius: 12,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                cursor: "pointer",
+                fontWeight: 700,
+              }}
+            >
+              Go Home
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   if (loadingShop) {
     return (
       <div style={{ padding: "24px" }}>
-        <p>{headersReady ? "Loading shop..." : "Loading session..."}</p>
+        <p>Loading shop...</p>
       </div>
     );
   }
@@ -442,6 +383,9 @@ function DailyClosureHistoryPage() {
     );
   }
 
+  // --------------------------------------------------
+  // Render
+  // --------------------------------------------------
   return (
     <div style={{ padding: "16px 24px 24px" }}>
       <button
@@ -483,24 +427,14 @@ function DailyClosureHistoryPage() {
             type="date"
             value={dateFrom}
             onChange={(e) => setDateFrom(e.target.value)}
-            style={{
-              padding: "4px 8px",
-              borderRadius: "999px",
-              border: "1px solid #d1d5db",
-              fontSize: "13px",
-            }}
+            style={{ padding: "4px 8px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px" }}
           />{" "}
           <span style={{ margin: "0 4px" }}>to</span>
           <input
             type="date"
             value={dateTo}
             onChange={(e) => setDateTo(e.target.value)}
-            style={{
-              padding: "4px 8px",
-              borderRadius: "999px",
-              border: "1px solid #d1d5db",
-              fontSize: "13px",
-            }}
+            style={{ padding: "4px 8px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px" }}
           />
         </div>
 
@@ -553,11 +487,7 @@ function DailyClosureHistoryPage() {
         {loadingSystem && <span style={{ fontSize: "12px", color: "#6b7280" }}>Recomputing system totals...</span>}
       </div>
 
-      {error && (
-        <div style={{ marginBottom: 10, color: "#b91c1c", fontSize: 13 }}>
-          {error}
-        </div>
-      )}
+      {error && <div style={{ marginBottom: 10, color: "#b91c1c", fontSize: 13 }}>{error}</div>}
 
       {/* Period summary */}
       <div
@@ -703,7 +633,6 @@ function DailyClosureHistoryPage() {
                 const netProfit = Number(c.total_profit || 0) - exp;
 
                 const diffColor = diff > 0 ? "#16a34a" : diff < 0 ? "#b91c1c" : "#4b5563";
-
                 const isSelected = selectedClosureId === c.id;
 
                 return (
