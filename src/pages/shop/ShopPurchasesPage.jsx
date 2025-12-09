@@ -366,7 +366,12 @@ function ShopPurchasesPage() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
   const [historySearchTerm, setHistorySearchTerm] = useState("");
-  const [historyLines, setHistoryLines] = useState([]);
+
+  // ✅ NEW: day summaries + lazy-loaded day lines
+  const [historyDays, setHistoryDays] = useState([]); // [{ purchase_date, purchases_count, total_amount }]
+  const [expandedDays, setExpandedDays] = useState({}); // { "YYYY-MM-DD": true }
+  const [historyDayLines, setHistoryDayLines] = useState({}); // { "YYYY-MM-DD": [lines...] }
+  const [historyDayLoading, setHistoryDayLoading] = useState({}); // { "YYYY-MM-DD": true }
 
   const resetPadToDefaults = () => {
     setPad({
@@ -622,7 +627,121 @@ function ShopPurchasesPage() {
     if (selectedLineId === id) setSelectedLineId(null);
   };
 
-  const deleteSavedLine = async (dbId) => {
+  const loadHistoryDays = async () => {
+    setHistoryLoading(true);
+    setHistoryError("");
+    setError("");
+    setMessage("");
+
+    try {
+      const fromISO = toISODate(historyFrom);
+      const toISO = toISODate(historyTo);
+
+      const chk = listDaysInclusive(fromISO, toISO, MAX_HISTORY_DAYS);
+      if (!chk.ok) {
+        setHistoryDays([]);
+        setExpandedDays({});
+        setHistoryDayLines({});
+        setHistoryDayLoading({});
+        setHistoryError(chk.error);
+        return;
+      }
+
+      const url = `${API_BASE}/purchases/days/?shop_id=${shopId}&date_from=${fromISO}&date_to=${toISO}`;
+      const res = await fetch(url, { headers: authHeadersNoJson });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => null);
+        throw new Error(errData?.detail || `Failed to load purchase days. Status: ${res.status}`);
+      }
+
+      const data = await res.json().catch(() => []);
+      const days = Array.isArray(data) ? data : [];
+
+      setHistoryDays(days);
+      setExpandedDays({});
+      setHistoryDayLines({});
+      setHistoryDayLoading({});
+    } catch (e) {
+      console.error(e);
+      setHistoryDays([]);
+      setExpandedDays({});
+      setHistoryDayLines({});
+      setHistoryDayLoading({});
+      setHistoryError(e?.message || "Failed to load history.");
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const loadHistoryDayLines = async (dayISO) => {
+    const d = toISODate(dayISO);
+    if (!d) return;
+
+    setHistoryDayLoading((prev) => ({ ...prev, [d]: true }));
+    try {
+      const url = `${API_BASE}/purchases/by-shop-date/?shop_id=${shopId}&purchase_date=${d}`;
+      const res = await fetch(url, { headers: authHeadersNoJson });
+      if (!res.ok) {
+        setHistoryDayLines((prev) => ({ ...prev, [d]: [] }));
+        return;
+      }
+      const data = await res.json().catch(() => []);
+      const arr = Array.isArray(data) ? data : [];
+
+      const mapped = arr.map((pl) => {
+        const wholesale =
+          pl.wholesale_price_per_piece ??
+          pl.wholesale_per_piece ??
+          stockByItemId[pl.item_id]?.wholesale_price_per_piece ??
+          "";
+
+        const retail =
+          pl.retail_price_per_piece ??
+          pl.selling_price_per_piece ??
+          pl.retail_per_piece ??
+          stockByItemId[pl.item_id]?.selling_price_per_piece ??
+          "";
+
+        return {
+          id: `h-db-${pl.id}`,
+          isFromDb: true,
+          dbId: pl.id,
+          itemId: pl.item_id,
+          qtyUnits: pl.quantity,
+          newUnitCost: pl.unit_cost_price,
+          newWholesalePerPiece: wholesale,
+          newRetailPerPiece: retail,
+          purchaseDate: d,
+        };
+      });
+
+      setHistoryDayLines((prev) => ({ ...prev, [d]: mapped }));
+    } catch (e) {
+      console.error(e);
+      setHistoryDayLines((prev) => ({ ...prev, [toISODate(dayISO)]: [] }));
+    } finally {
+      setHistoryDayLoading((prev) => ({ ...prev, [toISODate(dayISO)]: false }));
+    }
+  };
+
+  const toggleExpandDay = async (dayISO) => {
+    const d = toISODate(dayISO);
+    if (!d) return;
+
+    setExpandedDays((prev) => {
+      const next = { ...prev };
+      next[d] = !prev[d];
+      return next;
+    });
+
+    // If expanding and not loaded yet => load
+    const already = historyDayLines[toISODate(dayISO)];
+    if (!already) {
+      await loadHistoryDayLines(d);
+    }
+  };
+
+  const deleteSavedLine = async (dbId, purchaseDateForRefresh = null) => {
     const ok = window.confirm(
       "Delete this saved purchase item?\n\nThis will update stock accordingly and cannot be undone."
     );
@@ -646,7 +765,19 @@ function ShopPurchasesPage() {
       await res.json().catch(() => null);
       setMessage("Saved purchase line deleted and stock recalculated.");
       cancelAnyEdit();
+
+      // ✅ Refresh Today tab lines if relevant
       await loadExistingLines();
+
+      // ✅ Refresh history view (only if we are on Tab 2)
+      if (activeTab === 2) {
+        const dayISO = toISODate(purchaseDateForRefresh);
+        if (dayISO) {
+          // refresh that day's lines + day summaries
+          await loadHistoryDayLines(dayISO);
+        }
+        await loadHistoryDays();
+      }
     } catch (err) {
       console.error(err);
       setError(err.message || "Failed to delete saved line.");
@@ -813,104 +944,22 @@ function ShopPurchasesPage() {
   const padPurchaseCostPerPiece =
     pad.itemId && padPiecesPerUnit > 0 ? Number(pad.newUnitCost || 0) / padPiecesPerUnit : 0;
 
-  // ✅ All purchases loader (range) — always from backend
-  const loadHistoryRangeLines = async () => {
-    setHistoryLoading(true);
-    setHistoryError("");
-    setError("");
-    setMessage("");
-
-    try {
-      const fromISO = toISODate(historyFrom);
-      const toISO = toISODate(historyTo);
-
-      const chk = listDaysInclusive(fromISO, toISO, MAX_HISTORY_DAYS);
-      if (!chk.ok) {
-        setHistoryLines([]);
-        setHistoryError(chk.error);
-        return;
-      }
-
-      const days = chk.days;
-      const CONCURRENCY = 6;
-      const collected = [];
-
-      for (let i = 0; i < days.length; i += CONCURRENCY) {
-        const chunk = days.slice(i, i + CONCURRENCY);
-
-        // eslint-disable-next-line no-await-in-loop
-        const results = await Promise.all(
-          chunk.map(async (d) => {
-            const url = `${API_BASE}/purchases/by-shop-date/?shop_id=${shopId}&purchase_date=${d}`;
-            const res = await fetch(url, { headers: authHeadersNoJson });
-            if (!res.ok) return [];
-            const data = await res.json().catch(() => []);
-            if (!Array.isArray(data)) return [];
-
-            return data.map((pl) => {
-              const wholesale =
-                pl.wholesale_price_per_piece ??
-                pl.wholesale_per_piece ??
-                stockByItemId[pl.item_id]?.wholesale_price_per_piece ??
-                "";
-
-              const retail =
-                pl.retail_price_per_piece ??
-                pl.selling_price_per_piece ??
-                pl.retail_per_piece ??
-                stockByItemId[pl.item_id]?.selling_price_per_piece ??
-                "";
-
-              return {
-                id: `h-db-${pl.id}`,
-                isFromDb: true,
-                dbId: pl.id,
-                itemId: pl.item_id,
-                qtyUnits: pl.quantity,
-                newUnitCost: pl.unit_cost_price,
-                newWholesalePerPiece: wholesale,
-                newRetailPerPiece: retail,
-                purchaseDate: d,
-              };
-            });
-          })
-        );
-
-        for (const arr of results) collected.push(...arr);
-      }
-
-      collected.sort((a, b) => {
-        const da = String(a.purchaseDate || "");
-        const db = String(b.purchaseDate || "");
-        if (da !== db) return db.localeCompare(da);
-        return Number(b.dbId || 0) - Number(a.dbId || 0);
-      });
-
-      setHistoryLines(collected);
-    } catch (e) {
-      console.error(e);
-      setHistoryLines([]);
-      setHistoryError(e?.message || "Failed to load history.");
-    } finally {
-      setHistoryLoading(false);
-    }
-  };
-
+  // ✅ Load history days whenever Tab 2 opened / Apply clicked
   useEffect(() => {
     if (activeTab !== 2) return;
     if (loading) return;
-    loadHistoryRangeLines();
+    loadHistoryDays();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, historyRunToken, loading]);
 
-  const historyLinesWithComputed = useMemo(() => {
-    return historyLines.map((line) => {
+  const enrichHistoryLines = (arr) => {
+    return (arr || []).map((line) => {
       const s = stockByItemId[line.itemId] || {};
       const metaFallback = itemMetaById[line.itemId] || {};
 
       const piecesPerUnit = s.item_pieces_per_unit ?? metaFallback.piecesPerUnit ?? 1;
 
-      // ✅ FIX: same fallback logic for history view
+      // ✅ Same fallback logic for history
       const recentUnitCost = chooseRecent(s.last_purchase_unit_price, line.newUnitCost);
       const recentWholesalePerPiece = chooseRecent(s.wholesale_price_per_piece, line.newWholesalePerPiece);
       const recentRetailPerPiece = chooseRecent(s.selling_price_per_piece, line.newRetailPerPiece);
@@ -939,16 +988,7 @@ function ShopPurchasesPage() {
         },
       };
     });
-  }, [historyLines, stockByItemId, itemMetaById]);
-
-  const filteredHistoryLinesWithComputed = useMemo(() => {
-    const term = historySearchTerm.trim().toLowerCase();
-    if (!term) return historyLinesWithComputed;
-    return historyLinesWithComputed.filter((line) => {
-      const name = (line.meta.itemName || "").toLowerCase();
-      return name.includes(term) || String(line.purchaseDate || "").includes(term);
-    });
-  }, [historyLinesWithComputed, historySearchTerm]);
+  };
 
   const openHistoryLineForEdit = (line) => {
     const d = line.purchaseDate || "";
@@ -1085,6 +1125,24 @@ function ShopPurchasesPage() {
     fontSize: "12px",
     cursor: "pointer",
   });
+
+  // ✅ Filter days based on search term (either by date match or by item match in loaded lines)
+  const filteredHistoryDays = useMemo(() => {
+    const term = historySearchTerm.trim().toLowerCase();
+    if (!term) return historyDays;
+
+    return (historyDays || []).filter((d) => {
+      const day = String(d.purchase_date || "");
+      if (day.includes(term)) return true;
+
+      const loaded = historyDayLines[toISODate(day)] || null;
+      if (!loaded) return false;
+
+      const enriched = enrichHistoryLines(loaded);
+      return enriched.some((ln) => (ln.meta.itemName || "").toLowerCase().includes(term));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyDays, historySearchTerm, historyDayLines, stockByItemId, itemMetaById]);
 
   return (
     <div style={{ padding: "16px 24px 24px" }}>
@@ -1465,7 +1523,7 @@ function ShopPurchasesPage() {
                         {isFromDb ? (
                           <button
                             type="button"
-                            onClick={() => deleteSavedLine(line.dbId)}
+                            onClick={() => deleteSavedLine(line.dbId, toISODate(purchaseDate))}
                             disabled={padSaving}
                             title="Delete saved line"
                             style={{ width: "28px", height: "28px", borderRadius: "9999px", border: "1px solid #fee2e2", backgroundColor: "#fef2f2", color: "#b91c1c", fontSize: "14px", cursor: padSaving ? "not-allowed" : "pointer", opacity: padSaving ? 0.7 : 1 }}
@@ -1510,14 +1568,14 @@ function ShopPurchasesPage() {
         </div>
       )}
 
-      {/* ======================= TAB 2: ALL PURCHASES (Date range only, max 31 days) ======================= */}
+      {/* ======================= TAB 2: ALL PURCHASES (Days + expand) ======================= */}
       {activeTab === 2 && (
         <div style={{ backgroundColor: "#ffffff", borderRadius: "20px", boxShadow: "0 10px 30px rgba(15,37,128,0.06)", padding: "16px 18px 14px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", flexWrap: "wrap", alignItems: "end" }}>
             <div>
               <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>All purchases</h2>
               <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 4 }}>
-                Date range (max <strong>{MAX_HISTORY_DAYS}</strong> days). Click an item to open its date in Today tab.
+                Date range (max <strong>{MAX_HISTORY_DAYS}</strong> days). Expand a day to see items. Click an item to open its date in Today tab.
               </div>
             </div>
 
@@ -1576,101 +1634,211 @@ function ShopPurchasesPage() {
           <div style={{ marginTop: 10 }}>
             {historyLoading ? (
               <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>Loading…</div>
-            ) : filteredHistoryLinesWithComputed.length === 0 ? (
+            ) : filteredHistoryDays.length === 0 ? (
               <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
-                No saved purchase lines in this date range.
+                No purchases found in this date range.
               </div>
             ) : (
-              <div style={{ maxHeight: "520px", overflowY: "auto", overflowX: "auto", borderRadius: "12px", border: "1px solid #e5e7eb", padding: "0 8px 4px 0", backgroundColor: "#fcfcff" }}>
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: PURCHASE_GRID_COLUMNS,
-                    minWidth: "1260px",
-                    alignItems: "center",
-                    padding: "6px 4px 6px 8px",
-                    borderBottom: "1px solid #e5e7eb",
-                    fontSize: "11px",
-                    textTransform: "uppercase",
-                    letterSpacing: "0.08em",
-                    color: "#6b7280",
-                    fontWeight: 600,
-                    position: "sticky",
-                    top: 0,
-                    backgroundColor: "#f9fafb",
-                    zIndex: 5,
-                  }}
-                >
-                  <div>Item</div>
-                  <div style={{ textAlign: "center" }}>Qty units</div>
-                  <div style={{ textAlign: "center" }}>Pieces / unit</div>
-                  <div style={{ textAlign: "center" }}>All pieces</div>
-                  <div style={{ textAlign: "right" }}>Recent cost/unit</div>
-                  <div style={{ textAlign: "right" }}>New cost/unit</div>
-                  <div style={{ textAlign: "right" }}>Cost / piece</div>
-                  <div style={{ textAlign: "right" }}>Recent wholesale</div>
-                  <div style={{ textAlign: "right" }}>New wholesale</div>
-                  <div style={{ textAlign: "right" }}>Recent retail</div>
-                  <div style={{ textAlign: "right" }}>New retail</div>
-                  <div style={{ textAlign: "right" }}>Line total</div>
-                  <div></div>
-                </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                {filteredHistoryDays.map((d) => {
+                  const dayISO = toISODate(d.purchase_date);
+                  const isOpen = !!expandedDays[dayISO];
+                  const dayIsLoading = !!historyDayLoading[dayISO];
 
-                {filteredHistoryLinesWithComputed.map((line) => {
-                  const { meta, computed } = line;
-                  const { itemName, piecesPerUnit, recentUnitCost, recentWholesalePerPiece, recentRetailPerPiece } = meta;
-                  const { newCostPerPiece, lineTotal, allPieces } = computed;
+                  const rawLines = historyDayLines[dayISO] || null;
+                  const enrichedLines = rawLines ? enrichHistoryLines(rawLines) : [];
+                  const term = historySearchTerm.trim().toLowerCase();
+                  const filteredLines = !term
+                    ? enrichedLines
+                    : enrichedLines.filter((ln) => {
+                        const name = (ln.meta.itemName || "").toLowerCase();
+                        return name.includes(term) || String(ln.purchaseDate || "").includes(term);
+                      });
 
                   return (
                     <div
-                      key={line.id}
+                      key={dayISO}
                       style={{
-                        display: "grid",
-                        gridTemplateColumns: PURCHASE_GRID_COLUMNS,
-                        minWidth: "1260px",
-                        alignItems: "center",
-                        padding: "8px 4px 8px 8px",
-                        borderBottom: "1px solid #f3f4f6",
-                        fontSize: "13px",
+                        border: "1px solid #e5e7eb",
+                        borderRadius: "14px",
+                        overflow: "hidden",
+                        background: "#ffffff",
                       }}
                     >
-                      <div>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: "10px",
+                          padding: "10px 12px",
+                          background: "#f9fafb",
+                          borderBottom: isOpen ? "1px solid #e5e7eb" : "none",
+                        }}
+                      >
                         <button
                           type="button"
-                          onClick={() => openHistoryLineForEdit(line)}
-                          style={{ padding: 0, margin: 0, border: "none", background: "transparent", color: "#111827", fontWeight: 700, fontSize: "13px", cursor: "pointer", textAlign: "left" }}
-                          title="Open this date in Today tab"
+                          onClick={() => toggleExpandDay(dayISO)}
+                          style={{
+                            border: "none",
+                            background: "transparent",
+                            cursor: "pointer",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "10px",
+                            padding: 0,
+                            color: "#111827",
+                            fontWeight: 800,
+                          }}
+                          title={isOpen ? "Collapse" : "Expand"}
                         >
-                          {itemName || "Unknown item"}
+                          <span style={{ width: 22, textAlign: "center", fontSize: "14px" }}>{isOpen ? "▾" : "▸"}</span>
+                          <span style={{ fontSize: "13px" }}>{dayISO}</span>
+                          <span style={{ fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>
+                            • {Number(d.purchases_count || 0)} purchase(s)
+                          </span>
                         </button>
-                        <div style={{ fontSize: "11px", color: "#6b7280", marginTop: 2 }}>
-                          Date: {line.purchaseDate}
+
+                        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                          <div style={{ textAlign: "right" }}>
+                            <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.1em", color: "#6b7280" }}>Total</div>
+                            <div style={{ fontSize: "14px", fontWeight: 900, color: "#111827" }}>
+                              {formatMoney(d.total_amount || 0)}
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPurchaseDate(dayISO);
+                              setActiveTab(1);
+                              setHistoryError("");
+                              setError("");
+                              setMessage("");
+                            }}
+                            style={{
+                              padding: "6px 10px",
+                              borderRadius: "999px",
+                              border: "1px solid #d1d5db",
+                              background: "#ffffff",
+                              color: "#111827",
+                              fontWeight: 800,
+                              fontSize: "12px",
+                              cursor: "pointer",
+                            }}
+                            title="Open this day in Today tab"
+                          >
+                            Open
+                          </button>
                         </div>
                       </div>
 
-                      <div style={{ textAlign: "center" }}>{formatQty(line.qtyUnits)}</div>
-                      <div style={{ textAlign: "center" }}>{formatQty(piecesPerUnit)}</div>
-                      <div style={{ textAlign: "center" }}>{formatQty(allPieces)}</div>
-                      <div style={{ textAlign: "right" }}>{formatMoney(recentUnitCost)}</div>
-                      <div style={{ textAlign: "right" }}>{formatMoney(line.newUnitCost)}</div>
-                      <div style={{ textAlign: "right" }}>{formatMoney(newCostPerPiece)}</div>
-                      <div style={{ textAlign: "right" }}>{formatMoney(recentWholesalePerPiece)}</div>
-                      <div style={{ textAlign: "right" }}>{formatMoney(line.newWholesalePerPiece)}</div>
-                      <div style={{ textAlign: "right" }}>{formatMoney(recentRetailPerPiece)}</div>
-                      <div style={{ textAlign: "right" }}>{formatMoney(line.newRetailPerPiece)}</div>
-                      <div style={{ textAlign: "right", fontWeight: 600 }}>{formatMoney(lineTotal)}</div>
+                      {isOpen && (
+                        <div style={{ padding: "10px 10px 12px" }}>
+                          {dayIsLoading ? (
+                            <div style={{ padding: "10px 6px", fontSize: "13px", color: "#6b7280" }}>Loading day items…</div>
+                          ) : filteredLines.length === 0 ? (
+                            <div style={{ padding: "10px 6px", fontSize: "13px", color: "#6b7280" }}>
+                              {rawLines ? "No matching items." : "No lines found for this day."}
+                            </div>
+                          ) : (
+                            <div style={{ maxHeight: "520px", overflowY: "auto", overflowX: "auto", borderRadius: "12px", border: "1px solid #e5e7eb", padding: "0 8px 4px 0", backgroundColor: "#fcfcff" }}>
+                              <div
+                                style={{
+                                  display: "grid",
+                                  gridTemplateColumns: PURCHASE_GRID_COLUMNS,
+                                  minWidth: "1260px",
+                                  alignItems: "center",
+                                  padding: "6px 4px 6px 8px",
+                                  borderBottom: "1px solid #e5e7eb",
+                                  fontSize: "11px",
+                                  textTransform: "uppercase",
+                                  letterSpacing: "0.08em",
+                                  color: "#6b7280",
+                                  fontWeight: 600,
+                                  position: "sticky",
+                                  top: 0,
+                                  backgroundColor: "#f9fafb",
+                                  zIndex: 5,
+                                }}
+                              >
+                                <div>Item</div>
+                                <div style={{ textAlign: "center" }}>Qty units</div>
+                                <div style={{ textAlign: "center" }}>Pieces / unit</div>
+                                <div style={{ textAlign: "center" }}>All pieces</div>
+                                <div style={{ textAlign: "right" }}>Recent cost/unit</div>
+                                <div style={{ textAlign: "right" }}>New cost/unit</div>
+                                <div style={{ textAlign: "right" }}>Cost / piece</div>
+                                <div style={{ textAlign: "right" }}>Recent wholesale</div>
+                                <div style={{ textAlign: "right" }}>New wholesale</div>
+                                <div style={{ textAlign: "right" }}>Recent retail</div>
+                                <div style={{ textAlign: "right" }}>New retail</div>
+                                <div style={{ textAlign: "right" }}>Line total</div>
+                                <div></div>
+                              </div>
 
-                      <div style={{ textAlign: "center" }}>
-                        <button
-                          type="button"
-                          onClick={() => deleteSavedLine(line.dbId)}
-                          disabled={padSaving}
-                          title="Delete saved line"
-                          style={{ width: "28px", height: "28px", borderRadius: "9999px", border: "1px solid #fee2e2", backgroundColor: "#fef2f2", color: "#b91c1c", fontSize: "14px", cursor: padSaving ? "not-allowed" : "pointer", opacity: padSaving ? 0.7 : 1 }}
-                        >
-                          🗑
-                        </button>
-                      </div>
+                              {filteredLines.map((line) => {
+                                const { meta, computed } = line;
+                                const { itemName, piecesPerUnit, recentUnitCost, recentWholesalePerPiece, recentRetailPerPiece } = meta;
+                                const { newCostPerPiece, lineTotal, allPieces } = computed;
+
+                                return (
+                                  <div
+                                    key={line.id}
+                                    style={{
+                                      display: "grid",
+                                      gridTemplateColumns: PURCHASE_GRID_COLUMNS,
+                                      minWidth: "1260px",
+                                      alignItems: "center",
+                                      padding: "8px 4px 8px 8px",
+                                      borderBottom: "1px solid #f3f4f6",
+                                      fontSize: "13px",
+                                    }}
+                                  >
+                                    <div>
+                                      <button
+                                        type="button"
+                                        onClick={() => openHistoryLineForEdit(line)}
+                                        style={{ padding: 0, margin: 0, border: "none", background: "transparent", color: "#111827", fontWeight: 700, fontSize: "13px", cursor: "pointer", textAlign: "left" }}
+                                        title="Open this date in Today tab"
+                                      >
+                                        {itemName || "Unknown item"}
+                                      </button>
+                                      <div style={{ fontSize: "11px", color: "#6b7280", marginTop: 2 }}>
+                                        Date: {line.purchaseDate}
+                                      </div>
+                                    </div>
+
+                                    <div style={{ textAlign: "center" }}>{formatQty(line.qtyUnits)}</div>
+                                    <div style={{ textAlign: "center" }}>{formatQty(piecesPerUnit)}</div>
+                                    <div style={{ textAlign: "center" }}>{formatQty(allPieces)}</div>
+                                    <div style={{ textAlign: "right" }}>{formatMoney(recentUnitCost)}</div>
+                                    <div style={{ textAlign: "right" }}>{formatMoney(line.newUnitCost)}</div>
+                                    <div style={{ textAlign: "right" }}>{formatMoney(newCostPerPiece)}</div>
+                                    <div style={{ textAlign: "right" }}>{formatMoney(recentWholesalePerPiece)}</div>
+                                    <div style={{ textAlign: "right" }}>{formatMoney(line.newWholesalePerPiece)}</div>
+                                    <div style={{ textAlign: "right" }}>{formatMoney(recentRetailPerPiece)}</div>
+                                    <div style={{ textAlign: "right" }}>{formatMoney(line.newRetailPerPiece)}</div>
+                                    <div style={{ textAlign: "right", fontWeight: 600 }}>{formatMoney(lineTotal)}</div>
+
+                                    <div style={{ textAlign: "center" }}>
+                                      <button
+                                        type="button"
+                                        onClick={() => deleteSavedLine(line.dbId, dayISO)}
+                                        disabled={padSaving}
+                                        title="Delete saved line"
+                                        style={{ width: "28px", height: "28px", borderRadius: "9999px", border: "1px solid #fee2e2", backgroundColor: "#fef2f2", color: "#b91c1c", fontSize: "14px", cursor: padSaving ? "not-allowed" : "pointer", opacity: padSaving ? 0.7 : 1 }}
+                                      >
+                                        🗑
+                                      </button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
