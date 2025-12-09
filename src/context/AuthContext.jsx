@@ -1,5 +1,5 @@
 // FILE: src/context/AuthContext.jsx
-import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
+import React, { createContext, useContext, useEffect, useMemo, useState, useCallback } from "react";
 
 const STORAGE_KEY = "iclas_auth";
 const AuthContext = createContext(null);
@@ -55,34 +55,57 @@ function getErrorMessageFromResponse(data, fallback) {
   return fallback;
 }
 
+// ✅ Read and parse auth payload safely (handy for fallback/debug)
+function getStoredAuth() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+
+    const restoredToken =
+      parsed?.token ||
+      parsed?.access_token ||
+      parsed?.accessToken ||
+      parsed?.data?.access_token ||
+      null;
+
+    const restoredUser = normalizeUser(parsed?.user || parsed?.data?.user) || null;
+
+    return { token: restoredToken, user: restoredUser };
+  } catch {
+    return null;
+  }
+}
+
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // ✅ Common headers (no Content-Type here, safe for GET/POST without JSON)
+  const authHeadersNoJson = useMemo(() => {
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }, [token]);
+
+  // ✅ JSON headers (used when sending JSON bodies)
   const authHeaders = useMemo(() => {
+    return token
+      ? { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }
+      : { "Content-Type": "application/json" };
+  }, [token]);
+
+  // ✅ Optional: a strict getter-style function for pages that call it like authHeadersNoJson()
+  const authHeadersNoJsonStrict = useCallback(() => {
     return token ? { Authorization: `Bearer ${token}` } : {};
   }, [token]);
 
   // Load auth state from localStorage
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-
-        // Support several token shapes just in case
-        const restoredToken =
-          parsed?.token ||
-          parsed?.access_token ||
-          parsed?.accessToken ||
-          parsed?.data?.access_token ||
-          null;
-
-        const restoredUser = normalizeUser(parsed?.user || parsed?.data?.user) || null;
-
-        setUser(restoredUser);
-        setToken(restoredToken);
+      const restored = getStoredAuth();
+      if (restored) {
+        setUser(restored.user);
+        setToken(restored.token);
       }
     } catch (err) {
       console.error("Failed to restore auth state:", err);
@@ -109,7 +132,6 @@ export function AuthProvider({ children }) {
         body, // ✅ pass URLSearchParams directly
       });
     } catch (e) {
-      // Network error (DNS, CORS hard fail, server down, etc.)
       throw new Error(
         `Cannot reach API server at ${API_BASE}. Check API URL + CORS allow_origins on backend.`
       );
@@ -170,7 +192,14 @@ export function AuthProvider({ children }) {
         login,
         logout,
         API_BASE, // helpful for debugging
-        authHeaders, // helpful for API calls
+
+        // ✅ Headers
+        authHeaders, // JSON requests
+        authHeadersNoJson, // GET/POST without JSON
+        authHeadersNoJsonStrict, // function form if any page expects calling it
+
+        // ✅ Optional helper (useful in some pages)
+        getStoredAuth,
       }}
     >
       {children}
