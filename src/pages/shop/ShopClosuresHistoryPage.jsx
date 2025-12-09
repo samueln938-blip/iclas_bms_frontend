@@ -36,28 +36,58 @@ function sevenDaysAgoString() {
 function toISODateOnly(v) {
   if (!v) return "";
   const s = String(v);
-  // supports "2025-11-30" or "2025-11-30T00:00:00"
   return s.includes("T") ? s.split("T")[0] : s;
+}
+
+function readTokenFromStorage() {
+  try {
+    const keys = ["access_token", "token", "iclas_token", "iclas_access_token"];
+    for (const k of keys) {
+      const v = window.localStorage.getItem(k);
+      if (v && v !== "null" && v !== "undefined") return String(v).replace(/^"|"$/g, "");
+    }
+
+    // Fallback: find ANY key that looks like a token
+    const tokenKey = Object.keys(window.localStorage || {}).find((k) =>
+      String(k).toLowerCase().includes("token")
+    );
+    if (tokenKey) {
+      const v = window.localStorage.getItem(tokenKey);
+      if (v && v !== "null" && v !== "undefined") return String(v).replace(/^"|"$/g, "");
+    }
+  } catch {}
+  return null;
 }
 
 function DailyClosureHistoryPage() {
   const { shopId } = useParams();
   const navigate = useNavigate();
 
-  // ✅ Use same auth headers as other protected shop pages
   const { authHeadersNoJson } = useAuth();
+
+  const fallbackToken = useMemo(() => readTokenFromStorage(), []);
 
   // ✅ Support BOTH styles:
   // - authHeadersNoJson is an object
   // - authHeadersNoJson is a function returning an object
+  // ✅ PLUS: fallback to localStorage token if context isn't ready
   const headersNoJson = useMemo(() => {
+    let h = null;
     try {
-      if (typeof authHeadersNoJson === "function") return authHeadersNoJson();
-      return authHeadersNoJson;
+      h = typeof authHeadersNoJson === "function" ? authHeadersNoJson() : authHeadersNoJson;
     } catch {
-      return null;
+      h = null;
     }
-  }, [authHeadersNoJson]);
+
+    const hasContextHeaders = h && typeof h === "object" && Object.keys(h).length > 0;
+    if (hasContextHeaders) return h;
+
+    if (fallbackToken) {
+      return { Authorization: `Bearer ${fallbackToken}` };
+    }
+
+    return h;
+  }, [authHeadersNoJson, fallbackToken]);
 
   const headersReady = useMemo(() => {
     return (
@@ -67,10 +97,9 @@ function DailyClosureHistoryPage() {
     );
   }, [headersNoJson]);
 
-  // If session never becomes ready, don't hang forever
   const [sessionWaited, setSessionWaited] = useState(false);
   useEffect(() => {
-    const t = window.setTimeout(() => setSessionWaited(true), 3000);
+    const t = window.setTimeout(() => setSessionWaited(true), 2500);
     return () => window.clearTimeout(t);
   }, []);
 
@@ -87,7 +116,6 @@ function DailyClosureHistoryPage() {
   const [subTab, setSubTab] = useState("list"); // "list" | "details"
   const [selectedClosureId, setSelectedClosureId] = useState(null);
 
-  // ✅ System totals per day (recomputed from backend)
   const [systemByDate, setSystemByDate] = useState({});
   const [loadingSystem, setLoadingSystem] = useState(false);
 
@@ -95,9 +123,6 @@ function DailyClosureHistoryPage() {
 
   const shopName = shop?.name || `Shop ${shopId}`;
 
-  // --------------------------------------------------
-  // Small helper: authenticated fetch (no-store)
-  // --------------------------------------------------
   const authedFetch = useCallback(
     async (url, options = {}) => {
       const res = await fetch(url, {
@@ -117,9 +142,9 @@ function DailyClosureHistoryPage() {
     [headersNoJson]
   );
 
-  // --------------------------------------------------
+  // ----------------------------
   // Load shop info (AUTH)
-  // --------------------------------------------------
+  // ----------------------------
   useEffect(() => {
     async function loadShop() {
       if (!shopId) return;
@@ -140,13 +165,12 @@ function DailyClosureHistoryPage() {
         setLoadingShop(false);
       }
     }
-
     loadShop();
   }, [API_BASE, authedFetch, headersReady, shopId]);
 
-  // --------------------------------------------------
-  // Load daily closures history (saved values) (AUTH)
-  // --------------------------------------------------
+  // ----------------------------
+  // Load closures history (AUTH)
+  // ----------------------------
   const loadClosures = useCallback(async () => {
     if (!shopId || !dateFrom || !dateTo) return;
     if (!headersReady) return;
@@ -185,9 +209,9 @@ function DailyClosureHistoryPage() {
     loadClosures();
   }, [loadClosures]);
 
-  // --------------------------------------------------
-  // ✅ Load system totals for each day shown (AUTH)
-  // --------------------------------------------------
+  // ----------------------------
+  // Load system totals per day (AUTH)
+  // ----------------------------
   const loadSystemTotalsForClosures = useCallback(
     async (rows) => {
       if (!shopId || !rows || rows.length === 0) {
@@ -198,9 +222,7 @@ function DailyClosureHistoryPage() {
 
       setLoadingSystem(true);
       try {
-        const uniqueDates = Array.from(
-          new Set(rows.map((c) => toISODateOnly(c.closure_date)))
-        ).filter(Boolean);
+        const uniqueDates = Array.from(new Set(rows.map((c) => toISODateOnly(c.closure_date)))).filter(Boolean);
 
         const entries = await Promise.all(
           uniqueDates.map(async (dStr) => {
@@ -230,9 +252,9 @@ function DailyClosureHistoryPage() {
     loadSystemTotalsForClosures(closures);
   }, [closures, loadSystemTotalsForClosures]);
 
-  // --------------------------------------------------
-  // Rebuild range in DB (fix saved rows) (AUTH)
-  // --------------------------------------------------
+  // ----------------------------
+  // Rebuild range (AUTH)
+  // ----------------------------
   const handleRebuildRange = useCallback(async () => {
     if (!shopId || !dateFrom || !dateTo) return;
     if (!headersReady) return;
@@ -253,9 +275,9 @@ function DailyClosureHistoryPage() {
     }
   }, [API_BASE, authedFetch, dateFrom, dateTo, headersReady, loadClosures, shopId]);
 
-  // --------------------------------------------------
-  // Period summary
-  // --------------------------------------------------
+  // ----------------------------
+  // Summaries
+  // ----------------------------
   const savedSummary = useMemo(() => {
     let totalSold = 0;
     let totalProfit = 0;
@@ -271,14 +293,7 @@ function DailyClosureHistoryPage() {
       totalDifference += Number(c.difference_amount || 0);
     }
 
-    return {
-      totalSold,
-      totalProfit,
-      totalExpenses,
-      totalNetProfit,
-      totalDifference,
-      daysCount: (closures || []).length,
-    };
+    return { totalSold, totalProfit, totalExpenses, totalNetProfit, totalDifference, daysCount: (closures || []).length };
   }, [closures]);
 
   const systemSummary = useMemo(() => {
@@ -309,14 +324,7 @@ function DailyClosureHistoryPage() {
       totalDifference += diff;
     }
 
-    return {
-      totalSold,
-      totalProfit,
-      totalExpenses,
-      totalNetProfit,
-      totalDifference,
-      daysCount: (closures || []).length,
-    };
+    return { totalSold, totalProfit, totalExpenses, totalNetProfit, totalDifference, daysCount: (closures || []).length };
   }, [closures, systemByDate]);
 
   const summary = viewMode === "system" ? systemSummary : savedSummary;
@@ -326,15 +334,22 @@ function DailyClosureHistoryPage() {
     return closures.find((c) => c.id === selectedClosureId) || null;
   }, [closures, selectedClosureId]);
 
-  // --------------------------------------------------
+  // ----------------------------
   // Guards
-  // --------------------------------------------------
+  // ----------------------------
   if (!headersReady) {
     return (
       <div style={{ padding: "24px" }}>
-        <p>{sessionWaited ? "Session not ready. Please refresh or login again." : "Loading session..."}</p>
+        <p style={{ margin: 0 }}>
+          {sessionWaited
+            ? fallbackToken
+              ? "Session headers not ready yet. Please refresh."
+              : "No token found. Please login again."
+            : "Loading session..."}
+        </p>
+
         {sessionWaited && (
-          <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button
               onClick={() => window.location.reload()}
               style={{
@@ -349,7 +364,10 @@ function DailyClosureHistoryPage() {
               Reload
             </button>
             <button
-              onClick={() => navigate("/")}
+              onClick={() => {
+                // go home; your app may redirect to login if not authenticated
+                navigate("/");
+              }}
               style={{
                 padding: "8px 12px",
                 borderRadius: 12,
@@ -383,9 +401,9 @@ function DailyClosureHistoryPage() {
     );
   }
 
-  // --------------------------------------------------
+  // ----------------------------
   // Render
-  // --------------------------------------------------
+  // ----------------------------
   return (
     <div style={{ padding: "16px 24px 24px" }}>
       <button
@@ -403,24 +421,13 @@ function DailyClosureHistoryPage() {
         ← Back to shop workspace
       </button>
 
-      <h1 style={{ fontSize: "26px", fontWeight: 800, letterSpacing: "0.03em", margin: 0 }}>
-        Daily Closure History
-      </h1>
+      <h1 style={{ fontSize: "26px", fontWeight: 800, letterSpacing: "0.03em", margin: 0 }}>Daily Closure History</h1>
       <p style={{ color: "#6b7280", marginTop: "0.5rem" }}>
         Summary of daily closures for <strong>{shopName}</strong>.
       </p>
 
       {/* Filters */}
-      <div
-        style={{
-          marginTop: "14px",
-          marginBottom: "10px",
-          display: "flex",
-          flexWrap: "wrap",
-          gap: "10px 16px",
-          alignItems: "center",
-        }}
-      >
+      <div style={{ marginTop: "14px", marginBottom: "10px", display: "flex", flexWrap: "wrap", gap: "10px 16px", alignItems: "center" }}>
         <div style={{ fontSize: "13px", color: "#6b7280" }}>
           Period:&nbsp;
           <input
@@ -503,15 +510,7 @@ function DailyClosureHistoryPage() {
         <div style={{ fontSize: "14px", fontWeight: 700, marginBottom: "6px" }}>
           Period summary ({viewMode === "system" ? "recomputed" : "saved"})
         </div>
-        <div
-          style={{
-            fontSize: "11px",
-            textTransform: "uppercase",
-            letterSpacing: "0.12em",
-            color: "#9ca3af",
-            marginBottom: "8px",
-          }}
-        >
+        <div style={{ fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.12em", color: "#9ca3af", marginBottom: "8px" }}>
           {dateFrom} to {dateTo}
         </div>
 
@@ -551,7 +550,7 @@ function DailyClosureHistoryPage() {
         </div>
       </div>
 
-      {/* Daily closures list + details */}
+      {/* List + details */}
       <div
         style={{
           backgroundColor: "#ffffff",
@@ -560,7 +559,6 @@ function DailyClosureHistoryPage() {
           padding: "10px 12px 14px",
         }}
       >
-        {/* Sub-tabs */}
         <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "8px" }}>
           <div style={{ display: "inline-flex", backgroundColor: "#e5e7eb", borderRadius: "999px", padding: "2px" }}>
             {[
@@ -631,7 +629,6 @@ function DailyClosureHistoryPage() {
                 const diff = viewMode === "system" && sys ? counted - expectedAfter : Number(c.difference_amount || 0);
 
                 const netProfit = Number(c.total_profit || 0) - exp;
-
                 const diffColor = diff > 0 ? "#16a34a" : diff < 0 ? "#b91c1c" : "#4b5563";
                 const isSelected = selectedClosureId === c.id;
 
