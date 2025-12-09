@@ -1,8 +1,11 @@
 // src/pages/shop/ShopClosuresHistoryPage.jsx
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
+import { useAuth } from "../../context/AuthContext.jsx";
 
-const API_BASE = "https://iclas-bms-api-prod-pgtdc.ondigitalocean.app";
+// ✅ Single source of truth for API base (env or prod fallback)
+import { API_BASE as CLIENT_API_BASE } from "../../api/client.jsx";
+const API_BASE = CLIENT_API_BASE;
 
 function formatMoney(value) {
   if (value === null || value === undefined || value === "") return "0";
@@ -41,6 +44,16 @@ function DailyClosureHistoryPage() {
   const { shopId } = useParams();
   const navigate = useNavigate();
 
+  // ✅ AUTH (same pattern as other shop pages)
+  const { authHeadersNoJson } = useAuth();
+  const headersReady = useMemo(() => {
+    return (
+      !!authHeadersNoJson &&
+      typeof authHeadersNoJson === "object" &&
+      Object.keys(authHeadersNoJson).length > 0
+    );
+  }, [authHeadersNoJson]);
+
   const [shop, setShop] = useState(null);
   const [loadingShop, setLoadingShop] = useState(true);
   const [error, setError] = useState("");
@@ -61,123 +74,283 @@ function DailyClosureHistoryPage() {
   const [viewMode, setViewMode] = useState("system"); // "system" | "saved"
 
   // --------------------------------------------------
-  // Load shop info
+  // Helpers
   // --------------------------------------------------
+  const tryJsonCandidates = useCallback(
+    async (candidates, { method = "GET" } = {}) => {
+      let saw404 = false;
+
+      for (const url of candidates) {
+        try {
+          const res = await fetch(url, {
+            method,
+            headers: authHeadersNoJson,
+            cache: "no-store",
+          });
+
+          if (res.status === 404) {
+            saw404 = true;
+            continue; // try next candidate
+          }
+
+          if (res.status === 401) {
+            throw new Error("Unauthorized (401). Please logout and login again.");
+          }
+
+          if (!res.ok) {
+            const txt = await res.text().catch(() => "");
+            throw new Error(`Request failed (HTTP ${res.status}): ${txt || url}`);
+          }
+
+          const data = await res.json();
+          return { data, saw404: false };
+        } catch (e) {
+          // If it was 404 we already handled by continue.
+          // For other errors, stop early (real issue).
+          if (String(e?.message || "").includes("Unauthorized (401)")) throw e;
+          if (String(e?.message || "").startsWith("Request failed")) throw e;
+          // network parsing errors: try next candidate
+          continue;
+        }
+      }
+
+      return { data: null, saw404 };
+    },
+    [authHeadersNoJson]
+  );
+
+  // --------------------------------------------------
+  // Load shop info (AUTH)
+  // --------------------------------------------------
+  const shopAbortRef = useRef(null);
+
   useEffect(() => {
     async function loadShop() {
+      if (!shopId) return;
+      if (!headersReady) return;
+
+      if (shopAbortRef.current) shopAbortRef.current.abort();
+      const controller = new AbortController();
+      shopAbortRef.current = controller;
+
       setLoadingShop(true);
       setError("");
+
       try {
-        const res = await fetch(`${API_BASE}/shops/${shopId}`);
-        if (!res.ok) throw new Error("Failed to load shop.");
-        const data = await res.json();
+        const candidates = [
+          `${API_BASE}/shops/${shopId}`,
+          `${API_BASE}/shops/${shopId}/`,
+        ];
+
+        // try sequentially (simple + stable)
+        let lastErr = null;
+        let data = null;
+
+        for (const url of candidates) {
+          const res = await fetch(url, {
+            headers: authHeadersNoJson,
+            signal: controller.signal,
+            cache: "no-store",
+          });
+
+          if (res.status === 401) {
+            throw new Error("Unauthorized (401). Please logout and login again.");
+          }
+
+          if (!res.ok) {
+            lastErr = new Error("Failed to load shop.");
+            continue;
+          }
+
+          data = await res.json();
+          break;
+        }
+
+        if (!data) throw lastErr || new Error("Failed to load shop.");
+
         setShop(data);
       } catch (err) {
+        if (err?.name === "AbortError") return;
         console.error(err);
+        setShop(null);
         setError(err.message || "Failed to load shop.");
       } finally {
         setLoadingShop(false);
       }
     }
-    if (shopId) loadShop();
-  }, [shopId]);
+
+    loadShop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shopId, headersReady, API_BASE, authHeadersNoJson]);
 
   const shopName = shop?.name || `Shop ${shopId}`;
 
   // --------------------------------------------------
-  // Load daily closures history (saved values)
+  // Load daily closures history (saved values) (AUTH)
   // --------------------------------------------------
   const loadClosures = useCallback(async () => {
     if (!shopId || !dateFrom || !dateTo) return;
+    if (!headersReady) return;
+
     setLoadingClosures(true);
     setError("");
+
     try {
-      const url = `${API_BASE}/daily-closures/?shop_id=${shopId}&date_from=${dateFrom}&date_to=${dateTo}`;
-      const res = await fetch(url);
-      if (!res.ok) {
-        if (res.status === 404) {
-          setClosures([]);
-        } else {
-          throw new Error(`Failed to load daily closure history. Status: ${res.status}`);
+      const qs = `shop_id=${shopId}&date_from=${dateFrom}&date_to=${dateTo}`;
+
+      // ✅ Try both dash and underscore routes (prevents “looks lost” on 404 mismatch)
+      const candidates = [
+        `${API_BASE}/daily-closures/?${qs}`,
+        `${API_BASE}/daily-closures?${qs}`,
+        `${API_BASE}/daily_closures/?${qs}`,
+        `${API_BASE}/daily_closures?${qs}`,
+      ];
+
+      const { data, saw404 } = await tryJsonCandidates(candidates);
+
+      if (data == null) {
+        // all candidates 404 or unreachable
+        setClosures([]);
+        setSelectedClosureId(null);
+        if (saw404) {
+          setError(
+            "Daily closure history endpoint not found (404). Backend route mismatch (daily-closures vs daily_closures)."
+          );
         }
-      } else {
-        const data = await res.json();
-        setClosures(data || []);
-        if (data && data.length > 0) setSelectedClosureId(data[0].id);
-        else setSelectedClosureId(null);
+        return;
       }
+
+      const rows = Array.isArray(data)
+        ? data
+        : Array.isArray(data?.closures)
+        ? data.closures
+        : Array.isArray(data?.rows)
+        ? data.rows
+        : [];
+
+      setClosures(rows || []);
+      if (rows && rows.length > 0) setSelectedClosureId(rows[0].id);
+      else setSelectedClosureId(null);
     } catch (err) {
       console.error(err);
       setError(err.message || "Failed to load daily closure history.");
+      setClosures([]);
+      setSelectedClosureId(null);
     } finally {
       setLoadingClosures(false);
     }
-  }, [shopId, dateFrom, dateTo]);
+  }, [shopId, dateFrom, dateTo, headersReady, API_BASE, tryJsonCandidates]);
 
   useEffect(() => {
     loadClosures();
   }, [loadClosures]);
 
   // --------------------------------------------------
-  // ✅ Load system totals for each day shown
+  // ✅ Load system totals for each day shown (AUTH)
   // --------------------------------------------------
-  const loadSystemTotalsForClosures = useCallback(async (rows) => {
-    if (!shopId || !rows || rows.length === 0) {
-      setSystemByDate({});
-      return;
-    }
+  const loadSystemTotalsForClosures = useCallback(
+    async (rows) => {
+      if (!shopId || !headersReady || !rows || rows.length === 0) {
+        setSystemByDate({});
+        return;
+      }
 
-    setLoadingSystem(true);
-    try {
-      const uniqueDates = Array.from(
-        new Set(rows.map((c) => toISODateOnly(c.closure_date)))
-      ).filter(Boolean);
+      setLoadingSystem(true);
+      try {
+        const uniqueDates = Array.from(
+          new Set(rows.map((c) => toISODateOnly(c.closure_date)))
+        ).filter(Boolean);
 
-      const entries = await Promise.all(
-        uniqueDates.map(async (dStr) => {
-          const url = `${API_BASE}/daily-closures/system-totals?shop_id=${shopId}&closure_date=${dStr}`;
-          try {
-            const res = await fetch(url);
-            if (!res.ok) return [dStr, null];
-            const data = await res.json();
-            return [dStr, data || null];
-          } catch {
-            return [dStr, null];
-          }
-        })
-      );
+        const entries = await Promise.all(
+          uniqueDates.map(async (dStr) => {
+            const qs = `shop_id=${shopId}&closure_date=${dStr}`;
+            const candidates = [
+              `${API_BASE}/daily-closures/system-totals?${qs}`,
+              `${API_BASE}/daily_closures/system-totals?${qs}`,
+            ];
 
-      const map = {};
-      for (const [k, v] of entries) map[k] = v;
-      setSystemByDate(map);
-    } finally {
-      setLoadingSystem(false);
-    }
-  }, [shopId]);
+            try {
+              const { data } = await tryJsonCandidates(candidates);
+              return [dStr, data || null];
+            } catch {
+              return [dStr, null];
+            }
+          })
+        );
+
+        const map = {};
+        for (const [k, v] of entries) map[k] = v;
+        setSystemByDate(map);
+      } finally {
+        setLoadingSystem(false);
+      }
+    },
+    [shopId, headersReady, API_BASE, tryJsonCandidates]
+  );
 
   useEffect(() => {
     loadSystemTotalsForClosures(closures);
   }, [closures, loadSystemTotalsForClosures]);
 
   // --------------------------------------------------
-  // Rebuild range in DB (fix saved rows)
+  // Rebuild range in DB (fix saved rows) (AUTH)
   // --------------------------------------------------
   const handleRebuildRange = useCallback(async () => {
     if (!shopId || !dateFrom || !dateTo) return;
+    if (!headersReady) return;
+
     setError("");
     try {
-      const url = `${API_BASE}/daily-closures/rebuild-range?shop_id=${shopId}&date_from=${dateFrom}&date_to=${dateTo}`;
-      const res = await fetch(url, { method: "POST" });
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(`Rebuild failed (HTTP ${res.status}): ${txt}`);
+      const qs = `shop_id=${shopId}&date_from=${dateFrom}&date_to=${dateTo}`;
+
+      const candidates = [
+        `${API_BASE}/daily-closures/rebuild-range?${qs}`,
+        `${API_BASE}/daily_closures/rebuild-range?${qs}`,
+      ];
+
+      // Try both; first OK wins
+      let ok = false;
+      let lastStatus = null;
+      let lastText = "";
+
+      for (const url of candidates) {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: authHeadersNoJson,
+          cache: "no-store",
+        });
+
+        if (res.status === 404) {
+          lastStatus = 404;
+          continue;
+        }
+        if (res.status === 401) {
+          throw new Error("Unauthorized (401). Please logout and login again.");
+        }
+        if (!res.ok) {
+          lastStatus = res.status;
+          lastText = await res.text().catch(() => "");
+          continue;
+        }
+        ok = true;
+        break;
       }
+
+      if (!ok) {
+        if (lastStatus === 404) {
+          throw new Error(
+            "Rebuild endpoint not found (404). Backend route mismatch (daily-closures vs daily_closures)."
+          );
+        }
+        throw new Error(`Rebuild failed (HTTP ${lastStatus || "?"}): ${lastText || "Unknown error"}`);
+      }
+
       await loadClosures();
     } catch (err) {
       console.error(err);
       setError(err.message || "Failed to rebuild range.");
     }
-  }, [shopId, dateFrom, dateTo, loadClosures]);
+  }, [shopId, dateFrom, dateTo, headersReady, API_BASE, authHeadersNoJson, loadClosures]);
 
   // --------------------------------------------------
   // Period summary
@@ -197,7 +370,14 @@ function DailyClosureHistoryPage() {
       totalDifference += Number(c.difference_amount || 0);
     }
 
-    return { totalSold, totalProfit, totalExpenses, totalNetProfit, totalDifference, daysCount: (closures || []).length };
+    return {
+      totalSold,
+      totalProfit,
+      totalExpenses,
+      totalNetProfit,
+      totalDifference,
+      daysCount: (closures || []).length,
+    };
   }, [closures]);
 
   const systemSummary = useMemo(() => {
@@ -220,7 +400,7 @@ function DailyClosureHistoryPage() {
 
       const counted = Number(c.total_counted_amount || 0);
       const expectedAfter = Number(sys?.expected_after_expenses_total ?? 0);
-      const diff = sys ? (counted - expectedAfter) : Number(c.difference_amount || 0);
+      const diff = sys ? counted - expectedAfter : Number(c.difference_amount || 0);
 
       totalSold += sold;
       totalProfit += profit;
@@ -229,7 +409,14 @@ function DailyClosureHistoryPage() {
       totalDifference += diff;
     }
 
-    return { totalSold, totalProfit, totalExpenses, totalNetProfit, totalDifference, daysCount: (closures || []).length };
+    return {
+      totalSold,
+      totalProfit,
+      totalExpenses,
+      totalNetProfit,
+      totalDifference,
+      daysCount: (closures || []).length,
+    };
   }, [closures, systemByDate]);
 
   const summary = viewMode === "system" ? systemSummary : savedSummary;
@@ -242,7 +429,7 @@ function DailyClosureHistoryPage() {
   if (loadingShop) {
     return (
       <div style={{ padding: "24px" }}>
-        <p>Loading shop...</p>
+        <p>{headersReady ? "Loading shop..." : "Loading session..."}</p>
       </div>
     );
   }
@@ -280,21 +467,40 @@ function DailyClosureHistoryPage() {
       </p>
 
       {/* Filters */}
-      <div style={{ marginTop: "14px", marginBottom: "10px", display: "flex", flexWrap: "wrap", gap: "10px 16px", alignItems: "center" }}>
+      <div
+        style={{
+          marginTop: "14px",
+          marginBottom: "10px",
+          display: "flex",
+          flexWrap: "wrap",
+          gap: "10px 16px",
+          alignItems: "center",
+        }}
+      >
         <div style={{ fontSize: "13px", color: "#6b7280" }}>
           Period:&nbsp;
           <input
             type="date"
             value={dateFrom}
             onChange={(e) => setDateFrom(e.target.value)}
-            style={{ padding: "4px 8px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px" }}
+            style={{
+              padding: "4px 8px",
+              borderRadius: "999px",
+              border: "1px solid #d1d5db",
+              fontSize: "13px",
+            }}
           />{" "}
           <span style={{ margin: "0 4px" }}>to</span>
           <input
             type="date"
             value={dateTo}
             onChange={(e) => setDateTo(e.target.value)}
-            style={{ padding: "4px 8px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px" }}
+            style={{
+              padding: "4px 8px",
+              borderRadius: "999px",
+              border: "1px solid #d1d5db",
+              fontSize: "13px",
+            }}
           />
         </div>
 
@@ -344,11 +550,7 @@ function DailyClosureHistoryPage() {
           Rebuild range (fix DB)
         </button>
 
-        {loadingSystem && (
-          <span style={{ fontSize: "12px", color: "#6b7280" }}>
-            Recomputing system totals...
-          </span>
-        )}
+        {loadingSystem && <span style={{ fontSize: "12px", color: "#6b7280" }}>Recomputing system totals...</span>}
       </div>
 
       {error && (
@@ -371,7 +573,15 @@ function DailyClosureHistoryPage() {
         <div style={{ fontSize: "14px", fontWeight: 700, marginBottom: "6px" }}>
           Period summary ({viewMode === "system" ? "recomputed" : "saved"})
         </div>
-        <div style={{ fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.12em", color: "#9ca3af", marginBottom: "8px" }}>
+        <div
+          style={{
+            fontSize: "11px",
+            textTransform: "uppercase",
+            letterSpacing: "0.12em",
+            color: "#9ca3af",
+            marginBottom: "8px",
+          }}
+        >
           {dateFrom} to {dateTo}
         </div>
 
@@ -402,12 +612,7 @@ function DailyClosureHistoryPage() {
               style={{
                 fontSize: "16px",
                 fontWeight: 700,
-                color:
-                  summary.totalDifference > 0
-                    ? "#16a34a"
-                    : summary.totalDifference < 0
-                    ? "#b91c1c"
-                    : "#4b5563",
+                color: summary.totalDifference > 0 ? "#16a34a" : summary.totalDifference < 0 ? "#b91c1c" : "#4b5563",
               }}
             >
               {formatMoney(summary.totalDifference)}
@@ -458,13 +663,9 @@ function DailyClosureHistoryPage() {
         </div>
 
         {loadingClosures ? (
-          <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
-            Loading daily closure history...
-          </div>
+          <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>Loading daily closure history...</div>
         ) : closures.length === 0 ? (
-          <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
-            No daily closures for this period.
-          </div>
+          <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>No daily closures for this period.</div>
         ) : subTab === "list" ? (
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
             <thead>
@@ -494,19 +695,14 @@ function DailyClosureHistoryPage() {
                 const sys = systemByDate[day];
 
                 const counted = Number(c.total_counted_amount || 0);
-                const exp = Number(
-                  (viewMode === "system" ? sys?.expenses_total : c.total_expenses) || 0
-                );
+                const exp = Number((viewMode === "system" ? sys?.expenses_total : c.total_expenses) || 0);
 
                 const expectedAfter = Number(sys?.expected_after_expenses_total || 0);
-                const diff = viewMode === "system" && sys
-                  ? (counted - expectedAfter)
-                  : Number(c.difference_amount || 0);
+                const diff = viewMode === "system" && sys ? counted - expectedAfter : Number(c.difference_amount || 0);
 
                 const netProfit = Number(c.total_profit || 0) - exp;
 
-                const diffColor =
-                  diff > 0 ? "#16a34a" : diff < 0 ? "#b91c1c" : "#4b5563";
+                const diffColor = diff > 0 ? "#16a34a" : diff < 0 ? "#b91c1c" : "#4b5563";
 
                 const isSelected = selectedClosureId === c.id;
 
@@ -543,28 +739,14 @@ function DailyClosureHistoryPage() {
                       </button>
                     </td>
 
-                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                      {formatMoney(c.total_sold_amount || 0)}
-                    </td>
-                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                      {formatMoney(c.total_profit || 0)}
-                    </td>
-                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                      {formatMoney(counted)}
-                    </td>
-                    <td style={{ padding: "8px 4px", textAlign: "right", color: diffColor }}>
-                      {formatMoney(diff)}
-                    </td>
-                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                      {formatMoney(exp)}
-                    </td>
-                    <td style={{ padding: "8px 4px", textAlign: "right", color: "#16a34a" }}>
-                      {formatMoney(netProfit)}
-                    </td>
+                    <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(c.total_sold_amount || 0)}</td>
+                    <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(c.total_profit || 0)}</td>
+                    <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(counted)}</td>
+                    <td style={{ padding: "8px 4px", textAlign: "right", color: diffColor }}>{formatMoney(diff)}</td>
+                    <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(exp)}</td>
+                    <td style={{ padding: "8px 4px", textAlign: "right", color: "#16a34a" }}>{formatMoney(netProfit)}</td>
                     <td style={{ padding: "8px 4px" }}>
-                      <span style={{ fontSize: "11px", color: "#6b7280" }}>
-                        {c.note || ""}
-                      </span>
+                      <span style={{ fontSize: "11px", color: "#6b7280" }}>{c.note || ""}</span>
                     </td>
                   </tr>
                 );
@@ -574,23 +756,17 @@ function DailyClosureHistoryPage() {
         ) : (
           <div style={{ padding: "6px 4px", fontSize: "13px" }}>
             {!selectedClosure ? (
-              <div style={{ color: "#6b7280" }}>
-                Select a closure in the list tab to see full details.
-              </div>
+              <div style={{ color: "#6b7280" }}>Select a closure in the list tab to see full details.</div>
             ) : (
               (() => {
                 const day = toISODateOnly(selectedClosure.closure_date);
                 const sys = systemByDate[day];
 
                 const counted = Number(selectedClosure.total_counted_amount || 0);
-                const exp = Number(
-                  (viewMode === "system" ? sys?.expenses_total : selectedClosure.total_expenses) || 0
-                );
+                const exp = Number((viewMode === "system" ? sys?.expenses_total : selectedClosure.total_expenses) || 0);
 
                 const expectedAfter = Number(sys?.expected_after_expenses_total || 0);
-                const diff = viewMode === "system" && sys
-                  ? (counted - expectedAfter)
-                  : Number(selectedClosure.difference_amount || 0);
+                const diff = viewMode === "system" && sys ? counted - expectedAfter : Number(selectedClosure.difference_amount || 0);
 
                 const netProfit = Number(selectedClosure.total_profit || 0) - exp;
 
@@ -622,45 +798,29 @@ function DailyClosureHistoryPage() {
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", rowGap: "8px", columnGap: "16px" }}>
                       <div>
                         <div style={{ color: "#6b7280" }}>Total sold</div>
-                        <div style={{ fontSize: "16px", fontWeight: 700 }}>
-                          {formatMoney(selectedClosure.total_sold_amount || 0)}
-                        </div>
+                        <div style={{ fontSize: "16px", fontWeight: 700 }}>{formatMoney(selectedClosure.total_sold_amount || 0)}</div>
                       </div>
                       <div>
                         <div style={{ color: "#6b7280" }}>Total profit</div>
-                        <div style={{ fontSize: "16px", fontWeight: 700, color: "#16a34a" }}>
-                          {formatMoney(selectedClosure.total_profit || 0)}
-                        </div>
+                        <div style={{ fontSize: "16px", fontWeight: 700, color: "#16a34a" }}>{formatMoney(selectedClosure.total_profit || 0)}</div>
                       </div>
                       <div>
                         <div style={{ color: "#6b7280" }}>Counted total</div>
-                        <div style={{ fontSize: "16px", fontWeight: 700 }}>
-                          {formatMoney(counted)}
-                        </div>
+                        <div style={{ fontSize: "16px", fontWeight: 700 }}>{formatMoney(counted)}</div>
                       </div>
                       <div>
                         <div style={{ color: "#6b7280" }}>Difference ({viewMode})</div>
-                        <div
-                          style={{
-                            fontSize: "16px",
-                            fontWeight: 700,
-                            color: diff > 0 ? "#16a34a" : diff < 0 ? "#b91c1c" : "#4b5563",
-                          }}
-                        >
+                        <div style={{ fontSize: "16px", fontWeight: 700, color: diff > 0 ? "#16a34a" : diff < 0 ? "#b91c1c" : "#4b5563" }}>
                           {formatMoney(diff)}
                         </div>
                       </div>
                       <div>
                         <div style={{ color: "#6b7280" }}>Expenses ({viewMode})</div>
-                        <div style={{ fontSize: "16px", fontWeight: 700 }}>
-                          {formatMoney(exp)}
-                        </div>
+                        <div style={{ fontSize: "16px", fontWeight: 700 }}>{formatMoney(exp)}</div>
                       </div>
                       <div>
                         <div style={{ color: "#6b7280" }}>Net profit ({viewMode})</div>
-                        <div style={{ fontSize: "16px", fontWeight: 700, color: "#16a34a" }}>
-                          {formatMoney(netProfit)}
-                        </div>
+                        <div style={{ fontSize: "16px", fontWeight: 700, color: "#16a34a" }}>{formatMoney(netProfit)}</div>
                       </div>
                     </div>
 
