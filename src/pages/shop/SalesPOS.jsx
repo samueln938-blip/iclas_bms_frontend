@@ -23,7 +23,13 @@ function safeNumber(raw) {
   return Number.isFinite(n) ? n : 0;
 }
 
-function CalculatorModal({ open, initialValue, title = "Calculator", onClose, onApply }) {
+function CalculatorModal({
+  open,
+  initialValue,
+  title = "Calculator",
+  onClose,
+  onApply,
+}) {
   const [val, setVal] = useState("");
 
   useEffect(() => {
@@ -91,12 +97,23 @@ function CalculatorModal({ open, initialValue, title = "Calculator", onClose, on
           padding: 14,
         }}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
           <div style={{ fontSize: 14, fontWeight: 900 }}>{title}</div>
           <button
             type="button"
             onClick={onClose}
-            style={{ border: "none", background: "transparent", fontSize: 18, cursor: "pointer" }}
+            style={{
+              border: "none",
+              background: "transparent",
+              fontSize: 18,
+              cursor: "pointer",
+            }}
             title="Close"
           >
             ✕
@@ -120,15 +137,31 @@ function CalculatorModal({ open, initialValue, title = "Calculator", onClose, on
               textAlign: "right",
             }}
           />
-          <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280", textAlign: "right" }}>
+          <div
+            style={{
+              marginTop: 6,
+              fontSize: 12,
+              color: "#6b7280",
+              textAlign: "right",
+            }}
+          >
             Preview:{" "}
             <strong style={{ color: "#111827" }}>
-              {safeNumber(val).toLocaleString("en-RW", { maximumFractionDigits: 3 })}
+              {safeNumber(val).toLocaleString("en-RW", {
+                maximumFractionDigits: 3,
+              })}
             </strong>
           </div>
         </div>
 
-        <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+        <div
+          style={{
+            marginTop: 10,
+            display: "grid",
+            gridTemplateColumns: "repeat(3, 1fr)",
+            gap: 8,
+          }}
+        >
           <Key onClick={() => append("7")}>7</Key>
           <Key onClick={() => append("8")}>8</Key>
           <Key onClick={() => append("9")}>9</Key>
@@ -291,11 +324,12 @@ export default function SalesPOS() {
   );
 
   // ✅ Called by CurrentSaleTab after cancel OR after successful save
+  // ✅ FIX: do NOT force tab=current here, or it will override onGoToday() navigation
   const clearEditSale = useCallback(() => {
     setEditSaleId(null);
     const sp = new URLSearchParams(location.search);
     sp.delete("editSaleId");
-    sp.set("tab", "current");
+    // keep current tab as-is (do not set tab=current)
     navigateWithSearch(sp);
   }, [location.search, navigateWithSearch]);
 
@@ -396,7 +430,9 @@ export default function SalesPOS() {
       if (!stockOk) throw new Error("Failed to load stock.");
 
       // ✅ decimals safe: 0.5 remaining pieces should count as positive
-      const positiveStock = (stockData || []).filter((row) => safeNumber(row?.remaining_pieces) > 0);
+      const positiveStock = (stockData || []).filter(
+        (row) => safeNumber(row?.remaining_pieces) > 0
+      );
 
       setShop(shopData);
       setStockRows(positiveStock);
@@ -452,14 +488,20 @@ export default function SalesPOS() {
               cursor: canGoWorkspace ? "pointer" : "not-allowed",
               fontWeight: 800,
             }}
-            title={canGoWorkspace ? "Back to Shop Workspace" : "Only Admin/Owner/Manager can open workspace"}
+            title={
+              canGoWorkspace
+                ? "Back to Shop Workspace"
+                : "Only Admin/Owner/Manager can open workspace"
+            }
           >
             ← Back to Shop Workspace
           </button>
 
           <div style={{ fontSize: "18px", fontWeight: 900, marginTop: "4px" }}>
             Sales & POS{" "}
-            <span style={{ fontSize: "13px", color: "#2563eb", fontWeight: 700 }}>· {shopName}</span>
+            <span style={{ fontSize: "13px", color: "#2563eb", fontWeight: 700 }}>
+              · {shopName}
+            </span>
           </div>
         </div>
 
