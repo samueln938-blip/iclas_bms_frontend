@@ -27,6 +27,14 @@ function AppLayout({ children }) {
   // Owner + Manager share same layout view now
   const isGlobalViewer = isOwner || isManager;
 
+  // ✅ Detect routes that need "full-bleed" space (no extra layout padding)
+  // Purchases pages often use wide tables — we let them control their own padding.
+  const pathname = location.pathname || "";
+  const isWidePage =
+    pathname.includes("/purchases") ||
+    pathname.includes("/pos") ||
+    pathname.includes("/stock"); // keep safe for other wide grids if needed
+
   // -------- Responsive sidebar (mobile collapse) --------
   const [isMobile, setIsMobile] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -237,6 +245,7 @@ function AppLayout({ children }) {
     flex: 1,
     minHeight: 0,
     position: "relative", // for overlay anchoring
+    overflow: "hidden", // ✅ important: keep scrolling inside MAIN only
   };
 
   const overlayStyle = {
@@ -287,12 +296,19 @@ function AppLayout({ children }) {
     gap: "4px",
   };
 
+  // ✅ MAIN is the scroll container (both axes), inner wrapper provides padding.
   const mainStyle = {
     flex: 1,
-    padding: isMobile ? "16px 14px" : "24px 32px",
     backgroundColor: "#f3f4f6",
-    overflowY: "auto",
     minWidth: 0,
+    overflow: "auto", // ✅ enables horizontal scroll for wide tables (no clipping)
+    scrollbarGutter: "stable", // ✅ reduces layout shift when scrollbar appears (supported in modern Chrome)
+  };
+
+  const mainInnerStyle = {
+    padding: isWidePage ? "0" : isMobile ? "16px 14px" : "24px 32px",
+    minWidth: 0,
+    boxSizing: "border-box",
   };
 
   const sidebarLinkBase = {
@@ -378,7 +394,6 @@ function AppLayout({ children }) {
             <>
               <div style={sidebarSectionTitleStyle}>GLOBAL</div>
               <nav style={navListStyle}>
-                {/* ✅ Back to ICLAS Summary any time */}
                 <NavLink
                   to="/iclas"
                   onClick={closeSidebarIfMobile}
@@ -412,7 +427,6 @@ function AppLayout({ children }) {
                   Shops Management
                 </NavLink>
 
-                {/* Manager can open it; page itself will be read-only for manager */}
                 <NavLink
                   to="/admin/users"
                   onClick={closeSidebarIfMobile}
@@ -498,7 +512,7 @@ function AppLayout({ children }) {
                     // ✅ Cashier clicking a shop goes straight to POS
                     if (isCashier) return navigate(`/shops/${shop.id}/pos`);
 
-                    // Owner/Manager → shop workspace (your routes support /shops/:id)
+                    // Owner/Manager → shop workspace
                     return navigate(`/shops/${shop.id}`);
                   }}
                 >
@@ -511,7 +525,9 @@ function AppLayout({ children }) {
         </aside>
 
         {/* MAIN CONTENT */}
-        <main style={mainStyle}>{children}</main>
+        <main style={mainStyle}>
+          <div style={mainInnerStyle}>{children}</div>
+        </main>
       </div>
     </div>
   );
