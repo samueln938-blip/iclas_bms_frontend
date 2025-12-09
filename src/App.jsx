@@ -126,6 +126,65 @@ function RequireShopAccess({ children }) {
 }
 
 // =====================================
+// ✅ Error Boundary (prevents blank screen)
+// =====================================
+class PageErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, info) {
+    // Keep console logs for debugging
+    console.error("❌ Page crashed:", error);
+    console.error("❌ Component stack:", info?.componentStack);
+  }
+
+  render() {
+    if (!this.state.hasError) return this.props.children;
+
+    const title = this.props.title || "This page crashed";
+    const hint =
+      this.props.hint ||
+      "This usually happens when hooks are called conditionally (React error #310). Check the console for details.";
+
+    return (
+      <div className="h-screen flex items-center justify-center p-6">
+        <div className="max-w-xl w-full bg-white rounded-2xl shadow p-6 border border-gray-200">
+          <div className="text-xl font-semibold text-red-600">{title}</div>
+          <div className="mt-2 text-sm text-gray-700">{hint}</div>
+
+          <div className="mt-4 text-xs text-gray-600 whitespace-pre-wrap bg-gray-50 border border-gray-200 rounded-xl p-3">
+            {String(this.state.error?.message || this.state.error || "Unknown error")}
+          </div>
+
+          <div className="mt-5 flex gap-3">
+            <button
+              className="px-4 py-2 rounded-full bg-gray-900 text-white font-semibold"
+              onClick={() => window.location.reload()}
+              type="button"
+            >
+              Reload
+            </button>
+            <button
+              className="px-4 py-2 rounded-full border border-gray-300 font-semibold"
+              onClick={() => this.setState({ hasError: false, error: null })}
+              type="button"
+            >
+              Try again
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+}
+
+// =====================================
 // Simple pages
 // =====================================
 function NotFound() {
@@ -250,7 +309,12 @@ function ProtectedApp() {
             path="/shops/:shopId/purchases"
             element={
               <RequireAuth allowedRoles={["admin", "manager"]}>
-                <ShopPurchasesPage />
+                <PageErrorBoundary
+                  title="Purchases page crashed"
+                  hint="React error #310 = hooks order mismatch. Most often caused by conditional hooks in this page or in a custom hook (like useAuth). Check console for the real stack."
+                >
+                  <ShopPurchasesPage />
+                </PageErrorBoundary>
               </RequireAuth>
             }
           />
