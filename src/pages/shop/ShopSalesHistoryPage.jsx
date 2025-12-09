@@ -7,60 +7,168 @@ import { useAuth } from "../../context/AuthContext.jsx";
 import { API_BASE as CLIENT_API_BASE } from "../../api/client.jsx";
 const API_BASE = CLIENT_API_BASE;
 
-function formatMoney(value) {
-  if (value === null || value === undefined || value === "") return "0";
-  const num = Number(value) || 0;
-  return num.toLocaleString("en-RW", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+// =========================
+// Timezone helpers (Kigali)
+// =========================
+const KIGALI_TZ = "Africa/Kigali";
+const HISTORY_STEP_DAYS = 30;
+const HISTORY_MAX_DAYS = 3650; // 10 years safety cap
+
+function _fmtPartsYMD(date) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: KIGALI_TZ,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(date);
+
+    const y = parts.find((p) => p.type === "year")?.value;
+    const m = parts.find((p) => p.type === "month")?.value;
+    const d = parts.find((p) => p.type === "day")?.value;
+    if (!y || !m || !d) return "";
+    return `${y}-${m}-${d}`;
+  } catch {
+    return "";
+  }
+}
+
+function _hasTZInfo(s) {
+  return /([zZ]|[+-]\d{2}:\d{2})$/.test(String(s || "").trim());
+}
+
+/**
+ * Parse backend timestamps safely:
+ * - If it has timezone (Z or +02:00), normal Date parsing is fine.
+ * - If it's "naive" (no timezone), we assume it represents Kigali local time (UTC+2),
+ *   and convert it to a real Date object consistently.
+ */
+function parseDateAssumeKigali(raw) {
+  if (!raw) return null;
+  if (raw instanceof Date) return raw;
+
+  const s0 = String(raw).trim();
+  if (!s0) return null;
+
+  // normalize "YYYY-MM-DD HH:mm:ss" -> "YYYY-MM-DDTHH:mm:ss"
+  const s = s0.includes("T") ? s0 : s0.replace(" ", "T");
+
+  // timezone-aware string: trust it
+  if (_hasTZInfo(s)) {
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  // date-only: "YYYY-MM-DD"
+  const mDate = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (mDate) {
+    const y = Number(mDate[1]);
+    const mo = Number(mDate[2]);
+    const da = Number(mDate[3]);
+    if (!y || !mo || !da) return null;
+
+    // Kigali midnight -> UTC is minus 2 hours
+    return new Date(Date.UTC(y, mo - 1, da, -2, 0, 0, 0));
+  }
+
+  // datetime without tz: "YYYY-MM-DDTHH:mm(:ss(.ms)?)?"
+  const mDT =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/.exec(s);
+
+  if (mDT) {
+    const y = Number(mDT[1]);
+    const mo = Number(mDT[2]);
+    const da = Number(mDT[3]);
+    const hh = Number(mDT[4]);
+    const mi = Number(mDT[5]);
+    const ss = Number(mDT[6] || 0);
+    const ms = Number(mDT[7] || 0);
+    if (!y || !mo || !da) return null;
+
+    // Assume input is Kigali local time (UTC+2) => UTC = local - 2h
+    return new Date(Date.UTC(y, mo - 1, da, hh - 2, mi, ss, ms));
+  }
+
+  // fallback (best effort)
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 function todayDateString() {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function ymdFromISO(iso) {
-  if (!iso) return "";
-  if (typeof iso === "string" && iso.length >= 10 && iso[4] === "-" && iso[7] === "-") return iso.slice(0, 10);
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function formatDateTime(iso) {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleString("en-RW", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-function formatTimeHM(iso) {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString("en-RW", { hour: "2-digit", minute: "2-digit" });
+  // ✅ Kigali date (even if device timezone is wrong)
+  return _fmtPartsYMD(new Date()) || (() => {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  })();
 }
 
 function addDaysYMD(ymd, deltaDays) {
-  if (!ymd) return "";
-  const d = new Date(`${ymd}T00:00:00`);
-  if (Number.isNaN(d.getTime())) return "";
-  d.setDate(d.getDate() + deltaDays);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd || "").trim());
+  if (!m) return "";
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const da = Number(m[3]);
+  if (!y || !mo || !da) return "";
+
+  // Do date math in UTC to avoid timezone drift
+  const base = Date.UTC(y, mo - 1, da);
+  const d = new Date(base + deltaDays * 86400000);
+  const yy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${yy}-${mm}-${dd}`;
+}
+
+function ymdFromISO(raw) {
+  const d = parseDateAssumeKigali(raw);
+  if (!d) return "";
+  return _fmtPartsYMD(d);
+}
+
+function formatDateTime(iso) {
+  const d = parseDateAssumeKigali(iso);
+  if (!d) return "";
+  try {
+    return new Intl.DateTimeFormat("en-RW", {
+      timeZone: KIGALI_TZ,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(d);
+  } catch {
+    return "";
+  }
+}
+
+function formatTimeHM(iso) {
+  const d = parseDateAssumeKigali(iso);
+  if (!d) return "";
+  try {
+    return new Intl.DateTimeFormat("en-RW", {
+      timeZone: KIGALI_TZ,
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(d);
+  } catch {
+    return "";
+  }
+}
+
+// =========================
+// Money helpers
+// =========================
+function formatMoney(value) {
+  if (value === null || value === undefined || value === "") return "0";
+  const num = Number(value) || 0;
+  return num.toLocaleString("en-RW", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  });
 }
 
 /**
@@ -83,7 +191,13 @@ function normalizePaymentType(raw) {
 
 function getSaleTotals(sale) {
   const total =
-    Number(sale?.total_sale_amount ?? sale?.total_amount ?? sale?.sale_amount ?? sale?.total ?? 0) || 0;
+    Number(
+      sale?.total_sale_amount ??
+        sale?.total_amount ??
+        sale?.sale_amount ??
+        sale?.total ??
+        0
+    ) || 0;
   const profit = Number(sale?.total_profit ?? sale?.profit ?? 0) || 0;
   return { total, profit };
 }
@@ -124,9 +238,52 @@ function extractLineFields(line) {
       : qty * unitPrice;
 
   const profit =
-    line?.line_profit != null ? Number(line.line_profit) : line?.profit != null ? Number(line.profit) : 0;
+    line?.line_profit != null
+      ? Number(line.line_profit)
+      : line?.profit != null
+      ? Number(line.profit)
+      : 0;
 
-  return { itemId, qty, unitPrice, total: Number(total) || 0, profit: Number(profit) || 0 };
+  return {
+    itemId,
+    qty,
+    unitPrice,
+    total: Number(total) || 0,
+    profit: Number(profit) || 0,
+  };
+}
+
+function saleSortKeyMs(sale) {
+  const d = parseDateAssumeKigali(sale?.sale_date);
+  return d ? d.getTime() : 0;
+}
+
+function mergeSalesUnique(prevList, nextList) {
+  const map = new Map();
+
+  for (const s of prevList || []) {
+    if (s && s.id != null) map.set(String(s.id), s);
+  }
+  for (const s of nextList || []) {
+    if (s && s.id != null) map.set(String(s.id), s);
+  }
+
+  const merged = Array.from(map.values());
+
+  merged.sort((a, b) => {
+    const t = saleSortKeyMs(b) - saleSortKeyMs(a);
+    if (t !== 0) return t;
+    const aid = Number(a?.id ?? 0);
+    const bid = Number(b?.id ?? 0);
+    return bid - aid;
+  });
+
+  return merged;
+}
+
+function clampDaysBack(n) {
+  const x = Math.max(1, Math.floor(Number(n || 0)));
+  return Math.min(HISTORY_MAX_DAYS, x);
 }
 
 function SalesHistoryPage() {
@@ -134,7 +291,6 @@ function SalesHistoryPage() {
   const navigate = useNavigate();
 
   // ✅ Use the same auth headers as Sales & POS
-  // Some pages expose authHeadersNoJson, others expose authHeaders.
   const auth = useAuth();
   const authHeadersNoJson = auth?.authHeadersNoJson || auth?.authHeaders || {};
 
@@ -142,14 +298,18 @@ function SalesHistoryPage() {
   const [loadingShop, setLoadingShop] = useState(true);
   const [error, setError] = useState("");
 
-  // Tabs
-  const [tab, setTab] = useState("today"); // today | range | month | credits | search
+  // ✅ NEW: Default is All history (not just today)
+  const [tab, setTab] = useState("history"); // history | today | range | month | credits | search
 
   // View mode: items (detail) OR receipts (summary)
   const [viewMode, setViewMode] = useState("items");
 
   // Payment filter: all / cash / card / mobile / credit
   const [paymentFilter, setPaymentFilter] = useState("all");
+
+  // ✅ NEW: All-history days back + draft input
+  const [historyDaysBack, setHistoryDaysBack] = useState(30);
+  const [historyDaysBackDraft, setHistoryDaysBackDraft] = useState("30");
 
   // Today
   const [selectedDate, setSelectedDate] = useState(todayDateString());
@@ -181,24 +341,26 @@ function SalesHistoryPage() {
   const [autoRefreshToday, setAutoRefreshToday] = useState(true);
   const autoTimerRef = useRef(null);
 
-  // Last sync info (useful for “is it fresh?” debugging)
+  // Last sync info
   const [lastSalesSyncAt, setLastSalesSyncAt] = useState(null);
 
   const shopName = shop?.name || `Shop ${shopId}`;
 
   const headersReady = useMemo(() => {
-    return !!authHeadersNoJson && typeof authHeadersNoJson === "object" && Object.keys(authHeadersNoJson).length > 0;
+    return (
+      !!authHeadersNoJson &&
+      typeof authHeadersNoJson === "object" &&
+      Object.keys(authHeadersNoJson).length > 0
+    );
   }, [authHeadersNoJson]);
 
   // ✅ IMPORTANT: avoid infinite "Loading session..."
-  // If headers aren't ready yet, stop blocking the whole page.
   useEffect(() => {
     if (!headersReady) {
       setLoadingShop(false);
       setShop(null);
       setError("Session not ready. Please refresh the page or login again.");
     } else {
-      // clear the session warning once headers appear
       if (error === "Session not ready. Please refresh the page or login again.") {
         setError("");
       }
@@ -210,19 +372,37 @@ function SalesHistoryPage() {
   // Decide active date range based on tab
   // -------------------------
   const activeDateFrom = useMemo(() => {
+    if (tab === "history") {
+      const to = todayDateString();
+      const days = clampDaysBack(historyDaysBack);
+      return addDaysYMD(to, -days + 1);
+    }
     if (tab === "today") return selectedDate;
     if (tab === "range") return rangeFrom;
     if (tab === "credits") return creditFrom;
-    if (tab === "search") return addDaysYMD(todayDateString(), -Math.max(1, Number(searchDaysBack) || 30) + 1);
+    if (tab === "search")
+      return addDaysYMD(
+        todayDateString(),
+        -Math.max(1, Number(searchDaysBack) || 30) + 1
+      );
     if (tab === "month") {
       const [y, m] = String(selectedMonth || "").split("-");
       if (!y || !m) return todayDateString();
       return `${y}-${m}-01`;
     }
     return selectedDate;
-  }, [tab, selectedDate, rangeFrom, creditFrom, searchDaysBack, selectedMonth]);
+  }, [
+    tab,
+    historyDaysBack,
+    selectedDate,
+    rangeFrom,
+    creditFrom,
+    searchDaysBack,
+    selectedMonth,
+  ]);
 
   const activeDateTo = useMemo(() => {
+    if (tab === "history") return todayDateString();
     if (tab === "today") return selectedDate;
     if (tab === "range") return rangeTo;
     if (tab === "credits") return creditTo;
@@ -232,10 +412,10 @@ function SalesHistoryPage() {
       const y = Number(yStr);
       const m = Number(mStr);
       if (!y || !m) return todayDateString();
-      const last = new Date(y, m, 0); // last day of month
-      const yy = last.getFullYear();
-      const mm = String(last.getMonth() + 1).padStart(2, "0");
-      const dd = String(last.getDate()).padStart(2, "0");
+      const last = new Date(Date.UTC(y, m, 0)); // last day of month in UTC-safe way
+      const yy = last.getUTCFullYear();
+      const mm = String(last.getUTCMonth() + 1).padStart(2, "0");
+      const dd = String(last.getUTCDate()).padStart(2, "0");
       return `${yy}-${mm}-${dd}`;
     }
     return selectedDate;
@@ -272,7 +452,6 @@ function SalesHistoryPage() {
   const loadShop = useCallback(async () => {
     if (!shopId) return;
 
-    // ✅ Don't keep spinner forever if auth headers are not ready
     if (!headersReady) {
       setLoadingShop(false);
       setShop(null);
@@ -303,7 +482,7 @@ function SalesHistoryPage() {
       let winner = null;
       try {
         winner = await Promise.any(tasks);
-      } catch (e) {
+      } catch {
         winner = null;
       }
 
@@ -324,7 +503,7 @@ function SalesHistoryPage() {
     } finally {
       if (reqId === shopReqIdRef.current) setLoadingShop(false);
     }
-  }, [API_BASE, authHeadersNoJson, fetchJson, headersReady, shopId]);
+  }, [shopId, headersReady, fetchJson, authHeadersNoJson]);
 
   useEffect(() => {
     loadShop();
@@ -359,7 +538,7 @@ function SalesHistoryPage() {
       let winner = null;
       try {
         winner = await Promise.any(tasks);
-      } catch (e) {
+      } catch {
         winner = null;
       }
 
@@ -379,7 +558,7 @@ function SalesHistoryPage() {
     } finally {
       if (reqId === stockReqIdRef.current) setLoadingStock(false);
     }
-  }, [API_BASE, authHeadersNoJson, fetchJson, headersReady, shopId]);
+  }, [shopId, headersReady, fetchJson, authHeadersNoJson]);
 
   useEffect(() => {
     loadStock();
@@ -392,60 +571,83 @@ function SalesHistoryPage() {
   }, [stockRows]);
 
   // -------------------------
-  // Load sales for active date range (AUTH)
+  // Load sales helper (AUTH)
+  // mode: "replace" | "append"
   // -------------------------
-  const loadSales = useCallback(async () => {
-    if (!shopId || !activeDateFrom || !activeDateTo) return;
-    if (!headersReady) return;
+  const loadSales = useCallback(
+    async ({ dateFrom, dateTo, mode = "replace" } = {}) => {
+      if (!shopId) return;
+      if (!headersReady) return;
 
-    if (salesAbortRef.current) salesAbortRef.current.abort();
-    const controller = new AbortController();
-    salesAbortRef.current = controller;
+      const from = dateFrom || activeDateFrom;
+      const to = dateTo || activeDateTo;
+      if (!from || !to) return;
 
-    const reqId = ++salesReqIdRef.current;
+      if (salesAbortRef.current) salesAbortRef.current.abort();
+      const controller = new AbortController();
+      salesAbortRef.current = controller;
 
-    setLoadingSales(true);
-    setError("");
+      const reqId = ++salesReqIdRef.current;
 
-    try {
-      const url = `${API_BASE}/sales/?shop_id=${shopId}&date_from=${activeDateFrom}&date_to=${activeDateTo}`;
-      const json = await fetchJson(url, authHeadersNoJson, controller.signal);
-      const list = Array.isArray(json) ? json : Array.isArray(json?.sales) ? json.sales : [];
-
-      if (reqId !== salesReqIdRef.current) return;
-
-      setSales(list || []);
-      const nowIso = new Date().toISOString();
-      setLastSalesSyncAt(nowIso);
+      setLoadingSales(true);
+      setError("");
 
       try {
-        window.dispatchEvent(
-          new CustomEvent("iclas:sales-history-synced", {
-            detail: {
-              shopId,
-              dateFrom: activeDateFrom,
-              dateTo: activeDateTo,
-              at: Date.now(),
-            },
-          })
-        );
-      } catch {}
-    } catch (err) {
-      if (err?.name === "AbortError") return;
-      console.error(err);
+        const url = `${API_BASE}/sales/?shop_id=${shopId}&date_from=${from}&date_to=${to}`;
+        const json = await fetchJson(url, authHeadersNoJson, controller.signal);
+        const list = Array.isArray(json) ? json : Array.isArray(json?.sales) ? json.sales : [];
 
-      if (reqId !== salesReqIdRef.current) return;
+        if (reqId !== salesReqIdRef.current) return;
 
-      setSales([]);
-      setError(err.message || "Failed to load sales history.");
-    } finally {
-      if (reqId === salesReqIdRef.current) setLoadingSales(false);
-    }
-  }, [API_BASE, activeDateFrom, activeDateTo, authHeadersNoJson, fetchJson, headersReady, shopId]);
+        if (mode === "append") setSales((prev) => mergeSalesUnique(prev, list || []));
+        else setSales(list || []);
 
+        const nowIso = new Date().toISOString();
+        setLastSalesSyncAt(nowIso);
+
+        try {
+          window.dispatchEvent(
+            new CustomEvent("iclas:sales-history-synced", {
+              detail: { shopId, dateFrom: from, dateTo: to, at: Date.now() },
+            })
+          );
+        } catch {}
+      } catch (err) {
+        if (err?.name === "AbortError") return;
+        console.error(err);
+
+        if (reqId !== salesReqIdRef.current) return;
+
+        if (mode !== "append") setSales([]);
+        setError(err.message || "Failed to load sales history.");
+      } finally {
+        if (reqId === salesReqIdRef.current) setLoadingSales(false);
+      }
+    },
+    [shopId, headersReady, activeDateFrom, activeDateTo, fetchJson, authHeadersNoJson]
+  );
+
+  // ✅ Auto-load sales for NON-history tabs (history is manual/controlled)
   useEffect(() => {
-    loadSales();
-  }, [loadSales]);
+    if (tab === "history") return;
+    loadSales({ mode: "replace" });
+  }, [tab, loadSales]);
+
+  // ✅ History initial load when entering tab / shop changes
+  useEffect(() => {
+    if (tab !== "history") return;
+    if (!headersReady || !shopId) return;
+
+    // sync draft UI with actual value
+    setHistoryDaysBackDraft(String(historyDaysBack));
+
+    const to = todayDateString();
+    const days = clampDaysBack(historyDaysBack);
+    const from = addDaysYMD(to, -days + 1);
+
+    loadSales({ dateFrom: from, dateTo: to, mode: "replace" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, shopId, headersReady]);
 
   // -------------------------
   // Auto-refresh Today tab
@@ -460,7 +662,7 @@ function SalesHistoryPage() {
     if (!autoRefreshToday) return;
 
     autoTimerRef.current = window.setInterval(() => {
-      loadSales();
+      loadSales({ mode: "replace" });
     }, 8000);
 
     return () => {
@@ -470,6 +672,45 @@ function SalesHistoryPage() {
       }
     };
   }, [tab, autoRefreshToday, loadSales]);
+
+  // -------------------------
+  // History actions
+  // -------------------------
+  const applyHistoryDays = useCallback(async () => {
+    const days = clampDaysBack(historyDaysBackDraft);
+    setHistoryDaysBack(days);
+    setHistoryDaysBackDraft(String(days));
+
+    const to = todayDateString();
+    const from = addDaysYMD(to, -days + 1);
+
+    await loadSales({ dateFrom: from, dateTo: to, mode: "replace" });
+  }, [historyDaysBackDraft, loadSales]);
+
+  const loadOlderHistory = useCallback(async () => {
+    const cur = clampDaysBack(historyDaysBack);
+    if (cur >= HISTORY_MAX_DAYS) return;
+
+    const next = clampDaysBack(cur + HISTORY_STEP_DAYS);
+
+    const to = todayDateString();
+    const curFrom = addDaysYMD(to, -cur + 1);     // current earliest day
+    const nextFrom = addDaysYMD(to, -next + 1);   // new earliest day
+    const extraTo = addDaysYMD(curFrom, -1);      // day before current range
+
+    // If ranges overlap or invalid, just expand without fetching
+    if (!nextFrom || !extraTo || extraTo < nextFrom) {
+      setHistoryDaysBack(next);
+      setHistoryDaysBackDraft(String(next));
+      return;
+    }
+
+    // Fetch only the additional older slice and APPEND
+    await loadSales({ dateFrom: nextFrom, dateTo: extraTo, mode: "append" });
+
+    setHistoryDaysBack(next);
+    setHistoryDaysBackDraft(String(next));
+  }, [historyDaysBack, loadSales]);
 
   // -------------------------
   // Filter by payment / credit (normalized)
@@ -516,45 +757,49 @@ function SalesHistoryPage() {
   }, [sales, paymentFilter, tab, searchQuery, stockByItemId]);
 
   // -------------------------
-  // Flatten items (detail view)
+  // Build items rows for a given sales list (FIXED: day-specific support)
   // -------------------------
-  const itemsRows = useMemo(() => {
-    const rows = [];
-    for (const sale of filteredSales || []) {
-      const saleTime = sale.sale_date;
-      const paymentType = normalizePaymentType(sale.payment_type);
-      const creditOpen = isOpenCreditSale(sale);
+  const buildItemsRows = useCallback(
+    (salesList) => {
+      const rows = [];
+      for (const sale of salesList || []) {
+        const saleTime = sale.sale_date;
+        const paymentType = normalizePaymentType(sale.payment_type);
+        const creditOpen = isOpenCreditSale(sale);
 
-      const lines = pickLines(sale);
+        const lines = pickLines(sale);
+        for (const line of lines) {
+          const { itemId, qty, unitPrice, total, profit } = extractLineFields(line);
 
-      for (const line of lines) {
-        const { itemId, qty, unitPrice, total, profit } = extractLineFields(line);
+          const stockRow = itemId ? stockByItemId[itemId] : null;
+          const itemName =
+            stockRow?.item_name ||
+            stockRow?.item?.name ||
+            line?.item_name ||
+            line?.name ||
+            (itemId != null ? `Item #${itemId}` : "Unknown item");
 
-        const stockRow = itemId ? stockByItemId[itemId] : null;
-        const itemName =
-          stockRow?.item_name ||
-          stockRow?.item?.name ||
-          line?.item_name ||
-          line?.name ||
-          (itemId != null ? `Item #${itemId}` : "Unknown item");
-
-        rows.push({
-          id: `${sale.id}-${line.id ?? Math.random().toString(16).slice(2)}`,
-          saleId: sale.id,
-          time: saleTime,
-          itemId,
-          itemName,
-          qtyPieces: qty,
-          unitPrice,
-          total,
-          profit,
-          paymentType,
-          isCreditOpen: creditOpen,
-        });
+          rows.push({
+            id: `${sale.id}-${line.id ?? Math.random().toString(16).slice(2)}`,
+            saleId: sale.id,
+            time: saleTime,
+            itemId,
+            itemName,
+            qtyPieces: qty,
+            unitPrice,
+            total,
+            profit,
+            paymentType,
+            isCreditOpen: creditOpen,
+          });
+        }
       }
-    }
-    return rows;
-  }, [filteredSales, stockByItemId]);
+      return rows;
+    },
+    [stockByItemId]
+  );
+
+  const allItemsRows = useMemo(() => buildItemsRows(filteredSales), [filteredSales, buildItemsRows]);
 
   // -------------------------
   // Summary for active range
@@ -574,7 +819,7 @@ function SalesHistoryPage() {
       if (cb > 0) openCredit += cb;
     }
 
-    for (const row of itemsRows || []) piecesSold += Number(row.qtyPieces || 0);
+    for (const row of allItemsRows || []) piecesSold += Number(row.qtyPieces || 0);
 
     return {
       totalSales,
@@ -583,10 +828,10 @@ function SalesHistoryPage() {
       receiptsCount: filteredSales.length,
       openCredit,
     };
-  }, [filteredSales, itemsRows]);
+  }, [filteredSales, allItemsRows]);
 
   // -------------------------
-  // Group by day (for Range/Month/Credits/Search tabs)
+  // Group by day (for non-today tabs, including history)
   // -------------------------
   const groupedByDay = useMemo(() => {
     const map = new Map();
@@ -615,13 +860,7 @@ function SalesHistoryPage() {
         if (cb > 0) openCredit += cb;
       }
 
-      rows.push({
-        day,
-        receipts: list.length,
-        total,
-        profit,
-        openCredit,
-      });
+      rows.push({ day, receipts: list.length, total, profit, openCredit });
     }
     return rows;
   }, [groupedByDay]);
@@ -685,12 +924,22 @@ function SalesHistoryPage() {
   // -------------------------
   // Render helpers
   // -------------------------
-  const renderItemsTable = () => {
+  const renderItemsTable = (salesList) => {
     if (loadingSales || loadingStock) {
-      return <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>Loading items...</div>;
+      return (
+        <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
+          Loading items...
+        </div>
+      );
     }
-    if (itemsRows.length === 0) {
-      return <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>No items found.</div>;
+
+    const rows = buildItemsRows(salesList);
+    if (rows.length === 0) {
+      return (
+        <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
+          No items found.
+        </div>
+      );
     }
 
     return (
@@ -717,7 +966,7 @@ function SalesHistoryPage() {
           </tr>
         </thead>
         <tbody>
-          {itemsRows.map((row) => {
+          {rows.map((row) => {
             const paymentLabel =
               row.paymentType === "cash"
                 ? "Cash"
@@ -739,10 +988,18 @@ function SalesHistoryPage() {
                 <td style={{ padding: "8px 4px" }}>
                   <span style={{ color: "#2563eb", fontWeight: 600 }}>{row.itemName}</span>
                 </td>
-                <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(row.qtyPieces)}</td>
-                <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(row.unitPrice)}</td>
-                <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600 }}>{formatMoney(row.total)}</td>
-                <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(row.profit)}</td>
+                <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                  {formatMoney(row.qtyPieces)}
+                </td>
+                <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                  {formatMoney(row.unitPrice)}
+                </td>
+                <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600 }}>
+                  {formatMoney(row.total)}
+                </td>
+                <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                  {formatMoney(row.profit)}
+                </td>
                 <td style={{ padding: "8px 4px" }}>
                   <span
                     style={{
@@ -784,10 +1041,18 @@ function SalesHistoryPage() {
 
   const renderReceiptsTable = (salesList) => {
     if (loadingSales) {
-      return <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>Loading receipts...</div>;
+      return (
+        <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
+          Loading receipts...
+        </div>
+      );
     }
     if (!salesList?.length) {
-      return <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>No receipts found.</div>;
+      return (
+        <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
+          No receipts found.
+        </div>
+      );
     }
 
     return (
@@ -815,7 +1080,10 @@ function SalesHistoryPage() {
         <tbody>
           {salesList.map((sale) => {
             const lines = pickLines(sale);
-            const piecesCount = lines.reduce((sum, l) => sum + Number(extractLineFields(l).qty || 0), 0);
+            const piecesCount = lines.reduce(
+              (sum, l) => sum + Number(extractLineFields(l).qty || 0),
+              0
+            );
 
             const paymentType = normalizePaymentType(sale.payment_type);
             const { total, profit } = getSaleTotals(sale);
@@ -823,7 +1091,13 @@ function SalesHistoryPage() {
             const creditOpen = isOpenCreditSale(sale);
 
             const paymentLabel =
-              paymentType === "cash" ? "Cash" : paymentType === "card" ? "POS" : paymentType === "mobile" ? "MoMo" : "N/A";
+              paymentType === "cash"
+                ? "Cash"
+                : paymentType === "card"
+                ? "POS"
+                : paymentType === "mobile"
+                ? "MoMo"
+                : "N/A";
 
             const statusLabel = creditOpen ? "Credit" : "Paid";
             const statusBg = creditOpen ? "#fef2f2" : "#ecfdf3";
@@ -836,22 +1110,36 @@ function SalesHistoryPage() {
                 <td style={{ padding: "8px 4px" }}>
                   {sale.customer_name ? (
                     <>
-                      <span style={{ color: "#2563eb", fontWeight: 600 }}>{sale.customer_name}</span>
+                      <span style={{ color: "#2563eb", fontWeight: 600 }}>
+                        {sale.customer_name}
+                      </span>
                       {sale.customer_phone && (
-                        <span style={{ display: "block", fontSize: "11px", color: "#6b7280" }}>{sale.customer_phone}</span>
+                        <span style={{ display: "block", fontSize: "11px", color: "#6b7280" }}>
+                          {sale.customer_phone}
+                        </span>
                       )}
-                      <span style={{ display: "block", fontSize: "11px", color: "#9ca3af" }}>Receipt #{sale.id}</span>
+                      <span style={{ display: "block", fontSize: "11px", color: "#9ca3af" }}>
+                        Receipt #{sale.id}
+                      </span>
                     </>
                   ) : (
                     <>
                       <span style={{ color: "#6b7280" }}>Walk-in</span>
-                      <span style={{ display: "block", fontSize: "11px", color: "#9ca3af" }}>Receipt #{sale.id}</span>
+                      <span style={{ display: "block", fontSize: "11px", color: "#9ca3af" }}>
+                        Receipt #{sale.id}
+                      </span>
                     </>
                   )}
                 </td>
-                <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(piecesCount)}</td>
-                <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600 }}>{formatMoney(total)}</td>
-                <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(profit)}</td>
+                <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                  {formatMoney(piecesCount)}
+                </td>
+                <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600 }}>
+                  {formatMoney(total)}
+                </td>
+                <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                  {formatMoney(profit)}
+                </td>
                 <td style={{ padding: "8px 4px" }}>
                   <span
                     style={{
@@ -895,7 +1183,9 @@ function SalesHistoryPage() {
   // Page layout
   // -------------------------
   const title =
-    tab === "today"
+    tab === "history"
+      ? "Sales History — All history"
+      : tab === "today"
       ? "Sales History — Today"
       : tab === "range"
       ? "Sales History — Date Range"
@@ -922,11 +1212,22 @@ function SalesHistoryPage() {
         ← Back to shop workspace
       </button>
 
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "baseline" }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          gap: 12,
+          flexWrap: "wrap",
+          alignItems: "baseline",
+        }}
+      >
         <div>
-          <h1 style={{ fontSize: "28px", fontWeight: 800, letterSpacing: "0.02em", margin: 0 }}>{title}</h1>
+          <h1 style={{ fontSize: "28px", fontWeight: 800, letterSpacing: "0.02em", margin: 0 }}>
+            {title}
+          </h1>
           <p style={{ color: "#6b7280", marginTop: "0.5rem" }}>
-            <strong>{shopName}</strong> • Range: <strong>{activeDateFrom}</strong> → <strong>{activeDateTo}</strong>
+            <strong>{shopName}</strong> • Range: <strong>{activeDateFrom}</strong> →{" "}
+            <strong>{activeDateTo}</strong>
             {lastSalesSyncAt && (
               <span style={{ marginLeft: 10, fontSize: 12, color: "#9ca3af" }}>
                 • Synced: {formatTimeHM(lastSalesSyncAt)}
@@ -937,7 +1238,15 @@ function SalesHistoryPage() {
 
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           {tab === "today" && (
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "#374151" }}>
+            <label
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                fontSize: 12,
+                color: "#374151",
+              }}
+            >
               <input
                 type="checkbox"
                 checked={autoRefreshToday}
@@ -950,8 +1259,12 @@ function SalesHistoryPage() {
           <button
             type="button"
             onClick={() => {
-              loadSales();
-              loadStock(); // keeps item names fresh too
+              if (tab === "history") {
+                applyHistoryDays();
+              } else {
+                loadSales({ mode: "replace" });
+              }
+              loadStock();
             }}
             style={{
               padding: "8px 12px",
@@ -982,6 +1295,7 @@ function SalesHistoryPage() {
         }}
       >
         {[
+          { key: "history", label: "All history" },
           { key: "today", label: "Today" },
           { key: "range", label: "Date range" },
           { key: "month", label: "Monthly" },
@@ -999,6 +1313,11 @@ function SalesHistoryPage() {
                 if (t.key === "today") setSelectedDate(todayDateString());
                 if (t.key === "credits") setPaymentFilter("credit");
                 if (t.key !== "credits" && paymentFilter === "credit") setPaymentFilter("all");
+
+                if (t.key === "history") {
+                  // sync draft value for UI
+                  setHistoryDaysBackDraft(String(historyDaysBack));
+                }
               }}
               style={{
                 border: "none",
@@ -1020,6 +1339,127 @@ function SalesHistoryPage() {
 
       {/* Controls row */}
       <div style={{ marginTop: 14, display: "flex", flexWrap: "wrap", gap: "10px 16px", alignItems: "center" }}>
+        {tab === "history" && (
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
+              alignItems: "center",
+              flexWrap: "wrap",
+              color: "#6b7280",
+              fontSize: 13,
+            }}
+          >
+            <span style={{ fontWeight: 800, color: "#111827" }}>All history:</span>
+            <span>Show last</span>
+            <input
+              type="number"
+              min="1"
+              step="1"
+              value={historyDaysBackDraft}
+              onChange={(e) => setHistoryDaysBackDraft(e.target.value)}
+              style={{ width: 90, padding: "6px 10px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13 }}
+            />
+            <span>days</span>
+            <button
+              type="button"
+              onClick={applyHistoryDays}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: 800,
+              }}
+            >
+              Apply
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setHistoryDaysBack(30);
+                setHistoryDaysBackDraft("30");
+                const to = todayDateString();
+                const from = addDaysYMD(to, -30 + 1);
+                loadSales({ dateFrom: from, dateTo: to, mode: "replace" });
+              }}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: 700,
+              }}
+            >
+              30d
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setHistoryDaysBack(90);
+                setHistoryDaysBackDraft("90");
+                const to = todayDateString();
+                const from = addDaysYMD(to, -90 + 1);
+                loadSales({ dateFrom: from, dateTo: to, mode: "replace" });
+              }}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: 700,
+              }}
+            >
+              90d
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setHistoryDaysBack(365);
+                setHistoryDaysBackDraft("365");
+                const to = todayDateString();
+                const from = addDaysYMD(to, -365 + 1);
+                loadSales({ dateFrom: from, dateTo: to, mode: "replace" });
+              }}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: 700,
+              }}
+            >
+              1 year
+            </button>
+
+            <button
+              type="button"
+              onClick={loadOlderHistory}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: "1px solid #111827",
+                background: "#111827",
+                color: "#fff",
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: 900,
+              }}
+              title={`Fetch older sales (+${HISTORY_STEP_DAYS} days) and append`}
+            >
+              Load older +{HISTORY_STEP_DAYS}d
+            </button>
+          </div>
+        )}
+
         {tab === "today" && (
           <div style={{ fontSize: "13px", color: "#6b7280" }}>
             Date:&nbsp;
@@ -1144,7 +1584,9 @@ function SalesHistoryPage() {
                 style={{ padding: "6px 10px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13 }}
               />
             </div>
-            <span style={{ fontSize: 12, color: "#b91c1c", fontWeight: 800 }}>Showing credit_balance &gt; 0</span>
+            <span style={{ fontSize: 12, color: "#b91c1c", fontWeight: 800 }}>
+              Showing credit_balance &gt; 0
+            </span>
           </div>
         )}
 
@@ -1179,14 +1621,7 @@ function SalesHistoryPage() {
         )}
 
         {/* Payment filter */}
-        <div
-          style={{
-            display: "inline-flex",
-            backgroundColor: "#e5e7eb",
-            borderRadius: "999px",
-            padding: "2px",
-          }}
-        >
+        <div style={{ display: "inline-flex", backgroundColor: "#e5e7eb", borderRadius: "999px", padding: "2px" }}>
           {[
             { key: "all", label: "All" },
             { key: "cash", label: "Cash" },
@@ -1261,7 +1696,18 @@ function SalesHistoryPage() {
 
       {/* Errors */}
       {error && shop && (
-        <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 14, background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", fontWeight: 700, fontSize: 13 }}>
+        <div
+          style={{
+            marginTop: 12,
+            padding: "10px 12px",
+            borderRadius: 14,
+            background: "#fef2f2",
+            border: "1px solid #fecaca",
+            color: "#b91c1c",
+            fontWeight: 700,
+            fontSize: 13,
+          }}
+        >
           {error}
         </div>
       )}
@@ -1311,7 +1757,7 @@ function SalesHistoryPage() {
         </div>
       </div>
 
-      {/* Range/Month/Credits/Search: show daily totals list first */}
+      {/* Daily totals list (all tabs except Today) */}
       {tab !== "today" && (
         <div
           style={{
@@ -1328,9 +1774,13 @@ function SalesHistoryPage() {
           </div>
 
           {loadingSales ? (
-            <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>Loading daily totals...</div>
+            <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
+              Loading daily totals...
+            </div>
           ) : dailyTotalsTable.length === 0 ? (
-            <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>No data in this range.</div>
+            <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
+              No data in this range.
+            </div>
           ) : (
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginTop: 8 }}>
               <thead>
@@ -1355,6 +1805,7 @@ function SalesHistoryPage() {
               <tbody>
                 {dailyTotalsTable.map((r) => {
                   const open = !!openDays[r.day];
+                  const daySales = groupedByDay.map.get(r.day) || [];
                   return (
                     <React.Fragment key={r.day}>
                       <tr style={{ borderBottom: "1px solid #f3f4f6" }}>
@@ -1387,8 +1838,8 @@ function SalesHistoryPage() {
                           <td colSpan={6} style={{ padding: "10px 4px" }}>
                             <div style={{ borderRadius: 14, border: "1px solid #e5e7eb", background: "#fafafa", padding: 10 }}>
                               {viewMode === "items"
-                                ? renderItemsTable()
-                                : renderReceiptsTable(groupedByDay.map.get(r.day) || [])}
+                                ? renderItemsTable(daySales)
+                                : renderReceiptsTable(daySales)}
                             </div>
                           </td>
                         </tr>
@@ -1412,7 +1863,7 @@ function SalesHistoryPage() {
             padding: "10px 12px 10px",
           }}
         >
-          {viewMode === "items" ? renderItemsTable() : renderReceiptsTable(filteredSales)}
+          {viewMode === "items" ? renderItemsTable(filteredSales) : renderReceiptsTable(filteredSales)}
         </div>
       )}
     </div>
