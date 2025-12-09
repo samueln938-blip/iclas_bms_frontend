@@ -447,10 +447,9 @@ function ShopPurchasesPage() {
 
         let itemsData = [];
         try {
-          const itemsResShop = await fetch(
-            `${API_BASE}/items/?shop_id=${shopId}`,
-            { headers: authHeadersNoJson }
-          );
+          const itemsResShop = await fetch(`${API_BASE}/items/?shop_id=${shopId}`, {
+            headers: authHeadersNoJson,
+          });
           if (itemsResShop.ok) {
             itemsData = await itemsResShop.json().catch(() => []);
           } else {
@@ -974,12 +973,22 @@ function ShopPurchasesPage() {
       const s = stockByItemId[line.itemId] || {};
       const metaFallback = itemMetaById[line.itemId] || {};
 
-      const piecesPerUnit = s.item_pieces_per_unit ?? metaFallback.piecesPerUnit ?? 1;
+      const piecesPerUnit =
+        s.item_pieces_per_unit ?? metaFallback.piecesPerUnit ?? 1;
 
       // ✅ FIX: recent values fall back to NEW values if stock has no history yet
-      const recentUnitCost = chooseRecent(s.last_purchase_unit_price, line.newUnitCost);
-      const recentWholesalePerPiece = chooseRecent(s.wholesale_price_per_piece, line.newWholesalePerPiece);
-      const recentRetailPerPiece = chooseRecent(s.selling_price_per_piece, line.newRetailPerPiece);
+      const recentUnitCost = chooseRecent(
+        s.last_purchase_unit_price,
+        line.newUnitCost
+      );
+      const recentWholesalePerPiece = chooseRecent(
+        s.wholesale_price_per_piece,
+        line.newWholesalePerPiece
+      );
+      const recentRetailPerPiece = chooseRecent(
+        s.selling_price_per_piece,
+        line.newRetailPerPiece
+      );
 
       const qtyUnits = Number(line.qtyUnits || 0);
       const newUnitCost = Number(line.newUnitCost || 0);
@@ -1024,9 +1033,12 @@ function ShopPurchasesPage() {
 
   const padStock = pad.itemId ? stockByItemId[pad.itemId] : null;
   const padMeta = pad.itemId ? itemMetaById[pad.itemId] : null;
-  const padPiecesPerUnit = padStock?.item_pieces_per_unit ?? padMeta?.piecesPerUnit ?? 1;
+  const padPiecesPerUnit =
+    padStock?.item_pieces_per_unit ?? padMeta?.piecesPerUnit ?? 1;
   const padPurchaseCostPerPiece =
-    pad.itemId && padPiecesPerUnit > 0 ? Number(pad.newUnitCost || 0) / padPiecesPerUnit : 0;
+    pad.itemId && padPiecesPerUnit > 0
+      ? Number(pad.newUnitCost || 0) / padPiecesPerUnit
+      : 0;
 
   // ✅ Load history days whenever Tab 2 opened / Apply clicked
   useEffect(() => {
@@ -1041,12 +1053,22 @@ function ShopPurchasesPage() {
       const s = stockByItemId[line.itemId] || {};
       const metaFallback = itemMetaById[line.itemId] || {};
 
-      const piecesPerUnit = s.item_pieces_per_unit ?? metaFallback.piecesPerUnit ?? 1;
+      const piecesPerUnit =
+        s.item_pieces_per_unit ?? metaFallback.piecesPerUnit ?? 1;
 
       // ✅ Same fallback logic for history
-      const recentUnitCost = chooseRecent(s.last_purchase_unit_price, line.newUnitCost);
-      const recentWholesalePerPiece = chooseRecent(s.wholesale_price_per_piece, line.newWholesalePerPiece);
-      const recentRetailPerPiece = chooseRecent(s.selling_price_per_piece, line.newRetailPerPiece);
+      const recentUnitCost = chooseRecent(
+        s.last_purchase_unit_price,
+        line.newUnitCost
+      );
+      const recentWholesalePerPiece = chooseRecent(
+        s.wholesale_price_per_piece,
+        line.newWholesalePerPiece
+      );
+      const recentRetailPerPiece = chooseRecent(
+        s.selling_price_per_piece,
+        line.newRetailPerPiece
+      );
 
       const qtyUnits = Number(line.qtyUnits || 0);
       const newUnitCost = Number(line.newUnitCost || 0);
@@ -1082,6 +1104,27 @@ function ShopPurchasesPage() {
     setError("");
     setMessage("");
   };
+
+  // ✅ IMPORTANT FIX (React #310):
+  // This useMemo MUST be above any early return (like `if (loading) return ...`)
+  const filteredHistoryDays = useMemo(() => {
+    const term = historySearchTerm.trim().toLowerCase();
+    if (!term) return historyDays;
+
+    return (historyDays || []).filter((d) => {
+      const day = String(d.purchase_date || "");
+      if (day.includes(term)) return true;
+
+      const loaded = historyDayLines[toISODate(day)] || null;
+      if (!loaded) return false;
+
+      const enriched = enrichHistoryLines(loaded);
+      return enriched.some((ln) =>
+        (ln.meta.itemName || "").toLowerCase().includes(term)
+      );
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyDays, historySearchTerm, historyDayLines, stockByItemId, itemMetaById]);
 
   // ✅ Save purchase = POST to backend (this is what “saves everything”)
   const handleSave = async () => {
@@ -1148,7 +1191,7 @@ function ShopPurchasesPage() {
     }
   };
 
-  // ✅ Early returns
+  // ✅ Early returns (NOW SAFE: no hooks below this)
   if (loading) {
     return (
       <div style={{ padding: "32px" }}>
@@ -1162,7 +1205,9 @@ function ShopPurchasesPage() {
   const padBg = padDark ? "#0b1220" : "#ffffff";
   const padText = padDark ? "#e5e7eb" : "#111827";
   const padMuted = padDark ? "#9ca3af" : "#6b7280";
-  const padBorder = padDark ? "1px solid rgba(255,255,255,0.10)" : "1px solid #e5e7eb";
+  const padBorder = padDark
+    ? "1px solid rgba(255,255,255,0.10)"
+    : "1px solid #e5e7eb";
 
   const inputBase = {
     width: "100%",
@@ -1203,7 +1248,11 @@ function ShopPurchasesPage() {
     ? "Edit new item, then click Update item to save changes"
     : "Pad: select item, set prices, then add to list";
 
-  const padButtonText = isEditingSaved ? "Update saved item" : isEditingNew ? "Update item" : "+ Add to list";
+  const padButtonText = isEditingSaved
+    ? "Update saved item"
+    : isEditingNew
+    ? "Update item"
+    : "+ Add to list";
 
   const tabBtn = (active) => ({
     padding: "8px 12px",
@@ -1215,26 +1264,6 @@ function ShopPurchasesPage() {
     fontSize: "12px",
     cursor: "pointer",
   });
-
-  // ✅ Filter days based on search term (either by date match or by item match in loaded lines)
-  const filteredHistoryDays = useMemo(() => {
-    const term = historySearchTerm.trim().toLowerCase();
-    if (!term) return historyDays;
-
-    return (historyDays || []).filter((d) => {
-      const day = String(d.purchase_date || "");
-      if (day.includes(term)) return true;
-
-      const loaded = historyDayLines[toISODate(day)] || null;
-      if (!loaded) return false;
-
-      const enriched = enrichHistoryLines(loaded);
-      return enriched.some((ln) =>
-        (ln.meta.itemName || "").toLowerCase().includes(term)
-      );
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [historyDays, historySearchTerm, historyDayLines, stockByItemId, itemMetaById]);
 
   return (
     <div style={{ padding: "16px 24px 24px" }}>
@@ -1557,8 +1586,8 @@ function ShopPurchasesPage() {
                   lineHeight: 1.35,
                 }}
               >
-                Note: Item cannot be changed when editing a saved line. If you need a different
-                item, delete the saved line and add a new one.
+                Note: Item cannot be changed when editing a saved line. If you need a
+                different item, delete the saved line and add a new one.
               </div>
             )}
 
@@ -1574,7 +1603,9 @@ function ShopPurchasesPage() {
               <div style={helperGridStyle}>
                 <div>
                   Pieces / unit:{" "}
-                  <strong style={{ color: padText }}>{pad.itemId ? padPiecesPerUnit : "—"}</strong>
+                  <strong style={{ color: padText }}>
+                    {pad.itemId ? padPiecesPerUnit : "—"}
+                  </strong>
                 </div>
                 <div>
                   Recent unit cost:{" "}
@@ -1748,7 +1779,13 @@ function ShopPurchasesPage() {
 
                 {filteredLinesWithComputed.map((line) => {
                   const { meta, computed } = line;
-                  const { itemName, piecesPerUnit, recentUnitCost, recentWholesalePerPiece, recentRetailPerPiece } = meta;
+                  const {
+                    itemName,
+                    piecesPerUnit,
+                    recentUnitCost,
+                    recentWholesalePerPiece,
+                    recentRetailPerPiece,
+                  } = meta;
                   const { newCostPerPiece, lineTotal, allPieces } = computed;
 
                   const isFromDb = line.isFromDb;
@@ -1832,7 +1869,9 @@ function ShopPurchasesPage() {
                       <div style={{ textAlign: "right" }}>{formatMoney(line.newWholesalePerPiece)}</div>
                       <div style={{ textAlign: "right" }}>{formatMoney(recentRetailPerPiece)}</div>
                       <div style={{ textAlign: "right" }}>{formatMoney(line.newRetailPerPiece)}</div>
-                      <div style={{ textAlign: "right", fontWeight: 600 }}>{formatMoney(lineTotal)}</div>
+                      <div style={{ textAlign: "right", fontWeight: 600 }}>
+                        {formatMoney(lineTotal)}
+                      </div>
 
                       <div style={{ textAlign: "center" }}>
                         {isFromDb ? (
