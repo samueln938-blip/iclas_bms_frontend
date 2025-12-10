@@ -1,3 +1,4 @@
+//src/layout/AppLayout.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { NavLink, useNavigate, useLocation } from "react-router-dom";
 import api from "../api/client";
@@ -305,8 +306,11 @@ function AppLayout({ children }) {
     scrollbarGutter: "stable", // ✅ reduces layout shift when scrollbar appears (supported in modern Chrome)
   };
 
+  // ✅ FIX: wide pages should NOT be padding:0 (that causes the “hitting edges” look)
+  const widePadding = isMobile ? "12px 12px" : "16px 18px";
+
   const mainInnerStyle = {
-    padding: isWidePage ? "0" : isMobile ? "16px 14px" : "24px 32px",
+    padding: isWidePage ? widePadding : isMobile ? "16px 14px" : "24px 32px",
     minWidth: 0,
     boxSizing: "border-box",
   };
