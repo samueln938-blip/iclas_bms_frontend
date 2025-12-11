@@ -109,6 +109,10 @@ export default function DailyClosureTab({
   const [momoDrawer, setMomoDrawer] = useState("");
   const [posDrawer, setPosDrawer] = useState("");
 
+  // Missing daily closures (for previous days)
+  const [missingClosures, setMissingClosures] = useState([]);
+  const [loadingMissing, setLoadingMissing] = useState(false);
+
   // prevent auto-refresh from overwriting what cashier is typing
   const touchedRef = useRef(false);
   const markTouched = () => {
@@ -131,10 +135,12 @@ export default function DailyClosureTab({
   const sysAbortRef = useRef(null);
   const expAbortRef = useRef(null);
   const lastAbortRef = useRef(null);
+  const missingAbortRef = useRef(null);
 
   const sysReqIdRef = useRef(0);
   const expReqIdRef = useRef(0);
   const lastReqIdRef = useRef(0);
+  const missingReqIdRef = useRef(0);
 
   // Simple throttle: avoid burst refresh calls (focus + interval + events)
   const lastRefreshTickRef = useRef(0);
@@ -246,7 +252,7 @@ export default function DailyClosureTab({
 
     if (lastAbortRef.current) lastAbortRef.current.abort();
     const controller = new AbortController();
-    lastAbortRef.current = controller;
+    lastAbortRefRef.current = controller;
 
     const reqId = ++lastReqIdRef.current;
 
@@ -286,6 +292,68 @@ export default function DailyClosureTab({
     }
   }, [API_BASE, shopId, dateStr, authHeadersNoJson]);
 
+  // ------------------------------------------------------------
+  // NEW: Load missing daily closures (previous days)
+  // ------------------------------------------------------------
+  const loadMissingClosures = useCallback(
+    async ({ silent = true } = {}) => {
+      if (!shopId) return;
+
+      // If backend endpoint doesn't exist yet, we must not break the tab.
+      if (missingAbortRef.current) missingAbortRef.current.abort();
+      const controller = new AbortController();
+      missingAbortRef.current = controller;
+
+      const reqId = ++missingReqIdRef.current;
+      if (!silent) setLoadingMissing(true);
+
+      try {
+        // We assume backend exposes something like:
+        // GET /daily-closures/missing-days?shop_id=1&max_days=30
+        const url = `${API_BASE}/daily-closures/missing-days?shop_id=${shopId}&max_days=30`;
+        const res = await fetch(url, {
+          headers: authHeadersNoJson,
+          signal: controller.signal,
+          cache: "no-store",
+        });
+
+        // If endpoint not found or not implemented yet, just hide banner.
+        if (res.status === 404 || res.status === 405) {
+          if (reqId !== missingReqIdRef.current) return;
+          setMissingClosures([]);
+          return;
+        }
+
+        if (!res.ok) {
+          if (reqId !== missingReqIdRef.current) return;
+          // Soft-fail: don't show error to cashier, just no missing days.
+          setMissingClosures([]);
+          return;
+        }
+
+        const data = await res.json();
+        if (reqId !== missingReqIdRef.current) return;
+
+        const dates =
+          Array.isArray(data?.missing_dates) && data.missing_dates.length > 0
+            ? data.missing_dates
+            : [];
+
+        setMissingClosures(dates);
+      } catch (err) {
+        if (err?.name === "AbortError") return;
+        console.warn("Failed to load missing closures", err);
+        if (reqId !== missingReqIdRef.current) return;
+        setMissingClosures([]);
+      } finally {
+        if (!silent && reqId === missingReqIdRef.current) {
+          setLoadingMissing(false);
+        }
+      }
+    },
+    [API_BASE, shopId, authHeadersNoJson]
+  );
+
   const refreshAll = useCallback(
     async ({ silent = false, throttleMs = 1500 } = {}) => {
       if (!shopId) return;
@@ -295,9 +363,10 @@ export default function DailyClosureTab({
         loadSystemTotals({ silent }),
         loadExpenseSummary({ silent: true }),
         loadLastClosure(),
+        loadMissingClosures({ silent: true }),
       ]);
     },
-    [shopId, loadSystemTotals, loadExpenseSummary, loadLastClosure]
+    [shopId, loadSystemTotals, loadExpenseSummary, loadLastClosure, loadMissingClosures]
   );
 
   useEffect(() => {
@@ -583,6 +652,37 @@ export default function DailyClosureTab({
           </button>
         </div>
       </div>
+
+      {/* NEW: Missing daily closures warning (previous days) */}
+      {missingClosures.length > 0 && (
+        <div
+          style={{
+            marginTop: 6,
+            marginBottom: 10,
+            padding: "8px 10px",
+            borderRadius: 12,
+            backgroundColor: "#fffbeb",
+            border: "1px solid #facc15",
+            fontSize: 11,
+            color: "#92400e",
+          }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 2 }}>
+            Daily closures missing on previous days
+          </div>
+          <div style={{ marginBottom: 4 }}>
+            The system detected sales but no completed Daily closure for:
+          </div>
+          <div style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 4 }}>
+            {missingClosures.join(", ")}
+          </div>
+          <div style={{ fontSize: 11 }}>
+            Please ask a manager or admin to complete these days from the{" "}
+            <strong>Shop Closures History</strong> page. This tab only closes{" "}
+            <strong>today</strong>.
+          </div>
+        </div>
+      )}
 
       {/* Top summary chips */}
       <div
