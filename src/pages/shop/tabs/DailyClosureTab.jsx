@@ -91,9 +91,24 @@ export default function DailyClosureTab({
   setError,
   setMessage,
   clearAlerts,
+  // 🔑 new props
+  closureDate,  // string "YYYY-MM-DD" from URL / SalesPOS
+  isCashier,
+  isManager,
+  isOwner,
 }) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  // 🔑 Decide which date this tab is working on
+  const todayStr = todayDateString();
+  const dateStr = closureDate || todayStr;
+  const isToday = dateStr === todayStr;
+
+  // Only Owner & Manager are allowed to work on past days
+  const canEditPast = !!(isOwner || isManager);
+  const isPastDate = !isToday;
+  const isLockedReadOnly = isPastDate && !canEditPast;
 
   // System totals from backend (single source of truth)
   const [system, setSystem] = useState(null);
@@ -109,10 +124,6 @@ export default function DailyClosureTab({
   const [momoDrawer, setMomoDrawer] = useState("");
   const [posDrawer, setPosDrawer] = useState("");
 
-  // Missing daily closures (for previous days)
-  const [missingClosures, setMissingClosures] = useState([]);
-  const [loadingMissing, setLoadingMissing] = useState(false);
-
   // prevent auto-refresh from overwriting what cashier is typing
   const touchedRef = useRef(false);
   const markTouched = () => {
@@ -120,9 +131,6 @@ export default function DailyClosureTab({
   };
 
   const [lastRefreshedAt, setLastRefreshedAt] = useState(null);
-
-  // Today only (your existing behavior)
-  const [dateStr] = useState(todayDateString());
 
   const diffColor = (v) => {
     if (Math.abs(v) < 1) return "#6b7280";
@@ -135,12 +143,10 @@ export default function DailyClosureTab({
   const sysAbortRef = useRef(null);
   const expAbortRef = useRef(null);
   const lastAbortRef = useRef(null);
-  const missingAbortRef = useRef(null);
 
   const sysReqIdRef = useRef(0);
   const expReqIdRef = useRef(0);
   const lastReqIdRef = useRef(0);
-  const missingReqIdRef = useRef(0);
 
   // Simple throttle: avoid burst refresh calls (focus + interval + events)
   const lastRefreshTickRef = useRef(0);
@@ -152,11 +158,11 @@ export default function DailyClosureTab({
   };
 
   // ------------------------------------------------------------
-  // Load today's system totals from /daily-closures/system-totals
+  // Load system totals from /daily-closures/system-totals for this date
   // ------------------------------------------------------------
   const loadSystemTotals = useCallback(
     async ({ silent = false } = {}) => {
-      if (!shopId) return;
+      if (!shopId || !dateStr) return;
 
       // Abort previous
       if (sysAbortRef.current) sysAbortRef.current.abort();
@@ -207,11 +213,10 @@ export default function DailyClosureTab({
 
   // ------------------------------------------------------------
   // Load expense summary directly from expenses router
-  // (this makes expenses reflect immediately even if system totals lag)
   // ------------------------------------------------------------
   const loadExpenseSummary = useCallback(
     async ({ silent = true } = {}) => {
-      if (!shopId) return;
+      if (!shopId || !dateStr) return;
 
       if (expAbortRef.current) expAbortRef.current.abort();
       const controller = new AbortController();
@@ -245,14 +250,14 @@ export default function DailyClosureTab({
   );
 
   // ------------------------------------------------------------
-  // Load last saved closure for today (info only)
+  // Load last saved closure for this day (info only)
   // ------------------------------------------------------------
   const loadLastClosure = useCallback(async () => {
-    if (!shopId) return;
+    if (!shopId || !dateStr) return;
 
     if (lastAbortRef.current) lastAbortRef.current.abort();
     const controller = new AbortController();
-    lastAbortRefRef.current = controller;
+    lastAbortRef.current = controller;
 
     const reqId = ++lastReqIdRef.current;
 
@@ -292,91 +297,35 @@ export default function DailyClosureTab({
     }
   }, [API_BASE, shopId, dateStr, authHeadersNoJson]);
 
-  // ------------------------------------------------------------
-  // NEW: Load missing daily closures (previous days)
-  // ------------------------------------------------------------
-  const loadMissingClosures = useCallback(
-    async ({ silent = true } = {}) => {
-      if (!shopId) return;
-
-      // If backend endpoint doesn't exist yet, we must not break the tab.
-      if (missingAbortRef.current) missingAbortRef.current.abort();
-      const controller = new AbortController();
-      missingAbortRef.current = controller;
-
-      const reqId = ++missingReqIdRef.current;
-      if (!silent) setLoadingMissing(true);
-
-      try {
-        // We assume backend exposes something like:
-        // GET /daily-closures/missing-days?shop_id=1&max_days=30
-        const url = `${API_BASE}/daily-closures/missing-days?shop_id=${shopId}&max_days=30`;
-        const res = await fetch(url, {
-          headers: authHeadersNoJson,
-          signal: controller.signal,
-          cache: "no-store",
-        });
-
-        // If endpoint not found or not implemented yet, just hide banner.
-        if (res.status === 404 || res.status === 405) {
-          if (reqId !== missingReqIdRef.current) return;
-          setMissingClosures([]);
-          return;
-        }
-
-        if (!res.ok) {
-          if (reqId !== missingReqIdRef.current) return;
-          // Soft-fail: don't show error to cashier, just no missing days.
-          setMissingClosures([]);
-          return;
-        }
-
-        const data = await res.json();
-        if (reqId !== missingReqIdRef.current) return;
-
-        const dates =
-          Array.isArray(data?.missing_dates) && data.missing_dates.length > 0
-            ? data.missing_dates
-            : [];
-
-        setMissingClosures(dates);
-      } catch (err) {
-        if (err?.name === "AbortError") return;
-        console.warn("Failed to load missing closures", err);
-        if (reqId !== missingReqIdRef.current) return;
-        setMissingClosures([]);
-      } finally {
-        if (!silent && reqId === missingReqIdRef.current) {
-          setLoadingMissing(false);
-        }
-      }
-    },
-    [API_BASE, shopId, authHeadersNoJson]
-  );
-
   const refreshAll = useCallback(
     async ({ silent = false, throttleMs = 1500 } = {}) => {
-      if (!shopId) return;
+      if (!shopId || !dateStr) return;
       if (shouldThrottle(throttleMs)) return;
 
       await Promise.all([
         loadSystemTotals({ silent }),
         loadExpenseSummary({ silent: true }),
         loadLastClosure(),
-        loadMissingClosures({ silent: true }),
       ]);
     },
-    [shopId, loadSystemTotals, loadExpenseSummary, loadLastClosure, loadMissingClosures]
+    [shopId, dateStr, loadSystemTotals, loadExpenseSummary, loadLastClosure]
   );
 
+  // Reload everything whenever the date changes (today or past)
   useEffect(() => {
     touchedRef.current = false;
+    setSystem(null);
+    setExpenseSummary(null);
+    setLastClosure(null);
+    setCashDrawer("");
+    setMomoDrawer("");
+    setPosDrawer("");
     refreshAll({ silent: false, throttleMs: 0 });
-  }, [refreshAll]);
+  }, [dateStr, refreshAll]);
 
   // Auto-refresh (so expenses created in other tabs show up here)
   useEffect(() => {
-    if (!shopId) return;
+    if (!shopId || !dateStr) return;
 
     const onFocus = () => refreshAll({ silent: true });
     const onVis = () => {
@@ -395,9 +344,9 @@ export default function DailyClosureTab({
       document.removeEventListener("visibilitychange", onVis);
       clearInterval(t);
     };
-  }, [shopId, refreshAll]);
+  }, [shopId, dateStr, refreshAll]);
 
-  // ✅ NEW: immediate sync when Sales History refreshes (optional + harmless)
+  // ✅ Immediate sync when Sales History refreshes
   useEffect(() => {
     if (!shopId) return;
 
@@ -437,8 +386,6 @@ export default function DailyClosureTab({
   const expensesTotal = Math.max(expensesTotalSystem, expSumTotal);
 
   // Expected AFTER expenses:
-  // - prefer backend field if it exists AND backend expenses match
-  // - otherwise compute using expense summary (so UI matches real DB)
   const expectedAfterExpenses = useMemo(() => {
     const backendAfter = Number(system?.expected_after_expenses_total ?? NaN);
     const backendLooksOk =
@@ -494,7 +441,7 @@ export default function DailyClosureTab({
   // Save closure (POST /daily-closures/)
   // ------------------------------------------------------------
   const handleSaveClosure = useCallback(async () => {
-    if (!shopId) return;
+    if (!shopId || !dateStr) return;
 
     clearAlerts?.();
     setError?.("");
@@ -549,6 +496,8 @@ export default function DailyClosureTab({
     refreshAll,
   ]);
 
+  const saveDisabled = saving || isLockedReadOnly;
+
   return (
     <div
       style={{
@@ -583,8 +532,13 @@ export default function DailyClosureTab({
             Daily Closure
           </div>
           <div style={{ fontSize: 13, marginTop: 2, color: "#4b5563" }}>
-            Shop #{shopId} · Today:{" "}
-            <span style={{ fontWeight: 700 }}>{dateStr}</span>
+            Shop #{shopId} · Date:{" "}
+            <span style={{ fontWeight: 700 }}>{dateStr}</span>{" "}
+            {!isToday && (
+              <span style={{ fontSize: 11, color: "#9ca3af" }}>
+                (past day)
+              </span>
+            )}
           </div>
 
           {lastClosure && (
@@ -607,9 +561,22 @@ export default function DailyClosureTab({
               </strong>
             </div>
           )}
+
+          {isLockedReadOnly && (
+            <div
+              style={{
+                marginTop: 4,
+                fontSize: 11,
+                color: "#b91c1c",
+                fontWeight: 600,
+              }}
+            >
+              Read-only: only Owner/Manager can save closures for past days.
+            </div>
+          )}
         </div>
 
-        <div style={{ display: "flex", gap: 10 }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           <button
             type="button"
             onClick={() => refreshAll({ silent: false, throttleMs: 0 })}
@@ -633,15 +600,15 @@ export default function DailyClosureTab({
           <button
             type="button"
             onClick={handleSaveClosure}
-            disabled={saving}
+            disabled={saveDisabled}
             style={{
               border: "none",
               borderRadius: 999,
               padding: "8px 16px",
               fontSize: 12,
               fontWeight: 700,
-              cursor: saving ? "not-allowed" : "pointer",
-              backgroundColor: saving ? "#4b5563" : "#2563eb",
+              cursor: saveDisabled ? "not-allowed" : "pointer",
+              backgroundColor: saveDisabled ? "#9ca3af" : "#2563eb",
               color: "#ffffff",
               display: "inline-flex",
               alignItems: "center",
@@ -652,37 +619,6 @@ export default function DailyClosureTab({
           </button>
         </div>
       </div>
-
-      {/* NEW: Missing daily closures warning (previous days) */}
-      {missingClosures.length > 0 && (
-        <div
-          style={{
-            marginTop: 6,
-            marginBottom: 10,
-            padding: "8px 10px",
-            borderRadius: 12,
-            backgroundColor: "#fffbeb",
-            border: "1px solid #facc15",
-            fontSize: 11,
-            color: "#92400e",
-          }}
-        >
-          <div style={{ fontWeight: 700, marginBottom: 2 }}>
-            Daily closures missing on previous days
-          </div>
-          <div style={{ marginBottom: 4 }}>
-            The system detected sales but no completed Daily closure for:
-          </div>
-          <div style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 4 }}>
-            {missingClosures.join(", ")}
-          </div>
-          <div style={{ fontSize: 11 }}>
-            Please ask a manager or admin to complete these days from the{" "}
-            <strong>Shop Closures History</strong> page. This tab only closes{" "}
-            <strong>today</strong>.
-          </div>
-        </div>
-      )}
 
       {/* Top summary chips */}
       <div
@@ -730,7 +666,7 @@ export default function DailyClosureTab({
             fontSize: 12,
           }}
         >
-          Credit given today: <strong>{formatMoney(creditGivenToday)} RWF</strong>
+          Credit given that day: <strong>{formatMoney(creditGivenToday)} RWF</strong>
         </div>
 
         <div
@@ -742,7 +678,7 @@ export default function DailyClosureTab({
             fontSize: 12,
           }}
         >
-          Credit paid today: <strong>{formatMoney(creditPaidToday)} RWF</strong>
+          Credit paid that day: <strong>{formatMoney(creditPaidToday)} RWF</strong>
         </div>
       </div>
 
@@ -843,7 +779,7 @@ export default function DailyClosureTab({
               </tr>
 
               <tr>
-                <td style={{ padding: "6px 4px" }}>Expenses today (DB)</td>
+                <td style={{ padding: "6px 4px" }}>Expenses (DB)</td>
                 <td
                   colSpan={3}
                   style={{
@@ -881,7 +817,8 @@ export default function DailyClosureTab({
               Credit payments count: <strong>{creditPayersCount}</strong>
             </div>
             <div>
-              Total credit paid today: <strong>{formatMoney(creditPaidToday)} RWF</strong>
+              Total credit paid that day:{" "}
+              <strong>{formatMoney(creditPaidToday)} RWF</strong>
             </div>
           </div>
         </div>
