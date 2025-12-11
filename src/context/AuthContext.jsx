@@ -1,5 +1,13 @@
 // FILE: src/context/AuthContext.jsx
-import React, { createContext, useContext, useEffect, useMemo, useState, useCallback } from "react";
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  useCallback,
+  useRef,
+} from "react";
 
 const STORAGE_KEY = "iclas_auth";
 const AuthContext = createContext(null);
@@ -55,6 +63,29 @@ function getErrorMessageFromResponse(data, fallback) {
   return fallback;
 }
 
+// ✅ Decode JWT and extract exp (in ms). Returns null if missing/invalid.
+function getTokenExpiryMs(token) {
+  if (!token) return null;
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+
+    // Base64URL → Base64 with padding
+    let payload = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    while (payload.length % 4 !== 0) {
+      payload += "=";
+    }
+
+    const json = JSON.parse(atob(payload));
+    if (!json.exp) return null;
+
+    // exp is in seconds → convert to milliseconds
+    return json.exp * 1000;
+  } catch {
+    return null;
+  }
+}
+
 // ✅ Read and parse auth payload safely (handy for fallback/debug)
 function getStoredAuth() {
   try {
@@ -71,7 +102,13 @@ function getStoredAuth() {
 
     const restoredUser = normalizeUser(parsed?.user || parsed?.data?.user) || null;
 
-    return { token: restoredToken, user: restoredUser };
+    const restoredExpiry = parsed?.sessionExpiryMs ?? parsed?.expiry ?? null;
+
+    return {
+      token: restoredToken,
+      user: restoredUser,
+      sessionExpiryMs: restoredExpiry ? Number(restoredExpiry) : null,
+    };
   } catch {
     return null;
   }
@@ -81,6 +118,10 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(null);
   const [loading, setLoading] = useState(true);
+
+  // 🔑 Track when this session should expire (ms since epoch)
+  const [sessionExpiryMs, setSessionExpiryMs] = useState(null);
+  const logoutTimerRef = useRef(null);
 
   // ✅ Common headers (no Content-Type here, safe for GET/POST without JSON)
   const authHeadersNoJson = useMemo(() => {
@@ -106,6 +147,9 @@ export function AuthProvider({ children }) {
       if (restored) {
         setUser(restored.user);
         setToken(restored.token);
+        if (restored.sessionExpiryMs) {
+          setSessionExpiryMs(restored.sessionExpiryMs);
+        }
       }
     } catch (err) {
       console.error("Failed to restore auth state:", err);
@@ -170,18 +214,78 @@ export function AuthProvider({ children }) {
       });
     }
 
-    const payload = { token: accessToken, user: me };
+    // 🔑 Compute expiry from token (preferred) or fallback to 24h from now
+    let expiryMs = getTokenExpiryMs(accessToken);
+    if (!expiryMs) {
+      expiryMs = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
+    }
+
+    const payload = { token: accessToken, user: me, sessionExpiryMs: expiryMs };
+
     setToken(accessToken);
     setUser(me);
+    setSessionExpiryMs(expiryMs);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+
     return payload;
   };
 
-  const logout = () => {
+  const logout = useCallback(() => {
+    // Clear any scheduled auto-logout
+    if (logoutTimerRef.current) {
+      clearTimeout(logoutTimerRef.current);
+      logoutTimerRef.current = null;
+    }
+
     setUser(null);
     setToken(null);
+    setSessionExpiryMs(null);
     localStorage.removeItem(STORAGE_KEY);
-  };
+
+    // If you want a visible message, you can uncomment:
+    // alert("Your session has expired. Please log in again.");
+  }, []);
+
+  // 🔁 Auto-logout when token reaches expiry time
+  useEffect(() => {
+    // clear any existing timer
+    if (logoutTimerRef.current) {
+      clearTimeout(logoutTimerRef.current);
+      logoutTimerRef.current = null;
+    }
+
+    if (!token || !sessionExpiryMs) return;
+
+    const now = Date.now();
+    const delay = sessionExpiryMs - now;
+
+    // Already expired → logout immediately
+    if (delay <= 0) {
+      logout();
+      return;
+    }
+
+    // Schedule logout
+    logoutTimerRef.current = setTimeout(() => {
+      logout();
+    }, delay);
+
+    // Cleanup
+    return () => {
+      if (logoutTimerRef.current) {
+        clearTimeout(logoutTimerRef.current);
+        logoutTimerRef.current = null;
+      }
+    };
+  }, [token, sessionExpiryMs, logout]);
+
+  // Extra safety: if app opens and session is already expired, logout instantly
+  useEffect(() => {
+    if (!token || !sessionExpiryMs) return;
+    if (Date.now() >= sessionExpiryMs) {
+      logout();
+    }
+  }, [token, sessionExpiryMs, logout]);
 
   return (
     <AuthContext.Provider
@@ -200,6 +304,9 @@ export function AuthProvider({ children }) {
 
         // ✅ Optional helper (useful in some pages)
         getStoredAuth,
+
+        // Optional: session expiry info (could help for UI later)
+        sessionExpiryMs,
       }}
     >
       {children}
