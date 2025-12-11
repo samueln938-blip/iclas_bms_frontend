@@ -258,7 +258,10 @@ export default function SalesPOS() {
 
   // ✅ IMPORTANT: no filtering of tabs (all roles see same 4 tabs)
   const allowedTabs = useMemo(() => baseTabs, [baseTabs]);
-  const allowedTabKeys = useMemo(() => new Set(allowedTabs.map((t) => t.key)), [allowedTabs]);
+  const allowedTabKeys = useMemo(
+    () => new Set(allowedTabs.map((t) => t.key)),
+    [allowedTabs]
+  );
 
   const [activeTab, setActiveTab] = useState("current");
 
@@ -279,7 +282,10 @@ export default function SalesPOS() {
 
   const navigateWithSearch = useCallback(
     (sp) => {
-      navigate({ pathname: location.pathname, search: `?${sp.toString()}` }, { replace: true });
+      navigate(
+        { pathname: location.pathname, search: `?${sp.toString()}` },
+        { replace: true }
+      );
     },
     [navigate, location.pathname]
   );
@@ -352,7 +358,9 @@ export default function SalesPOS() {
   useEffect(() => {
     const search = new URLSearchParams(location.search);
     const tabFromUrl = search.get("tab");
-    const dateFromUrl = search.get("closureDate");
+    // ✅ NEW: support both ?closureDate= and legacy ?date=/ ?day=
+    const dateFromUrl =
+      search.get("closureDate") || search.get("date") || search.get("day");
     const editFromUrl = search.get("editSaleId");
 
     if (tabFromUrl && allowedTabKeys.has(tabFromUrl)) {
@@ -419,7 +427,10 @@ export default function SalesPOS() {
   }, [expenses, shopId, todayStr]);
 
   const expensesTotalToday = useMemo(() => {
-    return (expenses || []).reduce((sum, e) => sum + safeNumber(e?.amount || 0), 0);
+    return (expenses || []).reduce(
+      (sum, e) => sum + safeNumber(e?.amount || 0),
+      0
+    );
   }, [expenses]);
 
   const stockByItemId = useMemo(() => {
@@ -440,7 +451,9 @@ export default function SalesPOS() {
       setMessage("");
 
       try {
-        const shopRes = await fetch(`${API_BASE}/shops/${shopId}`, { headers: authHeadersNoJson });
+        const shopRes = await fetch(`${API_BASE}/shops/${shopId}`, {
+          headers: authHeadersNoJson,
+        });
         if (!shopRes.ok) throw new Error("Failed to load shop.");
         const shopData = await shopRes.json();
 
@@ -695,7 +708,7 @@ export default function SalesPOS() {
           setError={setError}
           setMessage={setMessage}
           clearAlerts={clearAlerts}
-          // 🔑 NEW: which day are we closing, and who is editing?
+          // 🔑 which day are we closing, and who is editing?
           closureDate={closureDate}
           isCashier={isCashier}
           isManager={isManager}
