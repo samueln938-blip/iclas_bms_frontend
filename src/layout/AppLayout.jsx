@@ -226,19 +226,24 @@ function AppLayout({ children }) {
     flex: "0 0 auto",
   };
 
+  // 🔴 Stylish: subtle white pill with small red icon + red text accent
   const userButtonStyle = {
-    backgroundColor: "#2563eb",
-    color: "#ffffff",
+    backgroundColor: "#ffffff",
+    color: "#111827",
     borderRadius: "999px",
-    border: "none",
-    padding: isMobile ? "8px 12px" : "10px 24px",
+    border: "1px solid rgba(248,113,113,0.9)", // soft red border
+    padding: isMobile ? "7px 12px" : "8px 18px",
     fontSize: isMobile ? "13px" : "14px",
     fontWeight: 600,
     cursor: "pointer",
-    maxWidth: isMobile ? "44vw" : "none",
+    maxWidth: isMobile ? "52vw" : "none",
     whiteSpace: "nowrap",
     overflow: "hidden",
     textOverflow: "ellipsis",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    boxShadow: "0 10px 22px rgba(15,23,42,0.25)",
   };
 
   const bodyStyle = {
@@ -380,7 +385,26 @@ function AppLayout({ children }) {
         </div>
 
         <button style={userButtonStyle} onClick={handleLogout} title="Logout">
-          {displayName} | Logout
+          {/* small red bubble icon */}
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 22,
+              height: 22,
+              borderRadius: "999px",
+              backgroundColor: "#ef4444",
+              color: "#ffffff",
+              fontSize: 11,
+              fontWeight: 700,
+              flexShrink: 0,
+            }}
+          >
+            ⏻
+          </span>
+          <span style={{ fontWeight: 600 }}>{displayName}</span>
+          <span style={{ color: "#b91c1c", fontWeight: 600 }}>| Logout</span>
         </button>
       </header>
 
