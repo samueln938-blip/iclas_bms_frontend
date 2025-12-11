@@ -219,6 +219,9 @@ export default function SalesPOS() {
   const isCashier = role === "cashier";
   const isOwner = role === "owner";
 
+  // ✅ Only Owner & Manager can work on past-day closures
+  const canEditPastClosures = isOwner || isManager;
+
   // ✅ allow workspace link for Admin/Owner/Manager only
   const canGoWorkspace = isAdmin || isManager || isOwner;
 
@@ -253,11 +256,13 @@ export default function SalesPOS() {
     []
   );
 
-  // ✅ IMPORTANT FIX: do NOT filter out closure for cashier
+  // ✅ IMPORTANT: no filtering of tabs (all roles see same 4 tabs)
   const allowedTabs = useMemo(() => baseTabs, [baseTabs]);
   const allowedTabKeys = useMemo(() => new Set(allowedTabs.map((t) => t.key)), [allowedTabs]);
 
   const [activeTab, setActiveTab] = useState("current");
+
+  // ✅ This date controls which day's closure we are viewing/editing
   const [closureDate, setClosureDate] = useState(todayDateString());
 
   // ✅ Sale edit handoff (from Today tab → Current tab)
@@ -288,9 +293,20 @@ export default function SalesPOS() {
       const sp = new URLSearchParams(location.search);
       sp.set("tab", key);
 
-      const cd = closureDate || todayDateString();
-      if (key === "closure") sp.set("closureDate", cd);
-      else sp.delete("closureDate");
+      // For closure tab, respect current closureDate for Owner/Manager,
+      // but force "today" for roles that cannot edit past closures.
+      let cd = closureDate || todayDateString();
+      if (key === "closure") {
+        if (!canEditPastClosures) {
+          cd = todayDateString();
+          if (cd !== closureDate) {
+            setClosureDate(cd);
+          }
+        }
+        sp.set("closureDate", cd);
+      } else {
+        sp.delete("closureDate");
+      }
 
       // ✅ Leaving Current tab clears editSaleId
       if (key !== "current") {
@@ -300,7 +316,7 @@ export default function SalesPOS() {
 
       navigateWithSearch(sp);
     },
-    [allowedTabKeys, location.search, closureDate, navigateWithSearch]
+    [allowedTabKeys, location.search, closureDate, canEditPastClosures, navigateWithSearch]
   );
 
   // ✅ Called by MySalesTodayTab when user clicks an item/receipt
@@ -345,27 +361,44 @@ export default function SalesPOS() {
       setActiveTab("current");
     }
 
-    setClosureDate(dateFromUrl || todayDateString());
+    // Resolve closure date from URL:
+    //  - Owner/Manager: use the requested date (or today by default)
+    //  - Other roles (cashier + admin): always force "today"
+    let resolvedDate = dateFromUrl || todayDateString();
+    if (!canEditPastClosures) {
+      resolvedDate = todayDateString();
+    }
+    setClosureDate(resolvedDate);
 
     // ✅ Only allow editSaleId when current tab
     if (tabFromUrl === "current" && editFromUrl) setEditSaleId(String(editFromUrl));
     else setEditSaleId(null);
-  }, [location.search, allowedTabKeys]);
+  }, [location.search, allowedTabKeys, canEditPastClosures]);
 
   useEffect(() => {
     if (!allowedTabKeys.has(activeTab)) setActiveTab("current");
   }, [allowedTabKeys, activeTab]);
 
   useEffect(() => {
+    // Keep URL in sync when user is already on closure tab
     if (activeTab !== "closure") return;
 
     const sp = new URLSearchParams(location.search);
     sp.set("tab", "closure");
-    sp.set("closureDate", closureDate || todayDateString());
+
+    let cd = closureDate || todayDateString();
+    if (!canEditPastClosures) {
+      cd = todayDateString();
+      if (cd !== closureDate) {
+        setClosureDate(cd);
+      }
+    }
+    sp.set("closureDate", cd);
+
     sp.delete("editSaleId");
 
     navigateWithSearch(sp);
-  }, [activeTab, closureDate, location.search, navigateWithSearch]);
+  }, [activeTab, closureDate, canEditPastClosures, location.search, navigateWithSearch]);
 
   // -------------------- Shop + stock --------------------
   const [shop, setShop] = useState(null);
@@ -400,49 +433,52 @@ export default function SalesPOS() {
 
   const shopName = shop?.name || `Shop ${shopId}`;
 
-  const reloadShopAndStock = useCallback(async () => {
-    setLoading(true);
-    setError("");
-    setMessage("");
+  const reloadShopAndStock = useCallback(
+    async () => {
+      setLoading(true);
+      setError("");
+      setMessage("");
 
-    try {
-      const shopRes = await fetch(`${API_BASE}/shops/${shopId}`, { headers: authHeadersNoJson });
-      if (!shopRes.ok) throw new Error("Failed to load shop.");
-      const shopData = await shopRes.json();
+      try {
+        const shopRes = await fetch(`${API_BASE}/shops/${shopId}`, { headers: authHeadersNoJson });
+        if (!shopRes.ok) throw new Error("Failed to load shop.");
+        const shopData = await shopRes.json();
 
-      const stockUrls = [
-        `${API_BASE}/stock/?shop_id=${shopId}&only_positive=1`,
-        `${API_BASE}/stock/?shop_id=${shopId}&only_positive=true`,
-        `${API_BASE}/stock/?shop_id=${shopId}`,
-      ];
+        const stockUrls = [
+          `${API_BASE}/stock/?shop_id=${shopId}&only_positive=1`,
+          `${API_BASE}/stock/?shop_id=${shopId}&only_positive=true`,
+          `${API_BASE}/stock/?shop_id=${shopId}`,
+        ];
 
-      let stockData = null;
-      let stockOk = false;
+        let stockData = null;
+        let stockOk = false;
 
-      for (const u of stockUrls) {
-        const r = await fetch(u, { headers: authHeadersNoJson });
-        if (!r.ok) continue;
-        stockData = await r.json();
-        stockOk = true;
-        break;
+        for (const u of stockUrls) {
+          const r = await fetch(u, { headers: authHeadersNoJson });
+          if (!r.ok) continue;
+          stockData = await r.json();
+          stockOk = true;
+          break;
+        }
+
+        if (!stockOk) throw new Error("Failed to load stock.");
+
+        // ✅ decimals safe: 0.5 remaining pieces should count as positive
+        const positiveStock = (stockData || []).filter(
+          (row) => safeNumber(row?.remaining_pieces) > 0
+        );
+
+        setShop(shopData);
+        setStockRows(positiveStock);
+      } catch (err) {
+        console.error(err);
+        setError(err?.message || "Failed to load Sales & POS data for this shop.");
+      } finally {
+        setLoading(false);
       }
-
-      if (!stockOk) throw new Error("Failed to load stock.");
-
-      // ✅ decimals safe: 0.5 remaining pieces should count as positive
-      const positiveStock = (stockData || []).filter(
-        (row) => safeNumber(row?.remaining_pieces) > 0
-      );
-
-      setShop(shopData);
-      setStockRows(positiveStock);
-    } catch (err) {
-      console.error(err);
-      setError(err?.message || "Failed to load Sales & POS data for this shop.");
-    } finally {
-      setLoading(false);
-    }
-  }, [shopId, authHeadersNoJson, API_BASE]);
+    },
+    [shopId, authHeadersNoJson, API_BASE]
+  );
 
   useEffect(() => {
     if (shopId) reloadShopAndStock();
@@ -659,6 +695,11 @@ export default function SalesPOS() {
           setError={setError}
           setMessage={setMessage}
           clearAlerts={clearAlerts}
+          // 🔑 NEW: which day are we closing, and who is editing?
+          closureDate={closureDate}
+          isCashier={isCashier}
+          isManager={isManager}
+          isOwner={isOwner}
         />
       ) : null}
 
