@@ -39,6 +39,23 @@ function toISODateOnly(v) {
   return s.includes("T") ? s.split("T")[0] : s;
 }
 
+// Build list of all days in [dateFrom, dateTo] inclusive (YYYY-MM-DD)
+function buildDateRangeList(dateFrom, dateTo) {
+  if (!dateFrom || !dateTo) return [];
+  const start = new Date(dateFrom);
+  const end = new Date(dateTo);
+  if (isNaN(start.getTime()) || isNaN(end.getTime()) || start > end) return [];
+
+  const days = [];
+  for (let d = new Date(start.getTime()); d <= end; d.setDate(d.getDate() + 1)) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    days.push(`${y}-${m}-${day}`);
+  }
+  return days;
+}
+
 function readTokenFromStorage() {
   try {
     const keys = ["access_token", "token", "iclas_token", "iclas_access_token"];
@@ -64,7 +81,6 @@ function DailyClosureHistoryPage() {
   const navigate = useNavigate();
 
   const { authHeadersNoJson } = useAuth();
-
   const fallbackToken = useMemo(() => readTokenFromStorage(), []);
 
   // ✅ Support BOTH styles:
@@ -120,11 +136,6 @@ function DailyClosureHistoryPage() {
   const [loadingSystem, setLoadingSystem] = useState(false);
 
   const [viewMode, setViewMode] = useState("system"); // "system" | "saved"
-
-  // NEW: missing closures (days with sales but no DailyClosure)
-  const [missingDates, setMissingDates] = useState([]);
-  const [loadingMissing, setLoadingMissing] = useState(false);
-  const [creatingDate, setCreatingDate] = useState(null);
 
   const shopName = shop?.name || `Shop ${shopId}`;
 
@@ -196,9 +207,8 @@ function DailyClosureHistoryPage() {
       } else {
         const data = await res.json();
         const rows = data?.closures || data || [];
-        const arr = Array.isArray(rows) ? rows : [];
-        setClosures(arr);
-        if (arr.length > 0) setSelectedClosureId(arr[0].id);
+        setClosures(Array.isArray(rows) ? rows : []);
+        if (Array.isArray(rows) && rows.length > 0) setSelectedClosureId(rows[0].id);
         else setSelectedClosureId(null);
       }
     } catch (err) {
@@ -216,101 +226,52 @@ function DailyClosureHistoryPage() {
   }, [loadClosures]);
 
   // ----------------------------
-  // Load system totals per day (AUTH)
+  // Load system totals for EVERY day in range (AUTH)
   // ----------------------------
-  const loadSystemTotalsForClosures = useCallback(
-    async (rows) => {
-      if (!shopId || !rows || rows.length === 0) {
-        setSystemByDate({});
-        return;
-      }
-      if (!headersReady) return;
-
-      setLoadingSystem(true);
-      try {
-        const uniqueDates = Array.from(
-          new Set(rows.map((c) => toISODateOnly(c.closure_date)))
-        ).filter(Boolean);
-
-        const entries = await Promise.all(
-          uniqueDates.map(async (dStr) => {
-            const url = `${API_BASE}/daily-closures/system-totals?shop_id=${shopId}&closure_date=${dStr}`;
-            try {
-              const res = await authedFetch(url);
-              if (!res.ok) return [dStr, null];
-              const data = await res.json();
-              return [dStr, data || null];
-            } catch {
-              return [dStr, null];
-            }
-          })
-        );
-
-        const map = {};
-        for (const [k, v] of entries) map[k] = v;
-        setSystemByDate(map);
-      } finally {
-        setLoadingSystem(false);
-      }
-    },
-    [API_BASE, authedFetch, headersReady, shopId]
+  const allDaysInRange = useMemo(
+    () => buildDateRangeList(dateFrom, dateTo),
+    [dateFrom, dateTo]
   );
 
-  useEffect(() => {
-    loadSystemTotalsForClosures(closures);
-  }, [closures, loadSystemTotalsForClosures]);
-
-  // ----------------------------
-  // NEW: Load missing daily closures (AUTH)
-  // ----------------------------
-  const loadMissingClosures = useCallback(async () => {
-    if (!shopId) return;
-    if (!headersReady) return;
-
-    setLoadingMissing(true);
-    try {
-      // Backend endpoint from daily_closures.py:
-      // GET /daily-closures/missing-days?shop_id=...&max_days=90
-      const url = `${API_BASE}/daily-closures/missing-days?shop_id=${shopId}&max_days=90`;
-      const res = await authedFetch(url);
-
-      // If endpoint not implemented yet, just don't show banner
-      if (res.status === 404 || res.status === 405) {
-        setMissingDates([]);
-        return;
-      }
-
-      if (!res.ok) {
-        setMissingDates([]);
-        return;
-      }
-
-      const data = await res.json();
-      const allDates =
-        Array.isArray(data?.missing_dates) && data.missing_dates.length > 0
-          ? data.missing_dates
-          : [];
-
-      // Filter by current period (dateFrom/dateTo)
-      const filtered = allDates.filter((d) => {
-        if (!d) return false;
-        if (dateFrom && d < dateFrom) return false;
-        if (dateTo && d > dateTo) return false;
-        return true;
-      });
-
-      setMissingDates(filtered);
-    } catch (err) {
-      console.warn("Failed to load missing daily closures", err);
-      setMissingDates([]);
-    } finally {
-      setLoadingMissing(false);
+  const loadSystemTotalsForRange = useCallback(async () => {
+    if (!shopId || !headersReady) {
+      setSystemByDate({});
+      return;
     }
-  }, [API_BASE, authedFetch, dateFrom, dateTo, headersReady, shopId]);
+
+    const days = buildDateRangeList(dateFrom, dateTo);
+    if (!days.length) {
+      setSystemByDate({});
+      return;
+    }
+
+    setLoadingSystem(true);
+    try {
+      const entries = await Promise.all(
+        days.map(async (dStr) => {
+          const url = `${API_BASE}/daily-closures/system-totals?shop_id=${shopId}&closure_date=${dStr}`;
+          try {
+            const res = await authedFetch(url);
+            if (!res.ok) return [dStr, null];
+            const data = await res.json();
+            return [dStr, data || null];
+          } catch {
+            return [dStr, null];
+          }
+        })
+      );
+
+      const map = {};
+      for (const [k, v] of entries) map[k] = v;
+      setSystemByDate(map);
+    } finally {
+      setLoadingSystem(false);
+    }
+  }, [API_BASE, authedFetch, headersReady, shopId, dateFrom, dateTo]);
 
   useEffect(() => {
-    loadMissingClosures();
-  }, [loadMissingClosures]);
+    loadSystemTotalsForRange();
+  }, [loadSystemTotalsForRange]);
 
   // ----------------------------
   // Rebuild range (AUTH)
@@ -329,88 +290,21 @@ function DailyClosureHistoryPage() {
         throw new Error(`Rebuild failed (HTTP ${res.status}): ${txt}`);
       }
       await loadClosures();
-      await loadMissingClosures();
+      await loadSystemTotalsForRange();
     } catch (err) {
       console.error(err);
       setError(err.message || "Failed to rebuild range.");
     }
-  }, [API_BASE, authedFetch, dateFrom, dateTo, headersReady, loadClosures, loadMissingClosures, shopId]);
-
-  // ----------------------------
-  // NEW: Create closure from system totals (for missing day)
-  // ----------------------------
-  const handleCreateClosureFromSystem = useCallback(
-    async (day) => {
-      if (!shopId || !day) return;
-      if (!headersReady) return;
-
-      setCreatingDate(day);
-      setError("");
-      try {
-        // 1) Get system totals for that day (if not already in map)
-        let sys = systemByDate[day];
-        if (!sys) {
-          const url = `${API_BASE}/daily-closures/system-totals?shop_id=${shopId}&closure_date=${day}`;
-          const res = await authedFetch(url);
-          if (!res.ok) {
-            const txt = await res.text();
-            throw new Error(`Failed to load system totals for ${day}: ${txt}`);
-          }
-          sys = await res.json();
-        }
-
-        const expectedCashAfter =
-          Number(sys?.expected_cash_after_expenses ?? sys?.expected_cash_total ?? 0);
-        const expectedPosAfter =
-          Number(sys?.expected_card_after_expenses ?? sys?.expected_card_total ?? 0);
-        const expectedMomoAfter =
-          Number(sys?.expected_mobile_after_expenses ?? sys?.expected_mobile_total ?? 0);
-
-        // If no movement at all, avoid creating weird closure
-        const sumAll =
-          expectedCashAfter + expectedPosAfter + expectedMomoAfter;
-        if (sumAll === 0) {
-          throw new Error(
-            `No system collections found for ${day}. Nothing to close automatically.`
-          );
-        }
-
-        const payload = {
-          shop_id: Number(shopId),
-          closure_date: day,
-          cash_amount: expectedCashAfter,
-          pos_amount: expectedPosAfter,
-          momo_amount: expectedMomoAfter,
-          note: "Auto closure from history (system totals, no manual count).",
-        };
-
-        const res2 = await authedFetch(`${API_BASE}/daily-closures/`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(payload),
-        });
-
-        if (!res2.ok) {
-          const txt = await res2.text();
-          throw new Error(
-            `Failed to create system closure for ${day} (HTTP ${res2.status}): ${txt}`
-          );
-        }
-
-        // Refresh history + missing list
-        await loadClosures();
-        await loadMissingClosures();
-      } catch (err) {
-        console.error(err);
-        setError(err.message || "Failed to create closure from system totals.");
-      } finally {
-        setCreatingDate(null);
-      }
-    },
-    [API_BASE, authedFetch, headersReady, loadClosures, loadMissingClosures, shopId, systemByDate]
-  );
+  }, [
+    API_BASE,
+    authedFetch,
+    dateFrom,
+    dateTo,
+    headersReady,
+    loadClosures,
+    loadSystemTotalsForRange,
+    shopId,
+  ]);
 
   // ----------------------------
   // Summaries
@@ -451,8 +345,8 @@ function DailyClosureHistoryPage() {
       const day = toISODateOnly(c.closure_date);
       const sys = systemByDate[day];
 
-      const sold = Number(c.total_sold_amount || 0);
-      const profit = Number(c.total_profit || 0);
+      const sold = Number(sys?.total_sold_amount ?? c.total_sold_amount ?? 0);
+      const profit = Number(sys?.total_profit ?? c.total_profit ?? 0);
 
       const exp = Number(sys?.expenses_total ?? c.total_expenses ?? 0);
       const net = profit - exp;
@@ -486,6 +380,47 @@ function DailyClosureHistoryPage() {
   }, [closures, selectedClosureId]);
 
   // ----------------------------
+  // Map closures by date (YYYY-MM-DD)
+  // ----------------------------
+  const closureByDate = useMemo(() => {
+    const map = {};
+    for (const c of closures || []) {
+      const day = toISODateOnly(c.closure_date);
+      if (!day) continue;
+      map[day] = c; // one closure per day per shop
+    }
+    return map;
+  }, [closures]);
+
+  // ----------------------------
+  // Rows for list table
+  // ----------------------------
+  const listRows = useMemo(() => {
+    if (viewMode === "system") {
+      // Show every date in range that has either system data OR a closure
+      const rows = [];
+      for (const day of allDaysInRange) {
+        const closure = closureByDate[day] || null;
+        const sys = systemByDate[day];
+        if (!closure && !sys) continue; // completely empty day
+        rows.push({ day, closure });
+      }
+      rows.sort((a, b) => (a.day < b.day ? 1 : a.day > b.day ? -1 : 0)); // desc
+      return rows;
+    }
+
+    // Saved (DB) mode – only dates with closures
+    const rows = (closures || []).map((c) => ({
+      day: toISODateOnly(c.closure_date),
+      closure: c,
+    }));
+    rows.sort((a, b) => (a.day < b.day ? 1 : a.day > b.day ? -1 : 0)); // desc
+    return rows;
+  }, [viewMode, allDaysInRange, closureByDate, systemByDate, closures]);
+
+  const hasRows = listRows.length > 0;
+
+  // ----------------------------
   // Guards
   // ----------------------------
   if (!headersReady) {
@@ -500,14 +435,7 @@ function DailyClosureHistoryPage() {
         </p>
 
         {sessionWaited && (
-          <div
-            style={{
-              marginTop: 12,
-              display: "flex",
-              gap: 10,
-              flexWrap: "wrap",
-            }}
-          >
+          <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button
               onClick={() => window.location.reload()}
               style={{
@@ -523,7 +451,6 @@ function DailyClosureHistoryPage() {
             </button>
             <button
               onClick={() => {
-                // go home; your app may redirect to login if not authenticated
                 navigate("/");
               }}
               style={{
@@ -579,14 +506,7 @@ function DailyClosureHistoryPage() {
         ← Back to shop workspace
       </button>
 
-      <h1
-        style={{
-          fontSize: "26px",
-          fontWeight: 800,
-          letterSpacing: "0.03em",
-          margin: 0,
-        }}
-      >
+      <h1 style={{ fontSize: "26px", fontWeight: 800, letterSpacing: "0.03em", margin: 0 }}>
         Daily Closure History
       </h1>
       <p style={{ color: "#6b7280", marginTop: "0.5rem" }}>
@@ -689,106 +609,10 @@ function DailyClosureHistoryPage() {
             Recomputing system totals...
           </span>
         )}
-        {loadingMissing && (
-          <span style={{ fontSize: "12px", color: "#6b7280" }}>
-            Checking missing days...
-          </span>
-        )}
       </div>
 
       {error && (
-        <div style={{ marginBottom: 10, color: "#b91c1c", fontSize: 13 }}>
-          {error}
-        </div>
-      )}
-
-      {/* NEW: Missing daily closures in this period */}
-      {missingDates.length > 0 && (
-        <div
-          style={{
-            marginBottom: "12px",
-            backgroundColor: "#fffbeb",
-            borderRadius: "18px",
-            border: "1px solid #facc15",
-            padding: "10px 14px 12px",
-            fontSize: "12px",
-            color: "#78350f",
-          }}
-        >
-          <div style={{ fontWeight: 700, marginBottom: 4 }}>
-            Missing daily closures in this period
-          </div>
-          <div style={{ marginBottom: 6 }}>
-            These dates have sales recorded but no Daily closure completed:
-          </div>
-          <div
-            style={{
-              display: "flex",
-              flexWrap: "wrap",
-              gap: 6,
-              marginBottom: 6,
-            }}
-          >
-            {missingDates.map((d) => (
-              <div
-                key={d}
-                style={{
-                  borderRadius: 999,
-                  backgroundColor: "#fef3c7",
-                  padding: "4px 8px",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                }}
-              >
-                <span style={{ fontWeight: 600 }}>{d}</span>
-                <button
-                  type="button"
-                  onClick={() =>
-                    navigate(
-                      `/shops/${shopId}/sales-pos?tab=closure&closureDate=${d}`
-                    )
-                  }
-                  style={{
-                    border: "none",
-                    background: "transparent",
-                    fontSize: "11px",
-                    color: "#2563eb",
-                    cursor: "pointer",
-                    textDecoration: "underline",
-                    padding: 0,
-                  }}
-                >
-                  Open
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleCreateClosureFromSystem(d)}
-                  disabled={creatingDate === d}
-                  style={{
-                    border: "none",
-                    padding: "3px 8px",
-                    borderRadius: 999,
-                    fontSize: "11px",
-                    fontWeight: 600,
-                    backgroundColor: creatingDate === d ? "#9ca3af" : "#15803d",
-                    color: "#ffffff",
-                    cursor: creatingDate === d ? "default" : "pointer",
-                  }}
-                >
-                  {creatingDate === d
-                    ? "Creating..."
-                    : "Create from system totals"}
-                </button>
-              </div>
-            ))}
-          </div>
-          <div style={{ fontSize: "11px" }}>
-            Use <strong>Create from system totals</strong> only when you accept
-            the system amounts as final (no manual counted cash). For a manual
-            count, open each date in the Daily closure tab instead.
-          </div>
-        </div>
+        <div style={{ marginBottom: 10, color: "#b91c1c", fontSize: 13 }}>{error}</div>
       )}
 
       {/* Period summary */}
@@ -802,9 +626,7 @@ function DailyClosureHistoryPage() {
           fontSize: "12px",
         }}
       >
-        <div
-          style={{ fontSize: "14px", fontWeight: 700, marginBottom: "6px" }}
-        >
+        <div style={{ fontSize: "14px", fontWeight: 700, marginBottom: "6px" }}>
           Period summary ({viewMode === "system" ? "recomputed" : "saved"})
         </div>
         <div
@@ -816,7 +638,7 @@ function DailyClosureHistoryPage() {
             marginBottom: "8px",
           }}
         >
-          {dateFrom} to {dateTo}
+          {dateFrom} TO {dateTo}
         </div>
 
         <div
@@ -841,13 +663,7 @@ function DailyClosureHistoryPage() {
           </div>
           <div>
             <div style={{ color: "#6b7280" }}>Total profit</div>
-            <div
-              style={{
-                fontSize: "16px",
-                fontWeight: 700,
-                color: "#16a34a",
-              }}
-            >
+            <div style={{ fontSize: "16px", fontWeight: 700, color: "#16a34a" }}>
               {formatMoney(summary.totalProfit)}
             </div>
           </div>
@@ -859,13 +675,7 @@ function DailyClosureHistoryPage() {
           </div>
           <div>
             <div style={{ color: "#6b7280" }}>Net profit (sum)</div>
-            <div
-              style={{
-                fontSize: "16px",
-                fontWeight: 700,
-                color: "#16a34a",
-              }}
-            >
+            <div style={{ fontSize: "16px", fontWeight: 700, color: "#16a34a" }}>
               {formatMoney(summary.totalNetProfit)}
             </div>
           </div>
@@ -898,13 +708,7 @@ function DailyClosureHistoryPage() {
           padding: "10px 12px 14px",
         }}
       >
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "flex-end",
-            marginBottom: "8px",
-          }}
-        >
+        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "8px" }}>
           <div
             style={{
               display: "inline-flex",
@@ -932,9 +736,7 @@ function DailyClosureHistoryPage() {
                     fontWeight: 500,
                     backgroundColor: isActive ? "#ffffff" : "transparent",
                     color: isActive ? "#111827" : "#4b5563",
-                    boxShadow: isActive
-                      ? "0 2px 6px rgba(0,0,0,0.08)"
-                      : "none",
+                    boxShadow: isActive ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
                   }}
                 >
                   {opt.label}
@@ -945,25 +747,15 @@ function DailyClosureHistoryPage() {
         </div>
 
         {loadingClosures ? (
-          <div
-            style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}
-          >
+          <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
             Loading daily closure history...
           </div>
-        ) : closures.length === 0 ? (
-          <div
-            style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}
-          >
-            No daily closures for this period.
+        ) : !hasRows ? (
+          <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
+            No daily closures or system totals for this period.
           </div>
         ) : subTab === "list" ? (
-          <table
-            style={{
-              width: "100%",
-              borderCollapse: "collapse",
-              fontSize: "13px",
-            }}
-          >
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
             <thead>
               <tr
                 style={{
@@ -977,56 +769,72 @@ function DailyClosureHistoryPage() {
               >
                 <th style={{ padding: "6px 4px" }}>Date</th>
                 <th style={{ padding: "6px 4px", textAlign: "right" }}>Sold</th>
-                <th style={{ padding: "6px 4px", textAlign: "right" }}>
-                  Profit
-                </th>
-                <th style={{ padding: "6px 4px", textAlign: "right" }}>
-                  Counted
-                </th>
-                <th style={{ padding: "6px 4px", textAlign: "right" }}>
-                  Difference
-                </th>
-                <th style={{ padding: "6px 4px", textAlign: "right" }}>
-                  Expenses
-                </th>
-                <th style={{ padding: "6px 4px", textAlign: "right" }}>
-                  Net profit
-                </th>
+                <th style={{ padding: "6px 4px", textAlign: "right" }}>Profit</th>
+                <th style={{ padding: "6px 4px", textAlign: "right" }}>Counted</th>
+                <th style={{ padding: "6px 4px", textAlign: "right" }}>Difference</th>
+                <th style={{ padding: "6px 4px", textAlign: "right" }}>Expenses</th>
+                <th style={{ padding: "6px 4px", textAlign: "right" }}>Net profit</th>
                 <th style={{ padding: "6px 4px" }}>Note</th>
               </tr>
             </thead>
             <tbody>
-              {closures.map((c) => {
-                const day = toISODateOnly(c.closure_date);
+              {listRows.map((row) => {
+                const { day, closure: c } = row;
                 const sys = systemByDate[day];
+                const hasClosure = !!c;
 
-                const counted = Number(c.total_counted_amount || 0);
-                const exp = Number(
-                  (viewMode === "system" ? sys?.expenses_total : c.total_expenses) ||
-                    0
-                );
+                const sold =
+                  viewMode === "system"
+                    ? Number(sys?.total_sold_amount ?? c?.total_sold_amount ?? 0)
+                    : Number(c?.total_sold_amount ?? 0);
 
-                const expectedAfter = Number(
-                  sys?.expected_after_expenses_total || 0
-                );
-                const diff =
-                  viewMode === "system" && sys
-                    ? counted - expectedAfter
-                    : Number(c.difference_amount || 0);
+                const profit =
+                  viewMode === "system"
+                    ? Number(sys?.total_profit ?? c?.total_profit ?? 0)
+                    : Number(c?.total_profit ?? 0);
 
-                const netProfit = Number(c.total_profit || 0) - exp;
+                const counted = hasClosure ? Number(c.total_counted_amount || 0) : null;
+
+                const exp = hasClosure
+                  ? Number(
+                      (viewMode === "system" ? sys?.expenses_total : c.total_expenses) || 0
+                    )
+                  : null;
+
+                let diff = null;
+                let netProfit = null;
+
+                if (hasClosure) {
+                  const expectedAfter = Number(sys?.expected_after_expenses_total ?? 0);
+                  if (viewMode === "system" && sys) {
+                    diff = counted - expectedAfter;
+                  } else {
+                    diff = Number(c.difference_amount || 0);
+                  }
+                  netProfit = Number(c.total_profit || 0) - (exp ?? 0);
+                }
+
                 const diffColor =
-                  diff > 0 ? "#16a34a" : diff < 0 ? "#b91c1c" : "#4b5563";
-                const isSelected = selectedClosureId === c.id;
+                  diff === null
+                    ? "#4b5563"
+                    : diff > 0
+                    ? "#16a34a"
+                    : diff < 0
+                    ? "#b91c1c"
+                    : "#4b5563";
+
+                const isSelected = hasClosure && selectedClosureId === c.id;
 
                 return (
                   <tr
-                    key={c.id}
-                    onClick={() => setSelectedClosureId(c.id)}
+                    key={hasClosure ? c.id : day}
+                    onClick={() => {
+                      if (hasClosure) setSelectedClosureId(c.id);
+                    }}
                     style={{
                       borderBottom: "1px solid #f3f4f6",
                       backgroundColor: isSelected ? "#f5f5ff" : "transparent",
-                      cursor: "pointer",
+                      cursor: hasClosure ? "pointer" : "default",
                     }}
                   >
                     <td style={{ padding: "8px 4px" }}>
@@ -1054,29 +862,14 @@ function DailyClosureHistoryPage() {
                       </button>
                     </td>
 
-                    <td
-                      style={{
-                        padding: "8px 4px",
-                        textAlign: "right",
-                      }}
-                    >
-                      {formatMoney(c.total_sold_amount || 0)}
+                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                      {formatMoney(sold)}
                     </td>
-                    <td
-                      style={{
-                        padding: "8px 4px",
-                        textAlign: "right",
-                      }}
-                    >
-                      {formatMoney(c.total_profit || 0)}
+                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                      {formatMoney(profit)}
                     </td>
-                    <td
-                      style={{
-                        padding: "8px 4px",
-                        textAlign: "right",
-                      }}
-                    >
-                      {formatMoney(counted)}
+                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                      {hasClosure ? formatMoney(counted) : ""}
                     </td>
                     <td
                       style={{
@@ -1085,30 +878,23 @@ function DailyClosureHistoryPage() {
                         color: diffColor,
                       }}
                     >
-                      {formatMoney(diff)}
+                      {hasClosure && diff !== null ? formatMoney(diff) : ""}
+                    </td>
+                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                      {hasClosure && exp !== null ? formatMoney(exp) : ""}
                     </td>
                     <td
                       style={{
                         padding: "8px 4px",
                         textAlign: "right",
+                        color: hasClosure ? "#16a34a" : "#4b5563",
                       }}
                     >
-                      {formatMoney(exp)}
-                    </td>
-                    <td
-                      style={{
-                        padding: "8px 4px",
-                        textAlign: "right",
-                        color: "#16a34a",
-                      }}
-                    >
-                      {formatMoney(netProfit)}
+                      {hasClosure && netProfit !== null ? formatMoney(netProfit) : ""}
                     </td>
                     <td style={{ padding: "8px 4px" }}>
-                      <span
-                        style={{ fontSize: "11px", color: "#6b7280" }}
-                      >
-                        {c.note || ""}
+                      <span style={{ fontSize: "11px", color: "#6b7280" }}>
+                        {hasClosure ? c.note || "" : "Not closed"}
                       </span>
                     </td>
                   </tr>
@@ -1127,18 +913,13 @@ function DailyClosureHistoryPage() {
                 const day = toISODateOnly(selectedClosure.closure_date);
                 const sys = systemByDate[day];
 
-                const counted = Number(
-                  selectedClosure.total_counted_amount || 0
-                );
+                const counted = Number(selectedClosure.total_counted_amount || 0);
                 const exp = Number(
-                  (viewMode === "system"
-                    ? sys?.expenses_total
-                    : selectedClosure.total_expenses) || 0
+                  (viewMode === "system" ? sys?.expenses_total : selectedClosure.total_expenses) ||
+                    0
                 );
 
-                const expectedAfter = Number(
-                  sys?.expected_after_expenses_total || 0
-                );
+                const expectedAfter = Number(sys?.expected_after_expenses_total || 0);
                 const diff =
                   viewMode === "system" && sys
                     ? counted - expectedAfter
@@ -1157,16 +938,10 @@ function DailyClosureHistoryPage() {
                       }}
                     >
                       <div>
-                        <div
-                          style={{ fontSize: "14px", fontWeight: 700 }}
-                        >
+                        <div style={{ fontSize: "14px", fontWeight: 700 }}>
                           Selected day details
                         </div>
-                        <div
-                          style={{ fontSize: "12px", color: "#6b7280" }}
-                        >
-                          {day}
-                        </div>
+                        <div style={{ fontSize: "12px", color: "#6b7280" }}>{day}</div>
                       </div>
                       <button
                         type="button"
@@ -1201,40 +976,22 @@ function DailyClosureHistoryPage() {
                       <div>
                         <div style={{ color: "#6b7280" }}>Total sold</div>
                         <div
-                          style={{
-                            fontSize: "16px",
-                            fontWeight: 700,
-                          }}
-                        >
-                          {formatMoney(
-                            selectedClosure.total_sold_amount || 0
-                          )}
-                        </div>
+                          style={{ fontSize: "16px", fontWeight: 700 }}
+                        >{formatMoney(selectedClosure.total_sold_amount || 0)}</div>
                       </div>
                       <div>
                         <div style={{ color: "#6b7280" }}>Total profit</div>
                         <div
-                          style={{
-                            fontSize: "16px",
-                            fontWeight: 700,
-                            color: "#16a34a",
-                          }}
+                          style={{ fontSize: "16px", fontWeight: 700, color: "#16a34a" }}
                         >
                           {formatMoney(selectedClosure.total_profit || 0)}
                         </div>
                       </div>
                       <div>
-                        <div style={{ color: "#6b7280" }}>
-                          Counted total
-                        </div>
+                        <div style={{ color: "#6b7280" }}>Counted total</div>
                         <div
-                          style={{
-                            fontSize: "16px",
-                            fontWeight: 700,
-                          }}
-                        >
-                          {formatMoney(counted)}
-                        </div>
+                          style={{ fontSize: "16px", fontWeight: 700 }}
+                        >{formatMoney(counted)}</div>
                       </div>
                       <div>
                         <div style={{ color: "#6b7280" }}>
@@ -1245,11 +1002,7 @@ function DailyClosureHistoryPage() {
                             fontSize: "16px",
                             fontWeight: 700,
                             color:
-                              diff > 0
-                                ? "#16a34a"
-                                : diff < 0
-                                ? "#b91c1c"
-                                : "#4b5563",
+                              diff > 0 ? "#16a34a" : diff < 0 ? "#b91c1c" : "#4b5563",
                           }}
                         >
                           {formatMoney(diff)}
@@ -1260,24 +1013,15 @@ function DailyClosureHistoryPage() {
                           Expenses ({viewMode})
                         </div>
                         <div
-                          style={{
-                            fontSize: "16px",
-                            fontWeight: 700,
-                          }}
-                        >
-                          {formatMoney(exp)}
-                        </div>
+                          style={{ fontSize: "16px", fontWeight: 700 }}
+                        >{formatMoney(exp)}</div>
                       </div>
                       <div>
                         <div style={{ color: "#6b7280" }}>
                           Net profit ({viewMode})
                         </div>
                         <div
-                          style={{
-                            fontSize: "16px",
-                            fontWeight: 700,
-                            color: "#16a34a",
-                          }}
+                          style={{ fontSize: "16px", fontWeight: 700, color: "#16a34a" }}
                         >
                           {formatMoney(netProfit)}
                         </div>
@@ -1286,17 +1030,8 @@ function DailyClosureHistoryPage() {
 
                     {selectedClosure.note && (
                       <div style={{ marginTop: "10px" }}>
-                        <div
-                          style={{
-                            color: "#6b7280",
-                            marginBottom: "2px",
-                          }}
-                        >
-                          Note
-                        </div>
-                        <div style={{ fontSize: "12px" }}>
-                          {selectedClosure.note}
-                        </div>
+                        <div style={{ color: "#6b7280", marginBottom: "2px" }}>Note</div>
+                        <div style={{ fontSize: "12px" }}>{selectedClosure.note}</div>
                       </div>
                     )}
                   </>
