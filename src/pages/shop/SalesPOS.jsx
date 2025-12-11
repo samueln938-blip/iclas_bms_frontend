@@ -209,18 +209,18 @@ export default function SalesPOS() {
   // ✅ Use centralized API base instead of localhost
   const API_BASE = CLIENT_API_BASE;
 
-  // ✅ role normalize (supports: role, user_role, userRole, type)
-  const role = (user?.role ?? user?.user_role ?? user?.userRole ?? user?.type ?? "")
-    .toString()
-    .toLowerCase();
+  // ✅ role normalize (supports: role, user_role, userRole, type) with trim
+  const rawRole =
+    user?.role ?? user?.user_role ?? user?.userRole ?? user?.type ?? "";
+  const role = String(rawRole).trim().toLowerCase();
 
   const isAdmin = role === "admin";
   const isManager = role === "manager";
   const isCashier = role === "cashier";
   const isOwner = role === "owner";
 
-  // ✅ Only Owner & Manager can work on past-day closures
-  const canEditPastClosures = isOwner || isManager;
+  // ✅ Higher roles can work on past-day closures (cashier is today-only)
+  const canEditPastClosures = isOwner || isManager || isAdmin;
 
   // ✅ allow workspace link for Admin/Owner/Manager only
   const canGoWorkspace = isAdmin || isManager || isOwner;
@@ -337,7 +337,7 @@ export default function SalesPOS() {
       const sp = new URLSearchParams(location.search);
       sp.set("tab", key);
 
-      // For closure tab, respect current closureDate for Owner/Manager,
+      // For closure tab, respect current closureDate for Owner/Manager/Admin,
       // but force "today" for roles that cannot edit past closures.
       let cd = closureDate || todayDateString();
       if (key === "closure") {
@@ -408,8 +408,8 @@ export default function SalesPOS() {
     }
 
     // Resolve closure date from URL:
-    //  - Owner/Manager: use the requested date (or today by default)
-    //  - Other roles (cashier + admin): always force "today"
+    //  - Owner/Manager/Admin: use the requested date (or today by default)
+    //  - Other roles (cashier): always force "today"
     let resolvedDate = dateFromUrl || todayDateString();
     if (!canEditPastClosures) {
       resolvedDate = todayDateString();
