@@ -158,6 +158,18 @@ function DailyClosureHistoryPage() {
     [headersNoJson]
   );
 
+  // 🔑 Helper: go to Sales & POS Daily Closure for a given day
+  const goToClosure = useCallback(
+    (day) => {
+      if (!day) return;
+      // IMPORTANT: keep this path consistent with your SalesPOS route
+      navigate(
+        `/shops/${shopId}/sales-pos?tab=closure&closureDate=${encodeURIComponent(day)}`
+      );
+    },
+    [navigate, shopId]
+  );
+
   // ----------------------------
   // Load shop info (AUTH)
   // ----------------------------
@@ -814,7 +826,7 @@ function DailyClosureHistoryPage() {
                   netProfit = Number(c.total_profit || 0) - (exp ?? 0);
                 }
 
-                const diffColor =
+                const diffColorStyle =
                   diff === null
                     ? "#4b5563"
                     : diff > 0
@@ -843,9 +855,8 @@ function DailyClosureHistoryPage() {
                         onClick={(e) => {
                           e.stopPropagation();
                           if (!day) return;
-                          navigate(
-                            `/shops/${shopId}/sales-pos?tab=closure&closureDate=${day}`
-                          );
+                          // ✅ Open Sales & POS → Daily closure for this specific day
+                          goToClosure(day);
                         }}
                         style={{
                           border: "none",
@@ -875,7 +886,7 @@ function DailyClosureHistoryPage() {
                       style={{
                         padding: "8px 4px",
                         textAlign: "right",
-                        color: diffColor,
+                        color: diffColorStyle,
                       }}
                     >
                       {hasClosure && diff !== null ? formatMoney(diff) : ""}
@@ -915,8 +926,9 @@ function DailyClosureHistoryPage() {
 
                 const counted = Number(selectedClosure.total_counted_amount || 0);
                 const exp = Number(
-                  (viewMode === "system" ? sys?.expenses_total : selectedClosure.total_expenses) ||
-                    0
+                  (viewMode === "system"
+                    ? sys?.expenses_total
+                    : selectedClosure.total_expenses) || 0
                 );
 
                 const expectedAfter = Number(sys?.expected_after_expenses_total || 0);
@@ -945,11 +957,7 @@ function DailyClosureHistoryPage() {
                       </div>
                       <button
                         type="button"
-                        onClick={() =>
-                          navigate(
-                            `/shops/${shopId}/sales-pos?tab=closure&closureDate=${day}`
-                          )
-                        }
+                        onClick={() => goToClosure(day)}
                         style={{
                           border: "none",
                           padding: "6px 14px",
@@ -975,23 +983,27 @@ function DailyClosureHistoryPage() {
                     >
                       <div>
                         <div style={{ color: "#6b7280" }}>Total sold</div>
-                        <div
-                          style={{ fontSize: "16px", fontWeight: 700 }}
-                        >{formatMoney(selectedClosure.total_sold_amount || 0)}</div>
+                        <div style={{ fontSize: "16px", fontWeight: 700 }}>
+                          {formatMoney(selectedClosure.total_sold_amount || 0)}
+                        </div>
                       </div>
                       <div>
                         <div style={{ color: "#6b7280" }}>Total profit</div>
                         <div
-                          style={{ fontSize: "16px", fontWeight: 700, color: "#16a34a" }}
+                          style={{
+                            fontSize: "16px",
+                            fontWeight: 700,
+                            color: "#16a34a",
+                          }}
                         >
                           {formatMoney(selectedClosure.total_profit || 0)}
                         </div>
                       </div>
                       <div>
                         <div style={{ color: "#6b7280" }}>Counted total</div>
-                        <div
-                          style={{ fontSize: "16px", fontWeight: 700 }}
-                        >{formatMoney(counted)}</div>
+                        <div style={{ fontSize: "16px", fontWeight: 700 }}>
+                          {formatMoney(counted)}
+                        </div>
                       </div>
                       <div>
                         <div style={{ color: "#6b7280" }}>
@@ -1012,16 +1024,20 @@ function DailyClosureHistoryPage() {
                         <div style={{ color: "#6b7280" }}>
                           Expenses ({viewMode})
                         </div>
-                        <div
-                          style={{ fontSize: "16px", fontWeight: 700 }}
-                        >{formatMoney(exp)}</div>
+                        <div style={{ fontSize: "16px", fontWeight: 700 }}>
+                          {formatMoney(exp)}
+                        </div>
                       </div>
                       <div>
                         <div style={{ color: "#6b7280" }}>
                           Net profit ({viewMode})
                         </div>
                         <div
-                          style={{ fontSize: "16px", fontWeight: 700, color: "#16a34a" }}
+                          style={{
+                            fontSize: "16px",
+                            fontWeight: 700,
+                            color: "#16a34a",
+                          }}
                         >
                           {formatMoney(netProfit)}
                         </div>
@@ -1031,7 +1047,9 @@ function DailyClosureHistoryPage() {
                     {selectedClosure.note && (
                       <div style={{ marginTop: "10px" }}>
                         <div style={{ color: "#6b7280", marginBottom: "2px" }}>Note</div>
-                        <div style={{ fontSize: "12px" }}>{selectedClosure.note}</div>
+                        <div style={{ fontSize: "12px" }}>
+                          {selectedClosure.note}
+                        </div>
                       </div>
                     )}
                   </>
