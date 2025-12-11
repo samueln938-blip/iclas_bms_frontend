@@ -752,6 +752,7 @@ export default function SalesPOS() {
           isCashier={isCashier}
           isManager={isManager}
           isOwner={isOwner}
+          isAdmin={isAdmin}  // ✅ NEW: pass admin flag to closure tab
         />
       ) : null}
 
