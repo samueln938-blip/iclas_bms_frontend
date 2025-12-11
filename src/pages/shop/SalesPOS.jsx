@@ -290,6 +290,44 @@ export default function SalesPOS() {
     [navigate, location.pathname]
   );
 
+  // 🔑 Helper: update closureDate (used by URL + DailyClosureTab history clicks)
+  const updateClosureDate = useCallback(
+    (newDateStr, { stayOnCurrentTab = false } = {}) => {
+      const requested = newDateStr || todayDateString();
+
+      // Cashier / non-allowed roles are always forced to today
+      let resolved = requested;
+      if (!canEditPastClosures) {
+        resolved = todayDateString();
+      }
+
+      setClosureDate(resolved);
+
+      const sp = new URLSearchParams(location.search);
+
+      // Decide which tab we want to land on
+      const targetTab = stayOnCurrentTab ? activeTab : "closure";
+      const key = allowedTabKeys.has(targetTab) ? targetTab : "closure";
+
+      sp.set("tab", key);
+
+      if (key === "closure") {
+        sp.set("closureDate", resolved);
+      } else {
+        sp.delete("closureDate");
+      }
+
+      if (key !== "current") {
+        sp.delete("editSaleId");
+        setEditSaleId(null);
+      }
+
+      navigateWithSearch(sp);
+      setActiveTab(key);
+    },
+    [activeTab, allowedTabKeys, canEditPastClosures, location.search, navigateWithSearch]
+  );
+
   // URL sync (?tab=... & ?closureDate=... & ?editSaleId=...)
   const setTabAndUrl = useCallback(
     (tabKey) => {
@@ -346,7 +384,7 @@ export default function SalesPOS() {
   );
 
   // ✅ Called by CurrentSaleTab after cancel OR after successful save
-  // ✅ FIX: do NOT force tab=current here, or it will override onGoToday() navigation
+  // ✅ Do NOT force tab=current here, or it will override onGoToday() navigation
   const clearEditSale = useCallback(() => {
     setEditSaleId(null);
     const sp = new URLSearchParams(location.search);
@@ -710,6 +748,7 @@ export default function SalesPOS() {
           clearAlerts={clearAlerts}
           // 🔑 which day are we closing, and who is editing?
           closureDate={closureDate}
+          onChangeClosureDate={updateClosureDate}
           isCashier={isCashier}
           isManager={isManager}
           isOwner={isOwner}
