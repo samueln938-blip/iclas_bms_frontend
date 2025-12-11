@@ -65,7 +65,7 @@ function parseDateAssumeKigali(raw) {
     const y = Number(mDate[1]);
     const mo = Number(mDate[2]);
     const da = Number(mDate[3]);
-    if (!y || !m || !da) return null;
+    if (!y || !mo || !da) return null;
 
     // Kigali midnight -> UTC is minus 2 hours
     return new Date(Date.UTC(y, mo - 1, da, -2, 0, 0, 0));
@@ -96,13 +96,16 @@ function parseDateAssumeKigali(raw) {
 
 function todayDateString() {
   // ✅ Kigali date (even if device timezone is wrong)
-  return _fmtPartsYMD(new Date()) || (() => {
-    const d = new Date();
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
-  })();
+  return (
+    _fmtPartsYMD(new Date()) ||
+    (() => {
+      const d = new Date();
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      return `${y}-${m}-${day}`;
+    })()
+  );
 }
 
 function addDaysYMD(ymd, deltaDays) {
@@ -430,7 +433,10 @@ function SalesHistoryPage() {
       let detail = `Request failed. Status: ${res.status}`;
       try {
         const j = await res.json();
-        if (j?.detail) detail = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
+        if (j?.detail) {
+          detail =
+            typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
+        }
       } catch {}
       throw new Error(detail);
     }
@@ -476,7 +482,10 @@ function SalesHistoryPage() {
       ];
 
       const tasks = candidates.map((url) =>
-        fetchJson(url, authHeadersNoJson, controller.signal).then((json) => ({ url, json }))
+        fetchJson(url, authHeadersNoJson, controller.signal).then((json) => ({
+          url,
+          json,
+        }))
       );
 
       let winner = null;
@@ -532,7 +541,10 @@ function SalesHistoryPage() {
       ];
 
       const tasks = candidates.map((url) =>
-        fetchJson(url, authHeadersNoJson, controller.signal).then((json) => ({ url, json }))
+        fetchJson(url, authHeadersNoJson, controller.signal).then((json) => ({
+          url,
+          json,
+        }))
       );
 
       let winner = null;
@@ -595,7 +607,11 @@ function SalesHistoryPage() {
       try {
         const url = `${API_BASE}/sales/?shop_id=${shopId}&date_from=${from}&date_to=${to}`;
         const json = await fetchJson(url, authHeadersNoJson, controller.signal);
-        const list = Array.isArray(json) ? json : Array.isArray(json?.sales) ? json.sales : [];
+        const list = Array.isArray(json)
+          ? json
+          : Array.isArray(json?.sales)
+          ? json.sales
+          : [];
 
         if (reqId !== salesReqIdRef.current) return;
 
@@ -694,9 +710,9 @@ function SalesHistoryPage() {
     const next = clampDaysBack(cur + HISTORY_STEP_DAYS);
 
     const to = todayDateString();
-    const curFrom = addDaysYMD(to, -cur + 1);     // current earliest day
-    const nextFrom = addDaysYMD(to, -next + 1);   // new earliest day
-    const extraTo = addDaysYMD(curFrom, -1);      // day before current range
+    const curFrom = addDaysYMD(to, -cur + 1); // current earliest day
+    const nextFrom = addDaysYMD(to, -next + 1); // new earliest day
+    const extraTo = addDaysYMD(curFrom, -1); // day before current range
 
     // If ranges overlap or invalid, just expand without fetching
     if (!nextFrom || !extraTo || extraTo < nextFrom) {
@@ -727,12 +743,17 @@ function SalesHistoryPage() {
       if (effectivePaymentFilter === "credit") return creditOpen;
       if (effectivePaymentFilter === "cash") return !creditOpen && paymentType === "cash";
       if (effectivePaymentFilter === "card") return !creditOpen && paymentType === "card";
-      if (effectivePaymentFilter === "mobile") return !creditOpen && paymentType === "mobile";
+      if (effectivePaymentFilter === "mobile")
+        return !creditOpen && paymentType === "mobile";
 
       if (tab === "search" && q) {
         const idHit = String(sale?.id ?? "").toLowerCase().includes(q);
-        const nameHit = String(sale?.customer_name ?? "").toLowerCase().includes(q);
-        const phoneHit = String(sale?.customer_phone ?? "").toLowerCase().includes(q);
+        const nameHit = String(sale?.customer_name ?? "")
+          .toLowerCase()
+          .includes(q);
+        const phoneHit = String(sale?.customer_phone ?? "")
+          .toLowerCase()
+          .includes(q);
 
         let itemHit = false;
         const lines = pickLines(sale);
@@ -800,7 +821,10 @@ function SalesHistoryPage() {
     [stockByItemId]
   );
 
-  const allItemsRows = useMemo(() => buildItemsRows(filteredSales), [filteredSales, buildItemsRows]);
+  const allItemsRows = useMemo(
+    () => buildItemsRows(filteredSales),
+    [filteredSales, buildItemsRows]
+  );
 
   // -------------------------
   // Summary for active range
@@ -820,7 +844,9 @@ function SalesHistoryPage() {
       if (cb > 0) openCredit += cb;
     }
 
-    for (const row of allItemsRows || []) piecesSold += Number(row.qtyPieces || 0);
+    for (const row of allItemsRows || []) {
+      piecesSold += Number(row.qtyPieces || 0);
+    }
 
     return {
       totalSales,
@@ -841,7 +867,9 @@ function SalesHistoryPage() {
       if (!map.has(day)) map.set(day, []);
       map.get(day).push(sale);
     }
-    const days = Array.from(map.keys()).sort((a, b) => String(b).localeCompare(String(a)));
+    const days = Array.from(map.keys()).sort((a, b) =>
+      String(b).localeCompare(String(a))
+    );
     return { map, days };
   }, [filteredSales]);
 
@@ -871,7 +899,7 @@ function SalesHistoryPage() {
   // -------------------------
   const [openDays, setOpenDays] = useState({});
 
-  // ✅ Inline edit state (items view)
+  // ✅ Edit pad state (items view)
   const [editRowId, setEditRowId] = useState(null);
   const [editDraft, setEditDraft] = useState({ qtyPieces: "", unitPrice: "" });
   const [savingEdit, setSavingEdit] = useState(false);
@@ -1044,7 +1072,9 @@ function SalesHistoryPage() {
     return (
       <div style={{ padding: "24px", color: "red" }}>
         <p>{error}</p>
-        <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <div
+          style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}
+        >
           <button
             onClick={() => loadShop()}
             style={{
@@ -1083,7 +1113,9 @@ function SalesHistoryPage() {
   const renderItemsTable = (salesList) => {
     if (loadingSales || loadingStock) {
       return (
-        <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
+        <div
+          style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}
+        >
           Loading items...
         </div>
       );
@@ -1092,35 +1124,268 @@ function SalesHistoryPage() {
     const rows = buildItemsRows(salesList);
     if (rows.length === 0) {
       return (
-        <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
+        <div
+          style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}
+        >
           No items found.
         </div>
       );
     }
 
+    const currentRow =
+      rows.find((r) => r.id === editRowId) || null;
+
     const draftQtyNum = Number(editDraft.qtyPieces);
     const draftPriceNum = Number(editDraft.unitPrice);
+    const showDraftTotal =
+      Number.isFinite(draftQtyNum) &&
+      draftQtyNum > 0 &&
+      Number.isFinite(draftPriceNum) &&
+      draftPriceNum > 0;
+    const draftTotal = showDraftTotal ? draftQtyNum * draftPriceNum : null;
 
     return (
       <>
-        {editError && (
+        {/* Edit pad at top */}
+        {currentRow ? (
+          <div
+            style={{
+              marginBottom: 10,
+              padding: "10px 14px",
+              borderRadius: 999,
+              border: "1px dashed #d1d5db",
+              background:
+                "linear-gradient(135deg, #f9fafb 0%, #f3f4ff 40%, #eef2ff 100%)",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 12,
+                alignItems: "center",
+                flexWrap: "wrap",
+              }}
+            >
+              <div style={{ minWidth: 0 }}>
+                <div
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 800,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.12em",
+                    color: "#4b5563",
+                    marginBottom: 4,
+                  }}
+                >
+                  Edit sale line
+                </div>
+                <div
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 700,
+                    color: "#111827",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  Sale #{currentRow.saleId} • {currentRow.itemName}
+                </div>
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: "#6b7280",
+                    marginTop: 2,
+                  }}
+                >
+                  Adjust pieces and price, then click{" "}
+                  <span style={{ fontWeight: 700 }}>Save</span>.
+                </div>
+              </div>
+
+              <div
+                style={{
+                  flex: 1,
+                  display: "grid",
+                  gridTemplateColumns: "minmax(90px, 130px) minmax(110px, 150px) minmax(120px, 1fr)",
+                  gap: 8,
+                  alignItems: "center",
+                }}
+              >
+                <div>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "#6b7280",
+                      marginBottom: 2,
+                    }}
+                  >
+                    Pieces
+                  </div>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={editDraft.qtyPieces}
+                    onChange={(e) =>
+                      setEditDraft((prev) => ({
+                        ...prev,
+                        qtyPieces: e.target.value,
+                      }))
+                    }
+                    style={{
+                      width: "100%",
+                      padding: "8px 10px",
+                      borderRadius: 999,
+                      border: "1px solid #d1d5db",
+                      fontSize: 13,
+                      textAlign: "right",
+                      backgroundColor: "#ffffff",
+                    }}
+                  />
+                </div>
+
+                <div>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "#6b7280",
+                      marginBottom: 2,
+                    }}
+                  >
+                    Price per piece
+                  </div>
+                  <input
+                    type="number"
+                    step="1"
+                    value={editDraft.unitPrice}
+                    onChange={(e) =>
+                      setEditDraft((prev) => ({
+                        ...prev,
+                        unitPrice: e.target.value,
+                      }))
+                    }
+                    style={{
+                      width: "100%",
+                      padding: "8px 10px",
+                      borderRadius: 999,
+                      border: "1px solid #d1d5db",
+                      fontSize: 13,
+                      textAlign: "right",
+                      backgroundColor: "#ffffff",
+                    }}
+                  />
+                </div>
+
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 8,
+                    alignItems: "center",
+                    justifyContent: "flex-end",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  {showDraftTotal && (
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: "#111827",
+                        fontWeight: 700,
+                      }}
+                    >
+                      Total:&nbsp;
+                      <span style={{ color: "#111827" }}>
+                        {formatMoney(draftTotal)}
+                      </span>
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!savingEdit) saveInlineEdit(currentRow);
+                    }}
+                    disabled={savingEdit}
+                    style={{
+                      padding: "8px 16px",
+                      borderRadius: 999,
+                      border: "none",
+                      background:
+                        "linear-gradient(135deg, #2563eb, #1d4ed8)",
+                      color: "#ffffff",
+                      fontSize: 13,
+                      fontWeight: 800,
+                      cursor: savingEdit ? "default" : "pointer",
+                      boxShadow: "0 4px 14px rgba(37, 99, 235, 0.35)",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {savingEdit ? "Saving..." : "Save"}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!savingEdit) cancelEdit();
+                    }}
+                    disabled={savingEdit}
+                    style={{
+                      padding: "8px 12px",
+                      borderRadius: 999,
+                      border: "1px solid #e5e7eb",
+                      background: "#ffffff",
+                      color: "#4b5563",
+                      fontSize: 12,
+                      fontWeight: 700,
+                      cursor: savingEdit ? "default" : "pointer",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {editError && (
+              <div
+                style={{
+                  marginTop: 6,
+                  padding: "6px 8px",
+                  borderRadius: 12,
+                  background: "#fef2f2",
+                  border: "1px solid #fecaca",
+                  color: "#b91c1c",
+                  fontSize: 11,
+                  fontWeight: 600,
+                }}
+              >
+                {editError}
+              </div>
+            )}
+          </div>
+        ) : (
           <div
             style={{
               marginBottom: 6,
-              padding: "6px 8px",
-              borderRadius: 10,
-              background: "#fef2f2",
-              border: "1px solid #fecaca",
-              color: "#b91c1c",
               fontSize: 12,
-              fontWeight: 600,
+              color: "#6b7280",
             }}
           >
-            {editError}
+            Tip: click any item row to open the edit pad.
           </div>
         )}
 
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+        <table
+          style={{
+            width: "100%",
+            borderCollapse: "collapse",
+            fontSize: "13px",
+          }}
+        >
           <thead>
             <tr
               style={{
@@ -1135,9 +1400,13 @@ function SalesHistoryPage() {
               <th style={{ padding: "6px 4px" }}>Time</th>
               <th style={{ padding: "6px 4px" }}>Item</th>
               <th style={{ padding: "6px 4px", textAlign: "right" }}>Qty</th>
-              <th style={{ padding: "6px 4px", textAlign: "right" }}>Unit price</th>
+              <th style={{ padding: "6px 4px", textAlign: "right" }}>
+                Unit price
+              </th>
               <th style={{ padding: "6px 4px", textAlign: "right" }}>Total</th>
-              <th style={{ padding: "6px 4px", textAlign: "right" }}>Profit</th>
+              <th style={{ padding: "6px 4px", textAlign: "right" }}>
+                Profit
+              </th>
               <th style={{ padding: "6px 4px" }}>Payment</th>
               <th style={{ padding: "6px 4px" }}>Status</th>
             </tr>
@@ -1160,12 +1429,6 @@ function SalesHistoryPage() {
               const statusColor = isCredit ? "#b91c1c" : "#166534";
 
               const isEditing = editRowId === row.id;
-              const showDraftTotal =
-                isEditing &&
-                Number.isFinite(draftQtyNum) &&
-                draftQtyNum > 0 &&
-                Number.isFinite(draftPriceNum) &&
-                draftPriceNum > 0;
 
               return (
                 <tr
@@ -1177,61 +1440,31 @@ function SalesHistoryPage() {
                   }}
                   onClick={() => startEditRow(row)}
                 >
-                  <td style={{ padding: "8px 4px" }}>{formatTimeHM(row.time)}</td>
                   <td style={{ padding: "8px 4px" }}>
-                    <span style={{ color: "#2563eb", fontWeight: 600 }}>{row.itemName}</span>
+                    {formatTimeHM(row.time)}
                   </td>
-                  <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                    {isEditing ? (
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={editDraft.qtyPieces}
-                        onClick={(e) => e.stopPropagation()}
-                        onChange={(e) =>
-                          setEditDraft((prev) => ({
-                            ...prev,
-                            qtyPieces: e.target.value,
-                          }))
-                        }
-                        style={{
-                          width: "100%",
-                          padding: "4px 6px",
-                          textAlign: "right",
-                          borderRadius: 8,
-                          border: "1px solid #d1d5db",
-                          fontSize: 12,
-                        }}
-                      />
-                    ) : (
-                      formatMoney(row.qtyPieces)
-                    )}
+                  <td style={{ padding: "8px 4px" }}>
+                    <span
+                      style={{ color: "#2563eb", fontWeight: 600 }}
+                    >
+                      {row.itemName}
+                    </span>
                   </td>
-                  <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                    {isEditing ? (
-                      <input
-                        type="number"
-                        step="1"
-                        value={editDraft.unitPrice}
-                        onClick={(e) => e.stopPropagation()}
-                        onChange={(e) =>
-                          setEditDraft((prev) => ({
-                            ...prev,
-                            unitPrice: e.target.value,
-                          }))
-                        }
-                        style={{
-                          width: "100%",
-                          padding: "4px 6px",
-                          textAlign: "right",
-                          borderRadius: 8,
-                          border: "1px solid #d1d5db",
-                          fontSize: 12,
-                        }}
-                      />
-                    ) : (
-                      formatMoney(row.unitPrice)
-                    )}
+                  <td
+                    style={{
+                      padding: "8px 4px",
+                      textAlign: "right",
+                    }}
+                  >
+                    {formatMoney(row.qtyPieces)}
+                  </td>
+                  <td
+                    style={{
+                      padding: "8px 4px",
+                      textAlign: "right",
+                    }}
+                  >
+                    {formatMoney(row.unitPrice)}
                   </td>
                   <td
                     style={{
@@ -1240,11 +1473,14 @@ function SalesHistoryPage() {
                       fontWeight: 600,
                     }}
                   >
-                    {showDraftTotal
-                      ? formatMoney(draftQtyNum * draftPriceNum)
-                      : formatMoney(row.total)}
+                    {formatMoney(row.total)}
                   </td>
-                  <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                  <td
+                    style={{
+                      padding: "8px 4px",
+                      textAlign: "right",
+                    }}
+                  >
                     {formatMoney(row.profit)}
                   </td>
                   <td style={{ padding: "8px 4px" }}>
@@ -1263,65 +1499,20 @@ function SalesHistoryPage() {
                     </span>
                   </td>
                   <td style={{ padding: "8px 4px" }}>
-                    {isEditing ? (
-                      <div style={{ display: "flex", gap: 6 }}>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (!savingEdit) saveInlineEdit(row);
-                          }}
-                          disabled={savingEdit}
-                          style={{
-                            padding: "4px 8px",
-                            borderRadius: 999,
-                            border: "1px solid #16a34a",
-                            background: "#16a34a",
-                            color: "#fff",
-                            fontSize: 11,
-                            fontWeight: 700,
-                            cursor: savingEdit ? "default" : "pointer",
-                          }}
-                        >
-                          {savingEdit ? "Saving..." : "Save"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (!savingEdit) cancelEdit();
-                          }}
-                          disabled={savingEdit}
-                          style={{
-                            padding: "4px 8px",
-                            borderRadius: 999,
-                            border: "1px solid #e5e7eb",
-                            background: "#fff",
-                            color: "#4b5563",
-                            fontSize: 11,
-                            fontWeight: 700,
-                            cursor: savingEdit ? "default" : "pointer",
-                          }}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    ) : (
-                      <span
-                        style={{
-                          display: "inline-block",
-                          padding: "2px 8px",
-                          borderRadius: "999px",
-                          backgroundColor: statusBg,
-                          border: `1px solid ${statusBorder}`,
-                          color: statusColor,
-                          fontSize: "11px",
-                          fontWeight: 600,
-                        }}
-                      >
-                        {statusLabel}
-                      </span>
-                    )}
+                    <span
+                      style={{
+                        display: "inline-block",
+                        padding: "2px 8px",
+                        borderRadius: "999px",
+                        backgroundColor: statusBg,
+                        border: `1px solid ${statusBorder}`,
+                        color: statusColor,
+                        fontSize: "11px",
+                        fontWeight: 600,
+                      }}
+                    >
+                      {statusLabel}
+                    </span>
                   </td>
                 </tr>
               );
@@ -1335,21 +1526,31 @@ function SalesHistoryPage() {
   const renderReceiptsTable = (salesList) => {
     if (loadingSales) {
       return (
-        <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
+        <div
+          style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}
+        >
           Loading receipts...
         </div>
       );
     }
     if (!salesList?.length) {
       return (
-        <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
+        <div
+          style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}
+        >
           No receipts found.
         </div>
       );
     }
 
     return (
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+      <table
+        style={{
+          width: "100%",
+          borderCollapse: "collapse",
+          fontSize: "13px",
+        }}
+      >
         <thead>
           <tr
             style={{
@@ -1399,38 +1600,76 @@ function SalesHistoryPage() {
 
             return (
               <tr key={sale.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
-                <td style={{ padding: "8px 4px" }}>{formatDateTime(sale.sale_date)}</td>
+                <td style={{ padding: "8px 4px" }}>
+                  {formatDateTime(sale.sale_date)}
+                </td>
                 <td style={{ padding: "8px 4px" }}>
                   {sale.customer_name ? (
                     <>
-                      <span style={{ color: "#2563eb", fontWeight: 600 }}>
+                      <span
+                        style={{ color: "#2563eb", fontWeight: 600 }}
+                      >
                         {sale.customer_name}
                       </span>
                       {sale.customer_phone && (
-                        <span style={{ display: "block", fontSize: "11px", color: "#6b7280" }}>
+                        <span
+                          style={{
+                            display: "block",
+                            fontSize: "11px",
+                            color: "#6b7280",
+                          }}
+                        >
                           {sale.customer_phone}
                         </span>
                       )}
-                      <span style={{ display: "block", fontSize: "11px", color: "#9ca3af" }}>
+                      <span
+                        style={{
+                          display: "block",
+                          fontSize: "11px",
+                          color: "#9ca3af",
+                        }}
+                      >
                         Receipt #{sale.id}
                       </span>
                     </>
                   ) : (
                     <>
                       <span style={{ color: "#6b7280" }}>Walk-in</span>
-                      <span style={{ display: "block", fontSize: "11px", color: "#9ca3af" }}>
+                      <span
+                        style={{
+                          display: "block",
+                          fontSize: "11px",
+                          color: "#9ca3af",
+                        }}
+                      >
                         Receipt #{sale.id}
                       </span>
                     </>
                   )}
                 </td>
-                <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                <td
+                  style={{
+                    padding: "8px 4px",
+                    textAlign: "right",
+                  }}
+                >
                   {formatMoney(piecesCount)}
                 </td>
-                <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600 }}>
+                <td
+                  style={{
+                    padding: "8px 4px",
+                    textAlign: "right",
+                    fontWeight: 600,
+                  }}
+                >
                   {formatMoney(total)}
                 </td>
-                <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                <td
+                  style={{
+                    padding: "8px 4px",
+                    textAlign: "right",
+                  }}
+                >
                   {formatMoney(profit)}
                 </td>
                 <td style={{ padding: "8px 4px" }}>
@@ -1515,21 +1754,42 @@ function SalesHistoryPage() {
         }}
       >
         <div>
-          <h1 style={{ fontSize: "28px", fontWeight: 800, letterSpacing: "0.02em", margin: 0 }}>
+          <h1
+            style={{
+              fontSize: "28px",
+              fontWeight: 800,
+              letterSpacing: "0.02em",
+              margin: 0,
+            }}
+          >
             {title}
           </h1>
           <p style={{ color: "#6b7280", marginTop: "0.5rem" }}>
-            <strong>{shopName}</strong> • Range: <strong>{activeDateFrom}</strong> →{" "}
+            <strong>{shopName}</strong> • Range:{" "}
+            <strong>{activeDateFrom}</strong> →{" "}
             <strong>{activeDateTo}</strong>
             {lastSalesSyncAt && (
-              <span style={{ marginLeft: 10, fontSize: 12, color: "#9ca3af" }}>
+              <span
+                style={{
+                  marginLeft: 10,
+                  fontSize: 12,
+                  color: "#9ca3af",
+                }}
+              >
                 • Synced: {formatTimeHM(lastSalesSyncAt)}
               </span>
             )}
           </p>
         </div>
 
-        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 10,
+            alignItems: "center",
+            flexWrap: "wrap",
+          }}
+        >
           {tab === "today" && (
             <label
               style={{
@@ -1605,7 +1865,8 @@ function SalesHistoryPage() {
 
                 if (t.key === "today") setSelectedDate(todayDateString());
                 if (t.key === "credits") setPaymentFilter("credit");
-                if (t.key !== "credits" && paymentFilter === "credit") setPaymentFilter("all");
+                if (t.key !== "credits" && paymentFilter === "credit")
+                  setPaymentFilter("all");
 
                 if (t.key === "history") {
                   // sync draft value for UI
@@ -1621,7 +1882,9 @@ function SalesHistoryPage() {
                 fontWeight: 700,
                 backgroundColor: active ? "#ffffff" : "transparent",
                 color: active ? "#111827" : "#4b5563",
-                boxShadow: active ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
+                boxShadow: active
+                  ? "0 2px 6px rgba(0,0,0,0.08)"
+                  : "none",
               }}
             >
               {t.label}
@@ -1631,7 +1894,15 @@ function SalesHistoryPage() {
       </div>
 
       {/* Controls row */}
-      <div style={{ marginTop: 14, display: "flex", flexWrap: "wrap", gap: "10px 16px", alignItems: "center" }}>
+      <div
+        style={{
+          marginTop: 14,
+          display: "flex",
+          flexWrap: "wrap",
+          gap: "10px 16px",
+          alignItems: "center",
+        }}
+      >
         {tab === "history" && (
           <div
             style={{
@@ -1643,7 +1914,9 @@ function SalesHistoryPage() {
               fontSize: 13,
             }}
           >
-            <span style={{ fontWeight: 800, color: "#111827" }}>All history:</span>
+            <span style={{ fontWeight: 800, color: "#111827" }}>
+              All history:
+            </span>
             <span>Show last</span>
             <input
               type="number"
@@ -1651,7 +1924,13 @@ function SalesHistoryPage() {
               step="1"
               value={historyDaysBackDraft}
               onChange={(e) => setHistoryDaysBackDraft(e.target.value)}
-              style={{ width: 90, padding: "6px 10px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13 }}
+              style={{
+                width: 90,
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: "1px solid #d1d5db",
+                fontSize: 13,
+              }}
             />
             <span>days</span>
             <button
@@ -1787,14 +2066,28 @@ function SalesHistoryPage() {
         )}
 
         {tab === "range" && (
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", color: "#6b7280", fontSize: 13 }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
+              alignItems: "center",
+              flexWrap: "wrap",
+              color: "#6b7280",
+              fontSize: 13,
+            }}
+          >
             <div>
               From:&nbsp;
               <input
                 type="date"
                 value={rangeFrom}
                 onChange={(e) => setRangeFrom(e.target.value)}
-                style={{ padding: "6px 10px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13 }}
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  border: "1px solid #d1d5db",
+                  fontSize: 13,
+                }}
               />
             </div>
             <div>
@@ -1803,7 +2096,12 @@ function SalesHistoryPage() {
                 type="date"
                 value={rangeTo}
                 onChange={(e) => setRangeTo(e.target.value)}
-                style={{ padding: "6px 10px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13 }}
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  border: "1px solid #d1d5db",
+                  fontSize: 13,
+                }}
               />
             </div>
             <button
@@ -1852,20 +2150,39 @@ function SalesHistoryPage() {
               type="month"
               value={selectedMonth}
               onChange={(e) => setSelectedMonth(e.target.value)}
-              style={{ padding: "6px 10px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13 }}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: "1px solid #d1d5db",
+                fontSize: 13,
+              }}
             />
           </div>
         )}
 
         {tab === "credits" && (
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", color: "#6b7280", fontSize: 13 }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
+              alignItems: "center",
+              flexWrap: "wrap",
+              color: "#6b7280",
+              fontSize: 13,
+            }}
+          >
             <div>
               From:&nbsp;
               <input
                 type="date"
                 value={creditFrom}
                 onChange={(e) => setCreditFrom(e.target.value)}
-                style={{ padding: "6px 10px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13 }}
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  border: "1px solid #d1d5db",
+                  fontSize: 13,
+                }}
               />
             </div>
             <div>
@@ -1874,17 +2191,35 @@ function SalesHistoryPage() {
                 type="date"
                 value={creditTo}
                 onChange={(e) => setCreditTo(e.target.value)}
-                style={{ padding: "6px 10px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13 }}
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  border: "1px solid #d1d5db",
+                  fontSize: 13,
+                }}
               />
             </div>
-            <span style={{ fontSize: 12, color: "#b91c1c", fontWeight: 800 }}>
+            <span
+              style={{
+                fontSize: 12,
+                color: "#b91c1c",
+                fontWeight: 800,
+              }}
+            >
               Showing credit_balance &gt; 0
             </span>
           </div>
         )}
 
         {tab === "search" && (
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
+              alignItems: "center",
+              flexWrap: "wrap",
+            }}
+          >
             <div style={{ color: "#6b7280", fontSize: 13 }}>
               Last&nbsp;
               <input
@@ -1893,7 +2228,13 @@ function SalesHistoryPage() {
                 step="1"
                 value={searchDaysBack}
                 onChange={(e) => setSearchDaysBack(e.target.value)}
-                style={{ width: 80, padding: "6px 10px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13 }}
+                style={{
+                  width: 80,
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  border: "1px solid #d1d5db",
+                  fontSize: 13,
+                }}
               />
               &nbsp;days
             </div>
@@ -1914,7 +2255,14 @@ function SalesHistoryPage() {
         )}
 
         {/* Payment filter */}
-        <div style={{ display: "inline-flex", backgroundColor: "#e5e7eb", borderRadius: "999px", padding: "2px" }}>
+        <div
+          style={{
+            display: "inline-flex",
+            backgroundColor: "#e5e7eb",
+            borderRadius: "999px",
+            padding: "2px",
+          }}
+        >
           {[
             { key: "all", label: "All" },
             { key: "cash", label: "Cash" },
@@ -1922,7 +2270,8 @@ function SalesHistoryPage() {
             { key: "mobile", label: "MoMo" },
             { key: "credit", label: "Credit" },
           ].map((opt) => {
-            const isActive = (tab === "credits" ? "credit" : paymentFilter) === opt.key;
+            const isActive =
+              (tab === "credits" ? "credit" : paymentFilter) === opt.key;
             return (
               <button
                 key={opt.key}
@@ -1937,10 +2286,14 @@ function SalesHistoryPage() {
                   fontWeight: 700,
                   backgroundColor: isActive ? "#ffffff" : "transparent",
                   color: isActive ? "#111827" : "#4b5563",
-                  boxShadow: isActive ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
+                  boxShadow: isActive
+                    ? "0 2px 6px rgba(0,0,0,0.08)"
+                    : "none",
                   opacity: tab === "credits" ? 0.6 : 1,
                 }}
-                title={tab === "credits" ? "Credits tab always shows Credit" : ""}
+                title={
+                  tab === "credits" ? "Credits tab always shows Credit" : ""
+                }
               >
                 {opt.label}
               </button>
@@ -1977,7 +2330,9 @@ function SalesHistoryPage() {
                   fontWeight: 700,
                   backgroundColor: isActive ? "#ffffff" : "transparent",
                   color: isActive ? "#111827" : "#4b5563",
-                  boxShadow: isActive ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
+                  boxShadow: isActive
+                    ? "0 2px 6px rgba(0,0,0,0.08)"
+                    : "none",
                 }}
               >
                 {opt.label}
@@ -2017,35 +2372,94 @@ function SalesHistoryPage() {
           fontSize: "12px",
         }}
       >
-        <div style={{ fontSize: "14px", fontWeight: 800, marginBottom: "6px" }}>Summary</div>
-        <div style={{ fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.12em", color: "#9ca3af", marginBottom: "8px" }}>
+        <div
+          style={{
+            fontSize: "14px",
+            fontWeight: 800,
+            marginBottom: "6px",
+          }}
+        >
+          Summary
+        </div>
+        <div
+          style={{
+            fontSize: "11px",
+            textTransform: "uppercase",
+            letterSpacing: "0.12em",
+            color: "#9ca3af",
+            marginBottom: "8px",
+          }}
+        >
           {activeDateFrom} → {activeDateTo}
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", rowGap: "8px", columnGap: "16px" }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
+            rowGap: "8px",
+            columnGap: "16px",
+          }}
+        >
           <div>
             <div style={{ color: "#6b7280" }}>Total sales</div>
-            <div style={{ fontSize: "18px", fontWeight: 900 }}>{formatMoney(rangeSummary.totalSales)}</div>
+            <div
+              style={{
+                fontSize: "18px",
+                fontWeight: 900,
+              }}
+            >
+              {formatMoney(rangeSummary.totalSales)}
+            </div>
           </div>
 
           <div>
             <div style={{ color: "#6b7280" }}>Total profit</div>
-            <div style={{ fontSize: "16px", fontWeight: 800, color: "#16a34a" }}>{formatMoney(rangeSummary.totalProfit)}</div>
+            <div
+              style={{
+                fontSize: "16px",
+                fontWeight: 800,
+                color: "#16a34a",
+              }}
+            >
+              {formatMoney(rangeSummary.totalProfit)}
+            </div>
           </div>
 
           <div>
             <div style={{ color: "#6b7280" }}>Pieces sold</div>
-            <div style={{ fontSize: "16px", fontWeight: 800 }}>{formatMoney(rangeSummary.piecesSold)}</div>
+            <div
+              style={{
+                fontSize: "16px",
+                fontWeight: 800,
+              }}
+            >
+              {formatMoney(rangeSummary.piecesSold)}
+            </div>
           </div>
 
           <div>
             <div style={{ color: "#6b7280" }}>Receipts</div>
-            <div style={{ fontSize: "16px", fontWeight: 800 }}>{formatMoney(rangeSummary.receiptsCount)}</div>
+            <div
+              style={{
+                fontSize: "16px",
+                fontWeight: 800,
+              }}
+            >
+              {formatMoney(rangeSummary.receiptsCount)}
+            </div>
           </div>
 
           <div>
             <div style={{ color: "#6b7280" }}>Open credit</div>
-            <div style={{ fontWeight: 900, color: "#b91c1c" }}>{formatMoney(rangeSummary.openCredit)}</div>
+            <div
+              style={{
+                fontWeight: 900,
+                color: "#b91c1c",
+              }}
+            >
+              {formatMoney(rangeSummary.openCredit)}
+            </div>
           </div>
         </div>
       </div>
@@ -2061,21 +2475,50 @@ function SalesHistoryPage() {
             marginBottom: 12,
           }}
         >
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "baseline",
+              gap: 12,
+              flexWrap: "wrap",
+            }}
+          >
             <div style={{ fontWeight: 900, fontSize: 13 }}>Daily totals</div>
-            <div style={{ fontSize: 12, color: "#6b7280" }}>Tip: click a day to expand receipts</div>
+            <div style={{ fontSize: 12, color: "#6b7280" }}>
+              Tip: click a day to expand receipts
+            </div>
           </div>
 
           {loadingSales ? (
-            <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
+            <div
+              style={{
+                padding: "10px 4px",
+                fontSize: "13px",
+                color: "#6b7280",
+              }}
+            >
               Loading daily totals...
             </div>
           ) : dailyTotalsTable.length === 0 ? (
-            <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
+            <div
+              style={{
+                padding: "10px 4px",
+                fontSize: "13px",
+                color: "#6b7280",
+              }}
+            >
               No data in this range.
             </div>
           ) : (
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginTop: 8 }}>
+            <table
+              style={{
+                width: "100%",
+                borderCollapse: "collapse",
+                fontSize: 13,
+                marginTop: 8,
+              }}
+            >
               <thead>
                 <tr
                   style={{
@@ -2088,10 +2531,18 @@ function SalesHistoryPage() {
                   }}
                 >
                   <th style={{ padding: "6px 4px" }}>Day</th>
-                  <th style={{ padding: "6px 4px", textAlign: "right" }}>Receipts</th>
-                  <th style={{ padding: "6px 4px", textAlign: "right" }}>Total</th>
-                  <th style={{ padding: "6px 4px", textAlign: "right" }}>Profit</th>
-                  <th style={{ padding: "6px 4px", textAlign: "right" }}>Open credit</th>
+                  <th style={{ padding: "6px 4px", textAlign: "right" }}>
+                    Receipts
+                  </th>
+                  <th style={{ padding: "6px 4px", textAlign: "right" }}>
+                    Total
+                  </th>
+                  <th style={{ padding: "6px 4px", textAlign: "right" }}>
+                    Profit
+                  </th>
+                  <th style={{ padding: "6px 4px", textAlign: "right" }}>
+                    Open credit
+                  </th>
                   <th style={{ padding: "6px 4px" }}></th>
                 </tr>
               </thead>
@@ -2101,16 +2552,70 @@ function SalesHistoryPage() {
                   const daySales = groupedByDay.map.get(r.day) || [];
                   return (
                     <React.Fragment key={r.day}>
-                      <tr style={{ borderBottom: "1px solid #f3f4f6" }}>
-                        <td style={{ padding: "8px 4px", fontWeight: 800 }}>{r.day}</td>
-                        <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(r.receipts)}</td>
-                        <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 800 }}>{formatMoney(r.total)}</td>
-                        <td style={{ padding: "8px 4px", textAlign: "right", color: "#16a34a", fontWeight: 800 }}>{formatMoney(r.profit)}</td>
-                        <td style={{ padding: "8px 4px", textAlign: "right", color: "#b91c1c", fontWeight: 900 }}>{formatMoney(r.openCredit)}</td>
-                        <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                      <tr
+                        style={{
+                          borderBottom: "1px solid #f3f4f6",
+                        }}
+                      >
+                        <td
+                          style={{
+                            padding: "8px 4px",
+                            fontWeight: 800,
+                          }}
+                        >
+                          {r.day}
+                        </td>
+                        <td
+                          style={{
+                            padding: "8px 4px",
+                            textAlign: "right",
+                          }}
+                        >
+                          {formatMoney(r.receipts)}
+                        </td>
+                        <td
+                          style={{
+                            padding: "8px 4px",
+                            textAlign: "right",
+                            fontWeight: 800,
+                          }}
+                        >
+                          {formatMoney(r.total)}
+                        </td>
+                        <td
+                          style={{
+                            padding: "8px 4px",
+                            textAlign: "right",
+                            color: "#16a34a",
+                            fontWeight: 800,
+                          }}
+                        >
+                          {formatMoney(r.profit)}
+                        </td>
+                        <td
+                          style={{
+                            padding: "8px 4px",
+                            textAlign: "right",
+                            color: "#b91c1c",
+                            fontWeight: 900,
+                          }}
+                        >
+                          {formatMoney(r.openCredit)}
+                        </td>
+                        <td
+                          style={{
+                            padding: "8px 4px",
+                            textAlign: "right",
+                          }}
+                        >
                           <button
                             type="button"
-                            onClick={() => setOpenDays((prev) => ({ ...prev, [r.day]: !prev[r.day] }))}
+                            onClick={() =>
+                              setOpenDays((prev) => ({
+                                ...prev,
+                                [r.day]: !prev[r.day],
+                              }))
+                            }
                             style={{
                               padding: "6px 10px",
                               borderRadius: 999,
@@ -2129,7 +2634,14 @@ function SalesHistoryPage() {
                       {open && (
                         <tr>
                           <td colSpan={6} style={{ padding: "10px 4px" }}>
-                            <div style={{ borderRadius: 14, border: "1px solid #e5e7eb", background: "#fafafa", padding: 10 }}>
+                            <div
+                              style={{
+                                borderRadius: 14,
+                                border: "1px solid #e5e7eb",
+                                background: "#fafafa",
+                                padding: 10,
+                              }}
+                            >
                               {viewMode === "items"
                                 ? renderItemsTable(daySales)
                                 : renderReceiptsTable(daySales)}
@@ -2156,7 +2668,9 @@ function SalesHistoryPage() {
             padding: "10px 12px 10px",
           }}
         >
-          {viewMode === "items" ? renderItemsTable(filteredSales) : renderReceiptsTable(filteredSales)}
+          {viewMode === "items"
+            ? renderItemsTable(filteredSales)
+            : renderReceiptsTable(filteredSales)}
         </div>
       )}
     </div>
