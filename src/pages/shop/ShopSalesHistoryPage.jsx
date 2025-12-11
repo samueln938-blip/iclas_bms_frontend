@@ -65,7 +65,7 @@ function parseDateAssumeKigali(raw) {
     const y = Number(mDate[1]);
     const mo = Number(mDate[2]);
     const da = Number(mDate[3]);
-    if (!y || !mo || !da) return null;
+    if (!y || !m || !da) return null;
 
     // Kigali midnight -> UTC is minus 2 hours
     return new Date(Date.UTC(y, mo - 1, da, -2, 0, 0, 0));
@@ -781,6 +781,7 @@ function SalesHistoryPage() {
 
           rows.push({
             id: `${sale.id}-${line.id ?? Math.random().toString(16).slice(2)}`,
+            lineId: line.id ?? null,
             saleId: sale.id,
             time: saleTime,
             itemId,
@@ -869,9 +870,164 @@ function SalesHistoryPage() {
   // UI states
   // -------------------------
   const [openDays, setOpenDays] = useState({});
+
+  // ✅ Inline edit state (items view)
+  const [editRowId, setEditRowId] = useState(null);
+  const [editDraft, setEditDraft] = useState({ qtyPieces: "", unitPrice: "" });
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState("");
+
   useEffect(() => {
     setOpenDays({});
+    setEditRowId(null);
+    setEditError("");
   }, [tab, activeDateFrom, activeDateTo]);
+
+  const startEditRow = useCallback((row) => {
+    if (!row) return;
+    setEditRowId(row.id);
+    setEditDraft({
+      qtyPieces: row.qtyPieces != null ? String(row.qtyPieces) : "",
+      unitPrice: row.unitPrice != null ? String(row.unitPrice) : "",
+    });
+    setEditError("");
+  }, []);
+
+  const cancelEdit = useCallback(() => {
+    setEditRowId(null);
+    setEditError("");
+  }, []);
+
+  const saveInlineEdit = useCallback(
+    async (row) => {
+      if (!row) return;
+
+      const qty = Number(editDraft.qtyPieces);
+      const price = Number(editDraft.unitPrice);
+
+      if (!Number.isFinite(qty) || qty <= 0) {
+        setEditError("Quantity must be greater than 0.");
+        return;
+      }
+      if (!Number.isFinite(price) || price <= 0) {
+        setEditError("Unit price must be greater than 0.");
+        return;
+      }
+
+      try {
+        setSavingEdit(true);
+        setEditError("");
+
+        // 1) Load full sale (with lines)
+        const saleRes = await fetch(`${API_BASE}/sales/${row.saleId}`, {
+          headers: authHeadersNoJson,
+          cache: "no-store",
+        });
+
+        if (!saleRes.ok) {
+          let detail = `Failed to load sale #${row.saleId} (status ${saleRes.status}).`;
+          try {
+            const j = await saleRes.json();
+            if (j?.detail) {
+              detail =
+                typeof j.detail === "string"
+                  ? j.detail
+                  : JSON.stringify(j.detail);
+            }
+          } catch {}
+          throw new Error(detail);
+        }
+
+        const sale = await saleRes.json();
+        const linesSrc = sale.lines || sale.sale_lines || sale.items || [];
+        if (!Array.isArray(linesSrc) || linesSrc.length === 0) {
+          throw new Error("Sale has no lines to edit.");
+        }
+
+        // 2) Build new lines payload (only one line changed)
+        const linesPayload = linesSrc.map((ln) => {
+          const lineId = ln.id ?? ln.line_id ?? null;
+          const isTarget =
+            lineId != null && row.lineId != null
+              ? String(lineId) === String(row.lineId)
+              : false;
+
+          const itemId = ln.item_id ?? ln.itemId ?? (ln.item && ln.item.id);
+
+          const originalQty =
+            ln.quantity_pieces ??
+            ln.quantity ??
+            ln.qty_pieces ??
+            ln.qtyPieces ??
+            ln.qty ??
+            0;
+
+          const originalPrice =
+            ln.sale_price_per_piece ??
+            ln.unit_sale_price ??
+            ln.unit_price ??
+            ln.unitPrice ??
+            ln.price_per_piece ??
+            ln.price ??
+            0;
+
+          return {
+            item_id: itemId,
+            quantity_pieces: isTarget ? qty : originalQty,
+            sale_price_per_piece: isTarget ? price : originalPrice,
+          };
+        });
+
+        const payload = {
+          shop_id: sale.shop_id ?? sale.shopId,
+          payment_type: sale.payment_type ?? sale.paymentType ?? null,
+          is_credit_sale: sale.is_credit_sale ?? sale.isCreditSale ?? false,
+          customer_name: sale.customer_name ?? sale.customerName ?? null,
+          customer_phone: sale.customer_phone ?? sale.customerPhone ?? null,
+          lines: linesPayload,
+        };
+
+        // 3) PUT update
+        const putRes = await fetch(`${API_BASE}/sales/${row.saleId}`, {
+          method: "PUT",
+          headers: {
+            ...authHeadersNoJson,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        });
+
+        if (!putRes.ok) {
+          let detail = `Failed to update sale line (status ${putRes.status}).`;
+          try {
+            const j = await putRes.json();
+            if (j?.detail) {
+              detail =
+                typeof j.detail === "string"
+                  ? j.detail
+                  : JSON.stringify(j.detail);
+            }
+          } catch {}
+          throw new Error(detail);
+        }
+
+        await putRes.json();
+
+        // 4) Reload sales + stock to keep everything consistent
+        await loadSales({ mode: "replace" });
+        await loadStock();
+
+        setEditRowId(null);
+        setEditError("");
+      } catch (err) {
+        console.error("Inline edit failed:", err);
+        setEditError(err.message || "Failed to update sale line.");
+      } finally {
+        setSavingEdit(false);
+      }
+    },
+    [editDraft, authHeadersNoJson, loadSales, loadStock]
+  );
 
   // -------------------------
   // Guards
@@ -942,100 +1098,237 @@ function SalesHistoryPage() {
       );
     }
 
+    const draftQtyNum = Number(editDraft.qtyPieces);
+    const draftPriceNum = Number(editDraft.unitPrice);
+
     return (
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
-        <thead>
-          <tr
+      <>
+        {editError && (
+          <div
             style={{
-              textAlign: "left",
-              borderBottom: "1px solid #e5e7eb",
-              fontSize: "11px",
-              textTransform: "uppercase",
-              letterSpacing: "0.08em",
-              color: "#6b7280",
+              marginBottom: 6,
+              padding: "6px 8px",
+              borderRadius: 10,
+              background: "#fef2f2",
+              border: "1px solid #fecaca",
+              color: "#b91c1c",
+              fontSize: 12,
+              fontWeight: 600,
             }}
           >
-            <th style={{ padding: "6px 4px" }}>Time</th>
-            <th style={{ padding: "6px 4px" }}>Item</th>
-            <th style={{ padding: "6px 4px", textAlign: "right" }}>Qty</th>
-            <th style={{ padding: "6px 4px", textAlign: "right" }}>Unit price</th>
-            <th style={{ padding: "6px 4px", textAlign: "right" }}>Total</th>
-            <th style={{ padding: "6px 4px", textAlign: "right" }}>Profit</th>
-            <th style={{ padding: "6px 4px" }}>Payment</th>
-            <th style={{ padding: "6px 4px" }}>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => {
-            const paymentLabel =
-              row.paymentType === "cash"
-                ? "Cash"
-                : row.paymentType === "card"
-                ? "POS"
-                : row.paymentType === "mobile"
-                ? "MoMo"
-                : row.paymentType || "N/A";
+            {editError}
+          </div>
+        )}
 
-            const isCredit = row.isCreditOpen;
-            const statusLabel = isCredit ? "Credit" : "Paid";
-            const statusBg = isCredit ? "#fef2f2" : "#ecfdf3";
-            const statusBorder = isCredit ? "#fecaca" : "#bbf7d0";
-            const statusColor = isCredit ? "#b91c1c" : "#166534";
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+          <thead>
+            <tr
+              style={{
+                textAlign: "left",
+                borderBottom: "1px solid #e5e7eb",
+                fontSize: "11px",
+                textTransform: "uppercase",
+                letterSpacing: "0.08em",
+                color: "#6b7280",
+              }}
+            >
+              <th style={{ padding: "6px 4px" }}>Time</th>
+              <th style={{ padding: "6px 4px" }}>Item</th>
+              <th style={{ padding: "6px 4px", textAlign: "right" }}>Qty</th>
+              <th style={{ padding: "6px 4px", textAlign: "right" }}>Unit price</th>
+              <th style={{ padding: "6px 4px", textAlign: "right" }}>Total</th>
+              <th style={{ padding: "6px 4px", textAlign: "right" }}>Profit</th>
+              <th style={{ padding: "6px 4px" }}>Payment</th>
+              <th style={{ padding: "6px 4px" }}>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => {
+              const paymentLabel =
+                row.paymentType === "cash"
+                  ? "Cash"
+                  : row.paymentType === "card"
+                  ? "POS"
+                  : row.paymentType === "mobile"
+                  ? "MoMo"
+                  : row.paymentType || "N/A";
 
-            return (
-              <tr key={row.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
-                <td style={{ padding: "8px 4px" }}>{formatTimeHM(row.time)}</td>
-                <td style={{ padding: "8px 4px" }}>
-                  <span style={{ color: "#2563eb", fontWeight: 600 }}>{row.itemName}</span>
-                </td>
-                <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                  {formatMoney(row.qtyPieces)}
-                </td>
-                <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                  {formatMoney(row.unitPrice)}
-                </td>
-                <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600 }}>
-                  {formatMoney(row.total)}
-                </td>
-                <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                  {formatMoney(row.profit)}
-                </td>
-                <td style={{ padding: "8px 4px" }}>
-                  <span
+              const isCredit = row.isCreditOpen;
+              const statusLabel = isCredit ? "Credit" : "Paid";
+              const statusBg = isCredit ? "#fef2f2" : "#ecfdf3";
+              const statusBorder = isCredit ? "#fecaca" : "#bbf7d0";
+              const statusColor = isCredit ? "#b91c1c" : "#166534";
+
+              const isEditing = editRowId === row.id;
+              const showDraftTotal =
+                isEditing &&
+                Number.isFinite(draftQtyNum) &&
+                draftQtyNum > 0 &&
+                Number.isFinite(draftPriceNum) &&
+                draftPriceNum > 0;
+
+              return (
+                <tr
+                  key={row.id}
+                  style={{
+                    borderBottom: "1px solid #f3f4f6",
+                    cursor: "pointer",
+                    backgroundColor: isEditing ? "#fefce8" : undefined,
+                  }}
+                  onClick={() => startEditRow(row)}
+                >
+                  <td style={{ padding: "8px 4px" }}>{formatTimeHM(row.time)}</td>
+                  <td style={{ padding: "8px 4px" }}>
+                    <span style={{ color: "#2563eb", fontWeight: 600 }}>{row.itemName}</span>
+                  </td>
+                  <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                    {isEditing ? (
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={editDraft.qtyPieces}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) =>
+                          setEditDraft((prev) => ({
+                            ...prev,
+                            qtyPieces: e.target.value,
+                          }))
+                        }
+                        style={{
+                          width: "100%",
+                          padding: "4px 6px",
+                          textAlign: "right",
+                          borderRadius: 8,
+                          border: "1px solid #d1d5db",
+                          fontSize: 12,
+                        }}
+                      />
+                    ) : (
+                      formatMoney(row.qtyPieces)
+                    )}
+                  </td>
+                  <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                    {isEditing ? (
+                      <input
+                        type="number"
+                        step="1"
+                        value={editDraft.unitPrice}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) =>
+                          setEditDraft((prev) => ({
+                            ...prev,
+                            unitPrice: e.target.value,
+                          }))
+                        }
+                        style={{
+                          width: "100%",
+                          padding: "4px 6px",
+                          textAlign: "right",
+                          borderRadius: 8,
+                          border: "1px solid #d1d5db",
+                          fontSize: 12,
+                        }}
+                      />
+                    ) : (
+                      formatMoney(row.unitPrice)
+                    )}
+                  </td>
+                  <td
                     style={{
-                      display: "inline-block",
-                      padding: "2px 8px",
-                      borderRadius: "999px",
-                      backgroundColor: "#eff6ff",
-                      color: "#1d4ed8",
-                      fontSize: "11px",
+                      padding: "8px 4px",
+                      textAlign: "right",
                       fontWeight: 600,
                     }}
                   >
-                    {paymentLabel}
-                  </span>
-                </td>
-                <td style={{ padding: "8px 4px" }}>
-                  <span
-                    style={{
-                      display: "inline-block",
-                      padding: "2px 8px",
-                      borderRadius: "999px",
-                      backgroundColor: statusBg,
-                      border: `1px solid ${statusBorder}`,
-                      color: statusColor,
-                      fontSize: "11px",
-                      fontWeight: 600,
-                    }}
-                  >
-                    {statusLabel}
-                  </span>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+                    {showDraftTotal
+                      ? formatMoney(draftQtyNum * draftPriceNum)
+                      : formatMoney(row.total)}
+                  </td>
+                  <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                    {formatMoney(row.profit)}
+                  </td>
+                  <td style={{ padding: "8px 4px" }}>
+                    <span
+                      style={{
+                        display: "inline-block",
+                        padding: "2px 8px",
+                        borderRadius: "999px",
+                        backgroundColor: "#eff6ff",
+                        color: "#1d4ed8",
+                        fontSize: "11px",
+                        fontWeight: 600,
+                      }}
+                    >
+                      {paymentLabel}
+                    </span>
+                  </td>
+                  <td style={{ padding: "8px 4px" }}>
+                    {isEditing ? (
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (!savingEdit) saveInlineEdit(row);
+                          }}
+                          disabled={savingEdit}
+                          style={{
+                            padding: "4px 8px",
+                            borderRadius: 999,
+                            border: "1px solid #16a34a",
+                            background: "#16a34a",
+                            color: "#fff",
+                            fontSize: 11,
+                            fontWeight: 700,
+                            cursor: savingEdit ? "default" : "pointer",
+                          }}
+                        >
+                          {savingEdit ? "Saving..." : "Save"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (!savingEdit) cancelEdit();
+                          }}
+                          disabled={savingEdit}
+                          style={{
+                            padding: "4px 8px",
+                            borderRadius: 999,
+                            border: "1px solid #e5e7eb",
+                            background: "#fff",
+                            color: "#4b5563",
+                            fontSize: 11,
+                            fontWeight: 700,
+                            cursor: savingEdit ? "default" : "pointer",
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <span
+                        style={{
+                          display: "inline-block",
+                          padding: "2px 8px",
+                          borderRadius: "999px",
+                          backgroundColor: statusBg,
+                          border: `1px solid ${statusBorder}`,
+                          color: statusColor,
+                          fontSize: "11px",
+                          fontWeight: 600,
+                        }}
+                      >
+                        {statusLabel}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </>
     );
   };
 
