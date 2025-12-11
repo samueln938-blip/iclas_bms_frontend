@@ -92,10 +92,11 @@ export default function DailyClosureTab({
   setMessage,
   clearAlerts,
   // 🔑 new props
-  closureDate,  // string "YYYY-MM-DD" from URL / SalesPOS
+  closureDate, // string "YYYY-MM-DD" from URL / SalesPOS
   isCashier,
   isManager,
   isOwner,
+  isAdmin, // ✅ NEW: admin flag so admin can edit past days
 }) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -105,8 +106,8 @@ export default function DailyClosureTab({
   const dateStr = closureDate || todayStr;
   const isToday = dateStr === todayStr;
 
-  // Only Owner & Manager are allowed to work on past days
-  const canEditPast = !!(isOwner || isManager);
+  // Owner, Manager & Admin are allowed to work on past days
+  const canEditPast = !!(isOwner || isManager || isAdmin);
   const isPastDate = !isToday;
   const isLockedReadOnly = isPastDate && !canEditPast;
 
@@ -187,7 +188,9 @@ export default function DailyClosureTab({
 
         if (!res.ok) {
           const txt = await res.text();
-          throw new Error(`Failed to load system totals (HTTP ${res.status}): ${txt}`);
+          throw new Error(
+            `Failed to load system totals (HTTP ${res.status}): ${txt}`
+          );
         }
 
         const data = await res.json();
@@ -360,7 +363,10 @@ export default function DailyClosureTab({
 
     window.addEventListener("iclas:sales-history-synced", onSalesHistorySynced);
     return () => {
-      window.removeEventListener("iclas:sales-history-synced", onSalesHistorySynced);
+      window.removeEventListener(
+        "iclas:sales-history-synced",
+        onSalesHistorySynced
+      );
     };
   }, [shopId, refreshAll]);
 
@@ -389,7 +395,8 @@ export default function DailyClosureTab({
   const expectedAfterExpenses = useMemo(() => {
     const backendAfter = Number(system?.expected_after_expenses_total ?? NaN);
     const backendLooksOk =
-      Number.isFinite(backendAfter) && Math.abs(expensesTotalSystem - expensesTotal) < 1;
+      Number.isFinite(backendAfter) &&
+      Math.abs(expensesTotalSystem - expensesTotal) < 1;
 
     if (backendLooksOk) return backendAfter;
 
@@ -399,21 +406,29 @@ export default function DailyClosureTab({
 
   // Profit tracking (system)
   const totalSoldAmount = Number(system?.total_sold_amount || 0);
-  const totalProfitRealized = Number(system?.total_profit_realized_today || 0);
+  const totalProfitRealized = Number(
+    system?.total_profit_realized_today || 0
+  );
   const creditGivenToday = Number(system?.credit_created_today || 0);
   const creditPaidToday = Number(system?.credit_paid_today || 0);
   const creditPayersCount = Number(system?.credit_payers_count_today || 0);
 
   // Expected by method AFTER expenses (prefer backend; fallback compute)
-  const expectedCashAfter = Number.isFinite(Number(system?.expected_cash_after_expenses))
+  const expectedCashAfter = Number.isFinite(
+    Number(system?.expected_cash_after_expenses)
+  )
     ? Number(system?.expected_cash_after_expenses || 0)
     : expectedCashSystem - expSumCash;
 
-  const expectedMomoAfter = Number.isFinite(Number(system?.expected_mobile_after_expenses))
+  const expectedMomoAfter = Number.isFinite(
+    Number(system?.expected_mobile_after_expenses)
+  )
     ? Number(system?.expected_mobile_after_expenses || 0)
     : expectedMomoSystem - expSumMomo;
 
-  const expectedPosAfter = Number.isFinite(Number(system?.expected_card_after_expenses))
+  const expectedPosAfter = Number.isFinite(
+    Number(system?.expected_card_after_expenses)
+  )
     ? Number(system?.expected_card_after_expenses || 0)
     : expectedPosSystem - expSumCard;
 
@@ -467,7 +482,9 @@ export default function DailyClosureTab({
 
       if (!res.ok) {
         const txt = await res.text();
-        throw new Error(`Failed to save daily closure (HTTP ${res.status}): ${txt}`);
+        throw new Error(
+          `Failed to save daily closure (HTTP ${res.status}): ${txt}`
+        );
       }
 
       const data = await res.json();
@@ -543,7 +560,8 @@ export default function DailyClosureTab({
 
           {lastClosure && (
             <div style={{ marginTop: 4, fontSize: 11, color: "#059669" }}>
-              Last saved closure: <strong>{toISO(lastClosure?.closure_date)}</strong> · ID #
+              Last saved closure:{" "}
+              <strong>{toISO(lastClosure?.closure_date)}</strong> · ID #
               {lastClosure?.id}
             </div>
           )}
@@ -571,7 +589,8 @@ export default function DailyClosureTab({
                 fontWeight: 600,
               }}
             >
-              Read-only: only Owner/Manager can save closures for past days.
+              Read-only: only Owner/Manager/Admin can save closures for past
+              days.
             </div>
           )}
         </div>
@@ -666,7 +685,8 @@ export default function DailyClosureTab({
             fontSize: 12,
           }}
         >
-          Credit given that day: <strong>{formatMoney(creditGivenToday)} RWF</strong>
+          Credit given that day:{" "}
+          <strong>{formatMoney(creditGivenToday)} RWF</strong>
         </div>
 
         <div
@@ -678,7 +698,8 @@ export default function DailyClosureTab({
             fontSize: 12,
           }}
         >
-          Credit paid that day: <strong>{formatMoney(creditPaidToday)} RWF</strong>
+          Credit paid that day:{" "}
+          <strong>{formatMoney(creditPaidToday)} RWF</strong>
         </div>
       </div>
 
@@ -726,12 +747,14 @@ export default function DailyClosureTab({
                 fontWeight: 600,
               }}
             >
-              Note: Expenses exist in DB but system totals returned 0. This tab will still
-              show correct expenses using /expenses/summary.
+              Note: Expenses exist in DB but system totals returned 0. This tab
+              will still show correct expenses using /expenses/summary.
             </div>
           )}
 
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <table
+            style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}
+          >
             <thead>
               <tr
                 style={{
@@ -750,13 +773,31 @@ export default function DailyClosureTab({
             <tbody>
               <tr style={{ borderBottom: "1px solid #f3f4f6" }}>
                 <td style={{ padding: "6px 4px" }}>Expected totals (system)</td>
-                <td style={{ padding: "6px 4px", textAlign: "right", fontWeight: 700 }}>
+                <td
+                  style={{
+                    padding: "6px 4px",
+                    textAlign: "right",
+                    fontWeight: 700,
+                  }}
+                >
                   {formatMoney(expectedCashSystem)}
                 </td>
-                <td style={{ padding: "6px 4px", textAlign: "right", fontWeight: 700 }}>
+                <td
+                  style={{
+                    padding: "6px 4px",
+                    textAlign: "right",
+                    fontWeight: 700,
+                  }}
+                >
                   {formatMoney(expectedMomoSystem)}
                 </td>
-                <td style={{ padding: "6px 4px", textAlign: "right", fontWeight: 700 }}>
+                <td
+                  style={{
+                    padding: "6px 4px",
+                    textAlign: "right",
+                    fontWeight: 700,
+                  }}
+                >
                   {formatMoney(expectedPosSystem)}
                 </td>
               </tr>
@@ -983,10 +1024,17 @@ export default function DailyClosureTab({
               </span>
             </div>
 
-            <div style={{ display: "flex", justifyContent: "space-between" }}>
-              <span>Difference vs system expected (after expenses)</span>
+            <div
+              style={{ display: "flex", justifyContent: "space-between" }}
+            >
+              <span>
+                Difference vs system expected (after expenses)
+              </span>
               <span
-                style={{ fontWeight: 800, color: diffColor(diffTotalAfterExpenses) }}
+                style={{
+                  fontWeight: 800,
+                  color: diffColor(diffTotalAfterExpenses),
+                }}
               >
                 {formatMoney(diffTotalAfterExpenses)} RWF
               </span>
@@ -1015,24 +1063,36 @@ export default function DailyClosureTab({
           }}
         >
           <div>
-            <div style={{ color: "#6b7280", marginBottom: 4 }}>Counted totals</div>
-            <div style={{ fontWeight: 700 }}>{formatMoney(countedTotal)} RWF</div>
+            <div style={{ color: "#6b7280", marginBottom: 4 }}>
+              Counted totals
+            </div>
+            <div style={{ fontWeight: 700 }}>
+              {formatMoney(countedTotal)} RWF
+            </div>
           </div>
 
           <div>
-            <div style={{ color: "#6b7280", marginBottom: 4 }}>Total interest</div>
-            <div style={{ fontWeight: 700 }}>{formatMoney(totalInterest)} RWF</div>
+            <div style={{ color: "#6b7280", marginBottom: 4 }}>
+              Total interest
+            </div>
+            <div style={{ fontWeight: 700 }}>
+              {formatMoney(totalInterest)} RWF
+            </div>
           </div>
 
           <div>
-            <div style={{ color: "#6b7280", marginBottom: 4 }}>Expenses</div>
+            <div style={{ color: "#6b7280", marginBottom: 4 }}>
+              Expenses
+            </div>
             <div style={{ fontWeight: 700, color: "#b91c1c" }}>
               {formatMoney(expensesTotal)} RWF
             </div>
           </div>
 
           <div>
-            <div style={{ color: "#6b7280", marginBottom: 4 }}>Remaining interest</div>
+            <div style={{ color: "#6b7280", marginBottom: 4 }}>
+              Remaining interest
+            </div>
             <div
               style={{
                 fontWeight: 700,
@@ -1065,7 +1125,8 @@ export default function DailyClosureTab({
             {formatMoney(diffTotalAfterExpenses)} RWF
           </div>
           <div style={{ marginTop: 3 }}>
-            Auto-refreshes totals (expenses + credit paid) every 15 seconds and on focus.
+            Auto-refreshes totals (expenses + credit paid) every 15 seconds and
+            on focus.
           </div>
         </div>
       </div>
