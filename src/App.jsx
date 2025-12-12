@@ -30,6 +30,7 @@ import ShopSalesHistoryPage from "./pages/shop/ShopSalesHistoryPage.jsx";
 import ShopClosuresHistoryPage from "./pages/shop/ShopClosuresHistoryPage.jsx";
 import SalesPOS from "./pages/shop/SalesPOS.jsx";
 import CreditPage from "./pages/shop/CreditPage.jsx";
+import InventoryCheckPage from "./pages/shop/InventoryCheckPage.jsx"; // ✅ NEW
 
 // Auth
 import LoginPage from "./pages/LoginPage.jsx";
@@ -331,6 +332,16 @@ function ProtectedApp() {
             element={
               <RequireAuth allowedRoles={["admin", "manager"]}>
                 <ShopClosuresHistoryPage />
+              </RequireAuth>
+            }
+          />
+
+          {/* ✅ NEW: Inventory check per shop (Owner/Manager only) */}
+          <Route
+            path="/shops/:shopId/inventory-checks"
+            element={
+              <RequireAuth allowedRoles={["admin", "manager"]}>
+                <InventoryCheckPage />
               </RequireAuth>
             }
           />
