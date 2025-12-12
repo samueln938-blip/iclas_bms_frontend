@@ -2,6 +2,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import api from "../../api/client";
+import { useAuth } from "../../context/AuthContext.jsx";
 
 function toNumberSafe(value) {
   if (value === null || value === undefined || value === "") return 0;
@@ -21,9 +22,61 @@ function todayInputDate() {
   return new Date().toISOString().slice(0, 10);
 }
 
+/**
+ * Robustly extract an array from many possible backend shapes:
+ * - []
+ * - { items: [] }
+ * - { results: [] }
+ * - { data: [] }
+ */
+function extractArray(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.items)) return payload.items;
+  if (Array.isArray(payload?.results)) return payload.results;
+  if (Array.isArray(payload?.data)) return payload.data;
+  return [];
+}
+
+/**
+ * Normalize stock rows so dropdown never shows blank due to field name mismatch.
+ * Supports multiple possible field names coming from backend/older versions.
+ */
+function normalizeStockRow(row) {
+  const itemId =
+    row?.item_id ??
+    row?.itemId ??
+    row?.item?.id ??
+    row?.id ??
+    null;
+
+  const itemName =
+    row?.item_name ??
+    row?.itemName ??
+    row?.name ??
+    row?.item?.name ??
+    row?.item?.item_name ??
+    "";
+
+  const remainingPieces =
+    row?.remaining_pieces ??
+    row?.remainingPieces ??
+    row?.remaining ??
+    row?.pieces ??
+    row?.current_pieces ??
+    0;
+
+  return {
+    ...row,
+    item_id: itemId,
+    item_name: itemName,
+    remaining_pieces: remainingPieces,
+  };
+}
+
 function InventoryChecksPage() {
   const { shopId } = useParams();
   const navigate = useNavigate();
+  const auth = useAuth();
 
   const [shop, setShop] = useState(null);
   const [loadingPage, setLoadingPage] = useState(true);
@@ -34,6 +87,7 @@ function InventoryChecksPage() {
   // Stock items for this shop (used for system remaining_pieces + item name)
   const [stockItems, setStockItems] = useState([]);
   const [stockLoading, setStockLoading] = useState(false);
+  const [stockHint, setStockHint] = useState(""); // helpful diagnostics when dropdown is empty
 
   // Summary list
   const [summary, setSummary] = useState([]);
@@ -74,6 +128,22 @@ function InventoryChecksPage() {
   const isPosted = currentCheck?.status === "POSTED";
 
   // ------------------------------------------
+  // Auth headers (safe fallback)
+  // ------------------------------------------
+  const authHeaders = useMemo(() => {
+    const token =
+      auth?.token ||
+      auth?.accessToken ||
+      auth?.authToken ||
+      localStorage.getItem("token") ||
+      localStorage.getItem("access_token") ||
+      localStorage.getItem("accessToken") ||
+      "";
+
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }, [auth]);
+
+  // ------------------------------------------
   // Load shop + stock + summary
   // ------------------------------------------
   useEffect(() => {
@@ -82,10 +152,13 @@ function InventoryChecksPage() {
       setPageError("");
       setMessage("");
       setError("");
+      setStockHint("");
 
       try {
         // 1) Load shop basic info
-        const shopRes = await api.get(`/shops/${shopId}`);
+        const shopRes = await api.get(`/shops/${shopId}`, {
+          headers: authHeaders,
+        });
         setShop(shopRes.data);
 
         // 2) Load stock items for this shop (same data as Stock page)
@@ -93,15 +166,31 @@ function InventoryChecksPage() {
         try {
           const stockRes = await api.get("/stock/summary", {
             params: { shop_id: shopId },
+            headers: authHeaders,
           });
-          let items = Array.isArray(stockRes.data) ? stockRes.data : [];
+
+          let items = extractArray(stockRes.data).map(normalizeStockRow);
+
+          // Keep only valid item_id rows (prevents blank dropdown)
+          items = items.filter(
+            (r) => r && Number.isFinite(Number(r.item_id)) && Number(r.item_id) > 0
+          );
+
           // sort alphabetically by item name for nicer dropdown
           items = [...items].sort((a, b) =>
             String(a.item_name || "")
               .toLowerCase()
               .localeCompare(String(b.item_name || "").toLowerCase())
           );
+
           setStockItems(items);
+
+          // Diagnostics if empty
+          if (items.length === 0) {
+            setStockHint(
+              "No stock items returned. If your Stock page shows items, the endpoint/shape may differ. Next: share the Stock page file so we match its exact request."
+            );
+          }
         } finally {
           setStockLoading(false);
         }
@@ -122,7 +211,8 @@ function InventoryChecksPage() {
     if (shopId) {
       loadAll();
     }
-  }, [shopId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shopId, authHeaders]);
 
   const loadSummaryAndMaybeDraft = async (shopIdToLoad) => {
     setSummaryLoading(true);
@@ -130,8 +220,9 @@ function InventoryChecksPage() {
     try {
       const res = await api.get("/inventory-checks/summary", {
         params: { shop_id: shopIdToLoad, skip: 0, limit: 100 },
+        headers: authHeaders,
       });
-      const list = res.data || [];
+      const list = extractArray(res.data);
       setSummary(list);
 
       // Find latest DRAFT, if any
@@ -158,7 +249,9 @@ function InventoryChecksPage() {
     setError("");
     setMessage("");
     try {
-      const res = await api.get(`/inventory-checks/${checkId}`);
+      const res = await api.get(`/inventory-checks/${checkId}`, {
+        headers: authHeaders,
+      });
       const check = res.data;
       setCurrentCheck(check);
 
@@ -213,8 +306,9 @@ function InventoryChecksPage() {
   const stockByItemId = useMemo(() => {
     const map = {};
     (stockItems || []).forEach((row) => {
-      if (!row || row.item_id == null) return;
-      map[row.item_id] = row;
+      const id = Number(row?.item_id);
+      if (!Number.isFinite(id) || id <= 0) return;
+      map[id] = row;
     });
     return map;
   }, [stockItems]);
@@ -323,7 +417,9 @@ function InventoryChecksPage() {
         })),
       };
 
-      const res = await api.post("/inventory-checks/draft", payload);
+      const res = await api.post("/inventory-checks/draft", payload, {
+        headers: authHeaders,
+      });
       const saved = res.data;
       setCurrentCheck(saved);
 
@@ -366,7 +462,11 @@ function InventoryChecksPage() {
     setMessage("");
 
     try {
-      const res = await api.post(`/inventory-checks/${currentCheck.id}/post`);
+      const res = await api.post(
+        `/inventory-checks/${currentCheck.id}/post`,
+        null,
+        { headers: authHeaders }
+      );
       const posted = res.data;
       setCurrentCheck(posted);
 
@@ -677,11 +777,7 @@ function InventoryChecksPage() {
                   cursor: savingDraft || isPosted ? "not-allowed" : "pointer",
                 }}
               >
-                {savingDraft
-                  ? "Saving..."
-                  : isDraft || currentCheck
-                  ? "Save draft"
-                  : "Save draft"}
+                {savingDraft ? "Saving..." : "Save draft"}
               </button>
 
               <button
@@ -749,12 +845,13 @@ function InventoryChecksPage() {
               >
                 <option value="">Select item...</option>
                 {stockItems.map((row) => (
-                  <option key={row.id} value={row.item_id}>
-                    {row.item_name} — system:{" "}
+                  <option key={row.item_id} value={String(row.item_id)}>
+                    {(row.item_name || `Item #${row.item_id}`) + " — system: "}
                     {formatPieces(row.remaining_pieces)} pcs
                   </option>
                 ))}
               </select>
+
               {stockLoading && (
                 <div
                   style={{
@@ -764,6 +861,34 @@ function InventoryChecksPage() {
                   }}
                 >
                   Loading stock items...
+                </div>
+              )}
+
+              {!stockLoading && stockItems.length > 0 && (
+                <div
+                  style={{
+                    marginTop: "0.2rem",
+                    fontSize: "0.75rem",
+                    color: "#6b7280",
+                  }}
+                >
+                  Loaded {stockItems.length} stock items.
+                </div>
+              )}
+
+              {!stockLoading && stockItems.length === 0 && stockHint && (
+                <div
+                  style={{
+                    marginTop: "0.35rem",
+                    fontSize: "0.78rem",
+                    color: "#b45309",
+                    background: "#fffbeb",
+                    border: "1px solid #fde68a",
+                    padding: "0.45rem 0.6rem",
+                    borderRadius: "0.6rem",
+                  }}
+                >
+                  {stockHint}
                 </div>
               )}
             </div>
