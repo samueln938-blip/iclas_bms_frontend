@@ -86,8 +86,7 @@ function InventoryCheckPage() {
   const [checkDate, setCheckDate] = useState(() =>
     new Date().toISOString().slice(0, 10)
   );
-  // Notes still supported in backend, but no visible field on UI:
-  const [notes] = useState("");
+  const [notes] = useState(""); // no visible notes field for now
 
   // counted pieces keyed by item_id
   const [counts, setCounts] = useState({}); // { [itemId]: "123.45" }
@@ -99,7 +98,7 @@ function InventoryCheckPage() {
   const [padOpen, setPadOpen] = useState(false);
 
   // history tab
-  const [activeTab, setActiveTab] = useState("enter"); // "enter" | "history"
+  const [activeTab, setActiveTab] = useState("enter");
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyRows, setHistoryRows] = useState([]);
   const [selectedHistoryCheck, setSelectedHistoryCheck] = useState(null);
@@ -283,7 +282,54 @@ function InventoryCheckPage() {
   }, [shopId, canUseInventoryCheck]);
 
   // -------------------------------
-  // Load history summary
+  // Load most recent DRAFT so refresh keeps data
+  // -------------------------------
+  useEffect(() => {
+    if (!canUseInventoryCheck) return;
+    if (!shopId) return;
+
+    if (Object.keys(counts).length > 0) return; // don't override if user already typing
+
+    const loadDraft = async () => {
+      try {
+        const summaryRes = await api.get("/inventory-checks/summary", {
+          params: { shop_id: shopId, skip: 0, limit: 50 },
+        });
+        const rows = summaryRes.data || [];
+        const draftRow = rows.find((r) => r.status === STATUS_DRAFT);
+        if (!draftRow) return;
+
+        const detailRes = await api.get(`/inventory-checks/${draftRow.id}`);
+        const detail = detailRes.data;
+
+        setCurrentCheckId(detail.id);
+        if (detail.check_date) {
+          try {
+            const d = new Date(detail.check_date);
+            if (!Number.isNaN(d.getTime())) {
+              setCheckDate(d.toISOString().slice(0, 10));
+            }
+          } catch {
+            // ignore
+          }
+        }
+
+        const newCounts = {};
+        (detail.lines || []).forEach((line) => {
+          newCounts[line.item_id] = String(line.counted_pieces);
+        });
+        setCounts(newCounts);
+      } catch (err) {
+        console.error("Error loading latest DRAFT inventory check:", err);
+      }
+    };
+
+    loadDraft();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shopId, canUseInventoryCheck]);
+
+  // -------------------------------
+  // History list
   // -------------------------------
   const loadHistory = async () => {
     if (!canUseInventoryCheck) return;
@@ -319,9 +365,6 @@ function InventoryCheckPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, shopId, canUseInventoryCheck]);
 
-  // -------------------------------
-  // Load single check for details
-  // -------------------------------
   const handleHistoryRowClick = async (row) => {
     setSelectedHistoryCheck(null);
     setSelectedHistoryLoading(true);
@@ -386,7 +429,6 @@ function InventoryCheckPage() {
       [numericId]: countInput,
     }));
 
-    // keep selection, clear physical count
     setCountInput("");
   };
 
@@ -398,7 +440,6 @@ function InventoryCheckPage() {
     });
   };
 
-  // When user clicks an item in the table → open pad ready to edit that item
   const focusPadForItem = (itemId) => {
     const stock = stockByItemId[itemId];
     if (!stock) return;
@@ -412,7 +453,6 @@ function InventoryCheckPage() {
     );
     setPadOpen(true);
 
-    // Scroll pad into view (nice but optional)
     window.scrollTo({
       top: 0,
       behavior: "smooth",
@@ -427,6 +467,17 @@ function InventoryCheckPage() {
       if (showMessages) setError("No shop selected.");
       return null;
     }
+
+    if (!hasAnyLine && selectedItemId && countInput !== "") {
+      if (showMessages) {
+        setError(
+          "You have typed physical pieces for the selected item but haven't added it. Click 'Add item' first."
+        );
+        setMessage("");
+      }
+      return null;
+    }
+
     if (!hasAnyLine) {
       if (showMessages)
         setError("Add at least one item with counted pieces before saving.");
@@ -473,9 +524,6 @@ function InventoryCheckPage() {
     }
   };
 
-  // -------------------------------
-  // Save Draft (button)
-  // -------------------------------
   const handleSaveDraft = async () => {
     await saveDraftToServer(true);
   };
@@ -488,6 +536,15 @@ function InventoryCheckPage() {
       setError("No shop selected.");
       return;
     }
+
+    if (!hasAnyLine && selectedItemId && countInput !== "") {
+      setError(
+        "You have typed physical pieces for the selected item but haven't added it. Click 'Add item' first."
+      );
+      setMessage("");
+      return;
+    }
+
     if (!hasAnyLine) {
       setError("Add at least one item with counted pieces before posting.");
       return;
@@ -504,26 +561,22 @@ function InventoryCheckPage() {
     setMessage("");
 
     try {
-      // 1) Ensure we have a draft on the server (auto-save if needed)
       let checkId = currentCheckId;
       if (!checkId) {
         const savedId = await saveDraftToServer(false);
         if (!savedId) {
-          // saving failed – error already shown by helper
           setPosting(false);
           return;
         }
         checkId = savedId;
       }
 
-      // 2) Post
       const res = await api.post(`/inventory-checks/${checkId}/post`);
       const data = res.data || null;
 
       setMessage("Inventory check posted and stock updated.");
       setCurrentCheckId(data?.id || checkId);
 
-      // 3) Reload history + stock
       await Promise.all([loadHistory(), api.get(`/shops/${shopId}/stock`)])
         .then(([historyRes, stockRes]) => {
           setHistoryRows(historyRes.data || []);
@@ -598,7 +651,7 @@ function InventoryCheckPage() {
   // -------------------------------
   return (
     <div style={{ padding: "2.2rem 2.6rem" }}>
-      {/* Back link on LEFT, like Purchases */}
+      {/* Back link like Purchases, left-aligned */}
       <button
         type="button"
         onClick={() => navigate(`/shops/${shopId}/workspace`)}
@@ -619,7 +672,6 @@ function InventoryCheckPage() {
         <span>Back to shop workspace</span>
       </button>
 
-      {/* Title + shop name LEFT aligned */}
       <h1
         style={{
           fontSize: "2.8rem",
@@ -642,7 +694,7 @@ function InventoryCheckPage() {
         {shopName}
       </div>
 
-      {/* Tabs + chips row */}
+      {/* Tabs row – no Shop ID chip */}
       <div
         style={{
           marginBottom: "1.2rem",
@@ -652,36 +704,6 @@ function InventoryCheckPage() {
           alignItems: "center",
         }}
       >
-        <div
-          style={{
-            padding: "0.28rem 0.75rem",
-            borderRadius: "999px",
-            backgroundColor: "#eff6ff",
-            border: "1px solid #bfdbfe",
-            color: "#1d4ed8",
-            fontWeight: 600,
-            fontSize: "0.9rem",
-          }}
-        >
-          Shop ID: #{shopId}
-        </div>
-
-        {currentCheckId && (
-          <div
-            style={{
-              padding: "0.28rem 0.75rem",
-              borderRadius: "999px",
-              backgroundColor: "#ecfdf3",
-              border: "1px solid #bbf7d0",
-              color: "#166534",
-              fontWeight: 600,
-              fontSize: "0.9rem",
-            }}
-          >
-            Draft ID: {currentCheckId}
-          </div>
-        )}
-
         <div style={{ marginLeft: "auto", display: "flex", gap: "0.75rem" }}>
           <button
             type="button"
@@ -753,7 +775,7 @@ function InventoryCheckPage() {
       {/* TAB: Enter counts */}
       {activeTab === "enter" && (
         <div>
-          {/* Only DATE on top row now */}
+          {/* Only date row now */}
           <div
             style={{
               display: "grid",
@@ -791,7 +813,7 @@ function InventoryCheckPage() {
             <div />
           </div>
 
-          {/* Pad container – like Purchases pad */}
+          {/* Pad container */}
           <div
             style={{
               backgroundColor: "#ffffff",
@@ -813,18 +835,16 @@ function InventoryCheckPage() {
               add to list
             </div>
 
-            {/* Search + system preview + counted input row */}
             <div
               style={{
                 display: "grid",
                 gridTemplateColumns:
                   "minmax(0, 2.4fr) minmax(0, 1.5fr) minmax(0, 1.4fr)",
                 gap: "1rem",
-                alignItems: "center",
-                marginBottom: "0.9rem",
+                alignItems: "flex-start",
               }}
             >
-              {/* Search pad */}
+              {/* Column 1: search pad + dropdown limited to pad width */}
               <div>
                 <label
                   style={{
@@ -842,6 +862,9 @@ function InventoryCheckPage() {
                   onChange={(e) => setSearchQuery(e.target.value)}
                   onFocus={() => setPadOpen(true)}
                   onClick={() => setPadOpen(true)}
+                  onBlur={() => {
+                    setTimeout(() => setPadOpen(false), 120);
+                  }}
                   placeholder="Type item name or SKU…"
                   style={{
                     width: "100%",
@@ -851,9 +874,118 @@ function InventoryCheckPage() {
                     fontSize: "0.9rem",
                   }}
                 />
+
+                {padOpen ? (
+                  <div
+                    style={{
+                      marginTop: "0.4rem",
+                      maxHeight: "260px",
+                      overflow: "auto",
+                      borderRadius: "1.1rem",
+                      border: "1px solid #e5e7eb",
+                    }}
+                  >
+                    {loading ? (
+                      <div
+                        style={{
+                          padding: "0.9rem 1rem",
+                          fontSize: "0.9rem",
+                          color: "#6b7280",
+                        }}
+                      >
+                        Loading current stock…
+                      </div>
+                    ) : filteredStockRows.length === 0 ? (
+                      <div
+                        style={{
+                          padding: "0.9rem 1rem",
+                          fontSize: "0.9rem",
+                          color: "#6b7280",
+                        }}
+                      >
+                        No stock items found for this shop.
+                      </div>
+                    ) : (
+                      <>
+                        <div
+                          style={{
+                            padding: "0.5rem 1rem",
+                            fontSize: "0.82rem",
+                            color: "#9ca3af",
+                            borderBottom: "1px solid #e5e7eb",
+                          }}
+                        >
+                          {filteredStockRows.length} items in dropdown after
+                          filter. Type initials above to get to your item
+                          quickly.
+                        </div>
+                        {filteredStockRows.map((row) => {
+                          const isSelected = selectedItemId === row.item_id;
+                          const systemPieces = Number(row.remaining_pieces || 0);
+
+                          return (
+                            <button
+                              key={row.item_id}
+                              type="button"
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                handleItemClick(row.item_id);
+                              }}
+                              style={{
+                                width: "100%",
+                                border: "none",
+                                borderBottom: "1px solid #f3f4f6",
+                                backgroundColor: isSelected
+                                  ? "#eef2ff"
+                                  : "#ffffff",
+                                padding: "0.7rem 1rem",
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "center",
+                                textAlign: "left",
+                                cursor: "pointer",
+                              }}
+                            >
+                              <div>
+                                <div
+                                  style={{
+                                    fontSize: "0.9rem",
+                                    fontWeight: 600,
+                                    color: "#111827",
+                                  }}
+                                >
+                                  {row.item_name}
+                                </div>
+                                <div
+                                  style={{
+                                    fontSize: "0.75rem",
+                                    color: "#6b7280",
+                                    marginTop: 2,
+                                  }}
+                                >
+                                  ID: {row.item_id}
+                                  {row.item_sku ? ` · SKU: ${row.item_sku}` : ""}
+                                </div>
+                              </div>
+                              <div
+                                style={{
+                                  fontSize: "0.85rem",
+                                  fontWeight: 600,
+                                  color: "#2563eb",
+                                }}
+                              >
+                                {formatPieces(systemPieces)} pcs
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </>
+                    )}
+                  </div>
+                ) : null}
               </div>
 
-              {/* System preview */}
+              {/* Column 2: system preview */}
               <div>
                 <label
                   style={{
@@ -905,12 +1037,12 @@ function InventoryCheckPage() {
                       color: "#9ca3af",
                     }}
                   >
-                    Select an item below to see system stock.
+                    Select an item on the left to see system stock.
                   </div>
                 )}
               </div>
 
-              {/* Physical pieces + Add item */}
+              {/* Column 3: physical pieces + Add button */}
               <div>
                 <label
                   style={{
@@ -965,122 +1097,6 @@ function InventoryCheckPage() {
                 </div>
               </div>
             </div>
-
-            {/* Item dropdown – appears when pad is focused */}
-            {padOpen ? (
-              <div
-                style={{
-                  maxHeight: "260px",
-                  overflow: "auto",
-                  borderRadius: "1.1rem",
-                  border: "1px solid #e5e7eb",
-                }}
-              >
-                {loading ? (
-                  <div
-                    style={{
-                      padding: "0.9rem 1rem",
-                      fontSize: "0.9rem",
-                      color: "#6b7280",
-                    }}
-                  >
-                    Loading current stock…
-                  </div>
-                ) : filteredStockRows.length === 0 ? (
-                  <div
-                    style={{
-                      padding: "0.9rem 1rem",
-                      fontSize: "0.9rem",
-                      color: "#6b7280",
-                    }}
-                  >
-                    No stock items found for this shop.
-                  </div>
-                ) : (
-                  <>
-                    <div
-                      style={{
-                        padding: "0.5rem 1rem",
-                        fontSize: "0.82rem",
-                        color: "#9ca3af",
-                        borderBottom: "1px solid #e5e7eb",
-                      }}
-                    >
-                      {filteredStockRows.length} items in dropdown after filter.
-                      Type initials above to get to your item quickly.
-                    </div>
-                    {filteredStockRows.map((row) => {
-                      const isSelected = selectedItemId === row.item_id;
-                      const systemPieces = Number(row.remaining_pieces || 0);
-
-                      return (
-                        <button
-                          key={row.item_id}
-                          type="button"
-                          onMouseDown={(e) => {
-                            e.preventDefault();
-                            handleItemClick(row.item_id);
-                          }}
-                          style={{
-                            width: "100%",
-                            border: "none",
-                            borderBottom: "1px solid #f3f4f6",
-                            backgroundColor: isSelected ? "#eef2ff" : "#ffffff",
-                            padding: "0.7rem 1rem",
-                            display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "center",
-                            textAlign: "left",
-                            cursor: "pointer",
-                          }}
-                        >
-                          <div>
-                            <div
-                              style={{
-                                fontSize: "0.9rem",
-                                fontWeight: 600,
-                                color: "#111827",
-                              }}
-                            >
-                              {row.item_name}
-                            </div>
-                            <div
-                              style={{
-                                fontSize: "0.75rem",
-                                color: "#6b7280",
-                                marginTop: 2,
-                              }}
-                            >
-                              ID: {row.item_id}
-                              {row.item_sku ? ` · SKU: ${row.item_sku}` : ""}
-                            </div>
-                          </div>
-                          <div
-                            style={{
-                              fontSize: "0.85rem",
-                              fontWeight: 600,
-                              color: "#2563eb",
-                            }}
-                          >
-                            {formatPieces(systemPieces)} pcs
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </>
-                )}
-              </div>
-            ) : (
-              <div
-                style={{
-                  marginTop: "0.3rem",
-                  fontSize: "0.85rem",
-                  color: "#9ca3af",
-                }}
-              >
-                Click in the item pad above to open the list of items.
-              </div>
-            )}
           </div>
 
           {/* Save / Post buttons */}
@@ -1375,7 +1391,7 @@ function InventoryCheckPage() {
         </div>
       )}
 
-      {/* TAB: History & differences */}
+      {/* TAB: History */}
       {activeTab === "history" && (
         <div
           style={{
