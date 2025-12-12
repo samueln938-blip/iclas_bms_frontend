@@ -1,6 +1,6 @@
 // FILE: src/pages/shop/InventoryCheckPage.jsx
 import React, { useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import api from "../../api/client";
 import { useAuth } from "../../context/AuthContext.jsx";
 
@@ -47,6 +47,7 @@ function formatDate(iso) {
 
 function InventoryCheckPage() {
   const { shopId: shopIdParam } = useParams();
+  const navigate = useNavigate();
   const { user } = useAuth();
 
   // -------------------------------
@@ -67,6 +68,7 @@ function InventoryCheckPage() {
   }, [shopIdParam, user]);
 
   const [shopId] = useState(initialShopId);
+  const [shop, setShop] = useState(null);
 
   // -------------------------------
   // State
@@ -78,7 +80,7 @@ function InventoryCheckPage() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
-  // All stock rows for this shop (ShopItem rows)
+  // All stock rows for this shop (ShopItem rows, enriched with real item names)
   const [stockRows, setStockRows] = useState([]);
 
   // Current draft in progress
@@ -106,6 +108,8 @@ function InventoryCheckPage() {
   // -------------------------------
   // Derived helpers
   // -------------------------------
+  const shopName = shop?.name || `Shop #${shopId}`;
+
   const stockByItemId = useMemo(() => {
     const map = {};
     for (const row of stockRows) {
@@ -203,7 +207,7 @@ function InventoryCheckPage() {
   }, [selectedHistoryCheck, stockByItemId]);
 
   // -------------------------------
-  // Load stock for shop
+  // Load shop + stock + item names
   // -------------------------------
   useEffect(() => {
     if (!canUseInventoryCheck) return;
@@ -213,24 +217,73 @@ function InventoryCheckPage() {
       setLoading(true);
       setError("");
       setMessage("");
-      try {
-        const res = await api.get(`/shops/${shopId}/stock`);
-        const rows = res.data || [];
 
-        // Enrich with item_name/item_sku if not present (defensive)
-        const normalized = rows.map((row) => ({
-          ...row,
-          item_name:
-            row.item_name || row.item?.name || row.name || `Item #${row.item_id}`,
-          item_sku: row.item_sku || row.item?.sku || row.sku || "",
-        }));
+      try {
+        // 1) Current stock for this shop
+        // 2) Shop info (for name)
+        // 3) Item master list (for real names)
+        const [stockRes, shopRes, itemsRes] = await Promise.all([
+          api.get(`/shops/${shopId}/stock`),
+          api.get(`/shops/${shopId}`),
+          api.get("/items", {
+            params: {
+              skip: 0,
+              limit: 10000,
+            },
+          }),
+        ]);
+
+        setShop(shopRes.data || null);
+
+        let items = [];
+        const itemsData = itemsRes.data;
+        if (Array.isArray(itemsData)) {
+          items = itemsData;
+        } else if (itemsData && Array.isArray(itemsData.items)) {
+          // handle { items: [...] } shape
+          items = itemsData.items;
+        }
+
+        const namesById = {};
+        const skuById = {};
+        for (const it of items) {
+          if (it && typeof it.id === "number") {
+            if (it.name) namesById[it.id] = it.name;
+            if (it.sku) skuById[it.id] = it.sku;
+          }
+        }
+
+        const rows = stockRes.data || [];
+
+        // Enrich stock rows with REAL item names if we have them
+        const normalized = rows.map((row) => {
+          const id = row.item_id;
+          const fromItemsName = namesById[id];
+          const fromItemsSku = skuById[id];
+
+          return {
+            ...row,
+            item_name:
+              fromItemsName ||
+              row.item_name ||
+              row.item?.name ||
+              row.name ||
+              `Item #${row.item_id}`,
+            item_sku:
+              fromItemsSku ||
+              row.item_sku ||
+              row.item?.sku ||
+              row.sku ||
+              "",
+          };
+        });
 
         setStockRows(normalized);
       } catch (err) {
-        console.error("Error loading stock for inventory check:", err);
+        console.error("Error loading stock / shop / item names:", err);
         setError(
           err?.response?.data?.detail ||
-            "Failed to load current stock for this shop."
+            "Failed to load stock and item names for this shop."
         );
       } finally {
         setLoading(false);
@@ -496,17 +549,48 @@ function InventoryCheckPage() {
   // -------------------------------
   return (
     <div style={{ padding: "2.2rem 2.6rem" }}>
+      {/* Top link back to workspace */}
+      <button
+        type="button"
+        onClick={() => navigate(`/shops/${shopId}/workspace`)}
+        style={{
+          border: "none",
+          background: "transparent",
+          padding: 0,
+          marginBottom: "0.6rem",
+          display: "inline-flex",
+          alignItems: "center",
+          gap: "0.4rem",
+          color: "#2563eb",
+          fontSize: "0.9rem",
+          cursor: "pointer",
+        }}
+      >
+        <span style={{ fontSize: "1.1rem" }}>←</span>
+        <span>Back to {shopName} workspace</span>
+      </button>
+
       {/* Header */}
       <h1
         style={{
           fontSize: "2.4rem",
           fontWeight: 800,
-          marginBottom: "0.3rem",
+          marginBottom: "0.2rem",
           color: "#111827",
         }}
       >
         Inventory check
       </h1>
+
+      <p
+        style={{
+          color: "#4b5563",
+          marginBottom: "0.4rem",
+          fontSize: "0.96rem",
+        }}
+      >
+        Shop: <b>{shopName}</b>
+      </p>
 
       <p style={{ color: "#6b7280", marginBottom: "0.8rem" }}>
         Compare <b>system stock</b> vs <b>physical counts</b> for this shop and
@@ -721,7 +805,8 @@ function InventoryCheckPage() {
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "minmax(0, 2.3fr) minmax(0, 1.3fr) minmax(0, 1.3fr)",
+              gridTemplateColumns:
+                "minmax(0, 2.3fr) minmax(0, 1.3fr) minmax(0, 1.3fr)",
               gap: "1rem",
               marginBottom: "1.1rem",
               alignItems: "flex-end",
@@ -765,7 +850,8 @@ function InventoryCheckPage() {
                   color: "#9ca3af",
                 }}
               >
-                {filteredStockRows.length} items in dropdown after filter.
+                {filteredStockRows.length} items in dropdown after filter. Type
+                initials above to narrow quickly.
               </div>
             </div>
 
@@ -961,9 +1047,7 @@ function InventoryCheckPage() {
                   Total pieces diff:{" "}
                   <b>{formatDiff(totalsForCurrent.totalDiffPieces)}</b> ·
                   Approx. total cost diff:{" "}
-                  <b>
-                    {formatMoney(totalsForCurrent.totalCostDiff)} RWF
-                  </b>
+                  <b>{formatMoney(totalsForCurrent.totalCostDiff)} RWF</b>
                 </span>
               </div>
 
