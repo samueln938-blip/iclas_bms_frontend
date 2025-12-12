@@ -1,11 +1,26 @@
 // FILE: src/pages/shop/InventoryCheckPage.jsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import api from "../../api/client";
 import { useAuth } from "../../context/AuthContext.jsx";
 
 const STATUS_DRAFT = "DRAFT";
 const STATUS_POSTED = "POSTED";
+
+// --------- Helpers ---------
+
+function todayISO() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
 function formatPieces(value) {
   if (value === null || value === undefined) return "0";
@@ -14,16 +29,6 @@ function formatPieces(value) {
   return num.toLocaleString("en-RW", {
     minimumFractionDigits: 0,
     maximumFractionDigits: 2,
-  });
-}
-
-function formatMoney(value) {
-  if (value === null || value === undefined) return "0";
-  const num = Number(value);
-  if (!Number.isFinite(num)) return "0";
-  return num.toLocaleString("en-RW", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
   });
 }
 
@@ -39,173 +44,354 @@ function formatDate(iso) {
   try {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return String(iso);
-    return d.toISOString().slice(0, 10);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
   } catch {
     return String(iso);
   }
 }
+
+/**
+ * ✅ Mobile-friendly searchable dropdown
+ * (same UX as Purchases item selector)
+ */
+function ItemComboBox({ items, valueId, onChangeId }) {
+  const wrapRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+
+  const selected = useMemo(() => {
+    if (!valueId) return null;
+    return (
+      items.find((it) => String(it.id) === String(valueId)) || null
+    );
+  }, [items, valueId]);
+
+  useEffect(() => {
+    if (!open) setQ(selected ? selected.label : "");
+  }, [selected, open]);
+
+  const filtered = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    if (!s) return items.slice(0, 800);
+    return items
+      .filter((it) =>
+        String(it.label || "")
+          .toLowerCase()
+          .includes(s)
+      )
+      .slice(0, 800);
+  }, [items, q]);
+
+  useEffect(() => {
+    const onDown = (e) => {
+      if (
+        wrapRef.current &&
+        !wrapRef.current.contains(e.target)
+      ) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", onDown);
+    return () =>
+      document.removeEventListener("pointerdown", onDown);
+  }, []);
+
+  const clearSelection = () => {
+    setQ("");
+    setOpen(false);
+    onChangeId("");
+  };
+
+  return (
+    <div
+      ref={wrapRef}
+      style={{ position: "relative", width: "100%" }}
+    >
+      <div style={{ position: "relative" }}>
+        <input
+          value={q}
+          onChange={(e) => {
+            setQ(e.target.value);
+            setOpen(true);
+          }}
+          onFocus={() => {
+            setOpen(true);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setOpen(false);
+            if (e.key === "Enter") {
+              e.preventDefault();
+              if (filtered.length > 0) {
+                onChangeId(String(filtered[0].id));
+                setOpen(false);
+              }
+            }
+          }}
+          placeholder="Type item name to search…"
+          inputMode="text"
+          autoComplete="off"
+          spellCheck={false}
+          style={{
+            width: "100%",
+            padding: "10px 36px 10px 12px",
+            borderRadius: "12px",
+            border: "1px solid #d1d5db",
+            fontSize: "13px",
+            outline: "none",
+            backgroundColor: "#ffffff",
+            color: "#111827",
+          }}
+        />
+
+        {(q || selected) && (
+          <button
+            type="button"
+            onClick={clearSelection}
+            title="Clear"
+            style={{
+              position: "absolute",
+              right: 8,
+              top: "50%",
+              transform: "translateY(-50%)",
+              width: 24,
+              height: 24,
+              borderRadius: "999px",
+              border: "1px solid #e5e7eb",
+              background: "#ffffff",
+              cursor: "pointer",
+              color: "#6b7280",
+              fontWeight: 800,
+              lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
+        )}
+      </div>
+
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 6px)",
+            left: 0,
+            right: 0,
+            backgroundColor: "#ffffff",
+            border: "1px solid #e5e7eb",
+            borderRadius: "12px",
+            boxShadow: "0 12px 30px rgba(0,0,0,0.12)",
+            maxHeight: "280px",
+            overflowY: "auto",
+            zIndex: 999,
+          }}
+        >
+          {filtered.length === 0 ? (
+            <div
+              style={{
+                padding: "10px 12px",
+                fontSize: "13px",
+                color: "#6b7280",
+              }}
+            >
+              No matching items
+            </div>
+          ) : (
+            filtered.map((it) => (
+              <button
+                key={it.id}
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  onChangeId(String(it.id));
+                  setOpen(false);
+                }}
+                style={{
+                  width: "100%",
+                  textAlign: "left",
+                  padding: "10px 12px",
+                  border: "none",
+                  background: "transparent",
+                  cursor: "pointer",
+                  fontSize: "13px",
+                  color: "#111827",
+                }}
+              >
+                <span style={{ fontWeight: 600 }}>
+                  {it.label}
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --------- Main component ---------
 
 function InventoryCheckPage() {
   const { shopId: shopIdParam } = useParams();
   const navigate = useNavigate();
   const { user } = useAuth();
 
-  // -------------------------------
-  // Role guard
-  // -------------------------------
+  // Roles
   const role = String(user?.role || "").toLowerCase();
   const isOwner = role === "owner" || role === "admin";
   const isManager = role === "manager";
   const canUseInventoryCheck = isOwner || isManager;
 
-  // -------------------------------
-  // Shop
-  // -------------------------------
   const initialShopId = useMemo(() => {
     if (shopIdParam) return Number(shopIdParam);
     if (user?.shop_id) return Number(user.shop_id);
     return null;
   }, [shopIdParam, user]);
-
   const [shopId] = useState(initialShopId);
-  const [shop, setShop] = useState(null);
 
-  // -------------------------------
-  // State
-  // -------------------------------
+  // Core state
+  const [shop, setShop] = useState(null);
+  const [stockRows, setStockRows] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [savingDraft, setSavingDraft] = useState(false);
-  const [posting, setPosting] = useState(false);
 
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
-  const [stockRows, setStockRows] = useState([]);
-
+  // Inventory check header
   const [currentCheckId, setCurrentCheckId] = useState(null);
-  const [checkDate, setCheckDate] = useState(() =>
-    new Date().toISOString().slice(0, 10)
-  );
-  const [notes] = useState(""); // no visible notes field for now
+  const [checkDate, setCheckDate] = useState(() => todayISO());
 
-  // counted pieces keyed by item_id
-  const [counts, setCounts] = useState({}); // { [itemId]: "123.45" }
+  // PAD (single item editor)
+  const [pad, setPad] = useState({
+    itemId: "",
+    countedPieces: "",
+  });
+  const [editingLineId, setEditingLineId] = useState(null);
+  const [padSaving, setPadSaving] = useState(false);
+  const padRef = useRef(null);
 
-  // pad UI
-  const [searchQuery, setSearchQuery] = useState("");
-  const [selectedItemId, setSelectedItemId] = useState(null);
-  const [countInput, setCountInput] = useState("");
-  const [padOpen, setPadOpen] = useState(false);
+  // Lines in current draft (local view)
+  const [lines, setLines] = useState([]); // {id,itemId,itemName,systemPieces,countedPieces}
 
-  // history tab
-  const [activeTab, setActiveTab] = useState("enter");
+  // History tab
+  const [activeTab, setActiveTab] = useState("enter"); // "enter" | "history"
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyRows, setHistoryRows] = useState([]);
-  const [selectedHistoryCheck, setSelectedHistoryCheck] = useState(null);
-  const [selectedHistoryLoading, setSelectedHistoryLoading] = useState(false);
+  const [selectedHistoryCheck, setSelectedHistoryCheck] =
+    useState(null);
+  const [
+    selectedHistoryLoading,
+    setSelectedHistoryLoading,
+  ] = useState(false);
 
-  // -------------------------------
-  // Derived helpers
-  // -------------------------------
-  const shopName = shop?.name || `Shop #${shopId}`;
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [posting, setPosting] = useState(false);
+
+  // --------- Derived helpers ---------
+
+  const shopName = shop?.name || (shopId ? `Shop ${shopId}` : "");
 
   const stockByItemId = useMemo(() => {
     const map = {};
     for (const row of stockRows) {
+      if (row.item_id == null) continue;
       map[row.item_id] = row;
     }
     return map;
   }, [stockRows]);
 
-  const filteredStockRows = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return stockRows;
-    return stockRows.filter((row) => {
-      const name = String(row.item_name || "").toLowerCase();
-      const sku = String(row.item_sku || "").toLowerCase();
-      return name.includes(q) || sku.includes(q);
-    });
-  }, [stockRows, searchQuery]);
-
-  const linesForPayload = useMemo(() => {
-    const result = [];
-    for (const row of stockRows) {
-      const itemId = row.item_id;
-      const inputRaw = counts[itemId];
-      if (inputRaw === undefined || inputRaw === null || inputRaw === "") continue;
-
-      const counted = Number(inputRaw);
-      if (!Number.isFinite(counted) || counted < 0) continue;
-
-      result.push({
-        item_id: itemId,
-        counted_pieces: counted,
-      });
-    }
-    return result;
-  }, [stockRows, counts]);
-
-  const hasAnyLine = linesForPayload.length > 0;
-
-  const displayLines = useMemo(() => {
-    return linesForPayload.map((line) => {
-      const stock = stockByItemId[line.item_id] || {};
-      const systemPieces = Number(stock.remaining_pieces || 0);
-      const pricePerPiece = Number(stock.selling_price_per_piece || 0);
-      const counted = Number(line.counted_pieces || 0);
-      const diffPieces = counted - systemPieces;
-      const costDiff = diffPieces * pricePerPiece;
-
-      return {
-        ...line,
-        item_name: stock.item_name || `Item #${line.item_id}`,
-        systemPieces,
-        pricePerPiece,
-        counted,
-        diffPieces,
-        costDiff,
-      };
-    });
-  }, [linesForPayload, stockByItemId]);
-
-  const totalsForCurrent = useMemo(() => {
-    let totalDiffPieces = 0;
-    let totalCostDiff = 0;
-    for (const ln of displayLines) {
-      totalDiffPieces += ln.diffPieces;
-      totalCostDiff += ln.costDiff;
-    }
-    return { totalDiffPieces, totalCostDiff };
-  }, [displayLines]);
-
-  const historyCostView = useMemo(() => {
-    if (!selectedHistoryCheck) {
-      return { lines: [], totalCostDiff: 0 };
-    }
-
-    const lines = selectedHistoryCheck.lines.map((line) => {
-      const stock = stockByItemId[line.item_id] || {};
-      const pricePerPiece = Number(stock.selling_price_per_piece || 0);
-      const diffPieces = Number(line.diff_pieces || 0);
-      const costDiff = diffPieces * pricePerPiece;
-      return {
-        ...line,
-        pricePerPiece,
-        costDiff,
-      };
-    });
-
-    const totalCostDiff = lines.reduce(
-      (acc, ln) => acc + (Number(ln.costDiff) || 0),
-      0
+  const pickerItems = useMemo(() => {
+    // ✅ Only items from stock, sorted by name
+    const arr = (stockRows || []).map((row) => ({
+      id: row.item_id,
+      label:
+        row.item_name ||
+        row.item?.name ||
+        `Item #${row.item_id}`,
+    }));
+    return arr.sort((a, b) =>
+      String(a.label).localeCompare(String(b.label))
     );
+  }, [stockRows]);
 
-    return { lines, totalCostDiff };
-  }, [selectedHistoryCheck, stockByItemId]);
+  const padStock =
+    pad.itemId && stockByItemId[Number(pad.itemId)]
+      ? stockByItemId[Number(pad.itemId)]
+      : null;
+  const padSystemPieces = padStock
+    ? Number(padStock.remaining_pieces || 0)
+    : 0;
+  const padCountedPieces =
+    pad.countedPieces === "" ? null : Number(pad.countedPieces);
+  const padDiff =
+    padCountedPieces === null || !Number.isFinite(padCountedPieces)
+      ? 0
+      : padCountedPieces - padSystemPieces;
 
-  // -------------------------------
-  // Load shop + stock + item names
-  // -------------------------------
+  const tabBtn = (active) => ({
+    padding: "8px 12px",
+    borderRadius: "999px",
+    border: active
+      ? "1px solid #2563eb"
+      : "1px solid #d1d5db",
+    background: active ? "#eff6ff" : "#ffffff",
+    color: active ? "#1d4ed8" : "#111827",
+    fontWeight: 800,
+    fontSize: "12px",
+    cursor: "pointer",
+  });
+
+  const padDark = false;
+  const padBg = padDark ? "#0b1220" : "#ffffff";
+  const padText = padDark ? "#e5e7eb" : "#111827";
+  const padMuted = padDark ? "#9ca3af" : "#6b7280";
+  const padBorder = padDark
+    ? "1px solid rgba(255,255,255,0.10)"
+    : "1px solid #e5e7eb";
+
+  const labelStyle = {
+    display: "block",
+    fontSize: "12px",
+    fontWeight: 700,
+    color: padText,
+    marginBottom: "6px",
+  };
+
+  const helperGridStyle = {
+    display: "grid",
+    gridTemplateColumns:
+      "repeat(3, minmax(0, 1fr))",
+    columnGap: "14px",
+    rowGap: "6px",
+    marginTop: "8px",
+    fontSize: "12px",
+    color: padMuted,
+    alignItems: "center",
+  };
+
+  const inputBase = {
+    width: "100%",
+    padding: "10px 12px",
+    borderRadius: "12px",
+    border: "1px solid #d1d5db",
+    fontSize: "13px",
+    outline: "none",
+    backgroundColor: "#ffffff",
+    color: "#111827",
+  };
+
+  const padTitle = editingLineId
+    ? "Edit counted item, then update list"
+    : "Pad: select item, enter counted pieces, then add to list";
+
+  const padButtonText = editingLineId
+    ? "Update item"
+    : "+ Add to list";
+
+  // --------- Load shop + stock ---------
+
   useEffect(() => {
     if (!canUseInventoryCheck) return;
     if (!shopId) return;
@@ -216,62 +402,39 @@ function InventoryCheckPage() {
       setMessage("");
 
       try {
-        const [stockRes, shopRes, itemsRes] = await Promise.all([
-          api.get(`/shops/${shopId}/stock`),
+        const [shopRes, stockRes] = await Promise.all([
           api.get(`/shops/${shopId}`),
-          api.get("/items", {
-            params: { skip: 0, limit: 10000 },
-          }),
+          api.get(`/shops/${shopId}/stock`),
         ]);
 
-        setShop(shopRes.data || null);
+        const shopData = shopRes.data;
+        const stockData = stockRes.data || [];
 
-        let items = [];
-        const itemsData = itemsRes.data;
-        if (Array.isArray(itemsData)) {
-          items = itemsData;
-        } else if (itemsData && Array.isArray(itemsData.items)) {
-          items = itemsData.items;
-        }
+        const normalized = stockData.map((row) => ({
+          ...row,
+          item_name:
+            row.item_name ||
+            row.item?.name ||
+            row.name ||
+            `Item #${row.item_id}`,
+          item_sku:
+            row.item_sku ||
+            row.item?.sku ||
+            row.sku ||
+            "",
+        }));
 
-        const namesById = {};
-        const skuById = {};
-        for (const it of items) {
-          if (it && typeof it.id === "number") {
-            if (it.name) namesById[it.id] = it.name;
-            if (it.sku) skuById[it.id] = it.sku;
-          }
-        }
-
-        const rows = stockRes.data || [];
-        const normalized = rows.map((row) => {
-          const id = row.item_id;
-          const fromItemsName = namesById[id];
-          const fromItemsSku = skuById[id];
-
-          return {
-            ...row,
-            item_name:
-              fromItemsName ||
-              row.item_name ||
-              row.item?.name ||
-              row.name ||
-              `Item #${row.item_id}`,
-            item_sku:
-              fromItemsSku ||
-              row.item_sku ||
-              row.item?.sku ||
-              row.sku ||
-              "",
-          };
-        });
-
+        setShop(shopData);
         setStockRows(normalized);
       } catch (err) {
-        console.error("Error loading stock / shop / item names:", err);
+        console.error(
+          "Error loading shop/stock for inventory check:",
+          err
+        );
         setError(
           err?.response?.data?.detail ||
-            "Failed to load stock and item names for this shop."
+            err?.message ||
+            "Failed to load shop and stock for inventory check."
         );
       } finally {
         setLoading(false);
@@ -281,56 +444,8 @@ function InventoryCheckPage() {
     load();
   }, [shopId, canUseInventoryCheck]);
 
-  // -------------------------------
-  // Load most recent DRAFT so refresh keeps data
-  // -------------------------------
-  useEffect(() => {
-    if (!canUseInventoryCheck) return;
-    if (!shopId) return;
+  // --------- History ---------
 
-    if (Object.keys(counts).length > 0) return; // don't override if user already typing
-
-    const loadDraft = async () => {
-      try {
-        const summaryRes = await api.get("/inventory-checks/summary", {
-          params: { shop_id: shopId, skip: 0, limit: 50 },
-        });
-        const rows = summaryRes.data || [];
-        const draftRow = rows.find((r) => r.status === STATUS_DRAFT);
-        if (!draftRow) return;
-
-        const detailRes = await api.get(`/inventory-checks/${draftRow.id}`);
-        const detail = detailRes.data;
-
-        setCurrentCheckId(detail.id);
-        if (detail.check_date) {
-          try {
-            const d = new Date(detail.check_date);
-            if (!Number.isNaN(d.getTime())) {
-              setCheckDate(d.toISOString().slice(0, 10));
-            }
-          } catch {
-            // ignore
-          }
-        }
-
-        const newCounts = {};
-        (detail.lines || []).forEach((line) => {
-          newCounts[line.item_id] = String(line.counted_pieces);
-        });
-        setCounts(newCounts);
-      } catch (err) {
-        console.error("Error loading latest DRAFT inventory check:", err);
-      }
-    };
-
-    loadDraft();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shopId, canUseInventoryCheck]);
-
-  // -------------------------------
-  // History list
-  // -------------------------------
   const loadHistory = async () => {
     if (!canUseInventoryCheck) return;
     if (!shopId) return;
@@ -339,16 +454,22 @@ function InventoryCheckPage() {
     setError("");
     setMessage("");
     try {
-      const res = await api.get("/inventory-checks/summary", {
-        params: {
-          shop_id: shopId,
-          skip: 0,
-          limit: 100,
-        },
-      });
+      const res = await api.get(
+        "/inventory-checks/summary",
+        {
+          params: {
+            shop_id: shopId,
+            skip: 0,
+            limit: 100,
+          },
+        }
+      );
       setHistoryRows(res.data || []);
     } catch (err) {
-      console.error("Error loading inventory checks history:", err);
+      console.error(
+        "Error loading inventory checks history:",
+        err
+      );
       setError(
         err?.response?.data?.detail ||
           "Failed to load inventory checks history."
@@ -372,10 +493,15 @@ function InventoryCheckPage() {
     setMessage("");
 
     try {
-      const res = await api.get(`/inventory-checks/${row.id}`);
+      const res = await api.get(
+        `/inventory-checks/${row.id}`
+      );
       setSelectedHistoryCheck(res.data || null);
     } catch (err) {
-      console.error("Error loading inventory check details:", err);
+      console.error(
+        "Error loading inventory check details:",
+        err
+      );
       setError(
         err?.response?.data?.detail ||
           "Failed to load inventory check details."
@@ -385,168 +511,214 @@ function InventoryCheckPage() {
     }
   };
 
-  // -------------------------------
-  // Pad handlers
-  // -------------------------------
-  const handleItemClick = (itemId) => {
-    setSelectedItemId(itemId);
-    setError("");
-    setMessage("");
-  };
+  // --------- Pad + lines actions ---------
 
-  const handleCountChange = (itemId, value) => {
-    setCounts((prev) => ({
-      ...prev,
-      [itemId]: value,
-    }));
-  };
-
-  const handleAddItem = () => {
-    if (!selectedItemId) {
-      setError("Select an item from the list first.");
-      setMessage("");
-      return;
-    }
-    if (countInput === "" || Number(countInput) < 0) {
-      setError("Enter a valid counted quantity (>= 0).");
-      setMessage("");
-      return;
-    }
-
-    const numericId = Number(selectedItemId);
-    const stock = stockByItemId[numericId];
-    if (!stock) {
-      setError("Selected item not found in stock.");
-      setMessage("");
-      return;
-    }
-
-    setError("");
-    setMessage("");
-
-    setCounts((prev) => ({
-      ...prev,
-      [numericId]: countInput,
-    }));
-
-    setCountInput("");
-  };
-
-  const handleRemoveLine = (itemId) => {
-    setCounts((prev) => {
-      const copy = { ...prev };
-      delete copy[itemId];
-      return copy;
-    });
-  };
-
-  const focusPadForItem = (itemId) => {
-    const stock = stockByItemId[itemId];
-    if (!stock) return;
-
-    setSelectedItemId(itemId);
-    setSearchQuery(stock.item_name || "");
-    setCountInput(
-      counts[itemId] !== undefined && counts[itemId] !== null
-        ? String(counts[itemId])
-        : ""
-    );
-    setPadOpen(true);
-
-    window.scrollTo({
-      top: 0,
+  const scrollPadIntoView = () => {
+    if (!padRef.current) return;
+    padRef.current.scrollIntoView({
       behavior: "smooth",
+      block: "start",
     });
   };
 
-  // -------------------------------
-  // Shared draft save helper
-  // -------------------------------
-  const saveDraftToServer = async (showMessages = true) => {
-    if (!shopId) {
-      if (showMessages) setError("No shop selected.");
-      return null;
-    }
-
-    if (!hasAnyLine && selectedItemId && countInput !== "") {
-      if (showMessages) {
-        setError(
-          "You have typed physical pieces for the selected item but haven't added it. Click 'Add item' first."
-        );
-        setMessage("");
+  const updatePad = (field, rawValue) => {
+    setPad((prev) => {
+      if (field === "itemId") {
+        return {
+          ...prev,
+          itemId: rawValue,
+        };
       }
-      return null;
+
+      if (field === "countedPieces") {
+        return {
+          ...prev,
+          countedPieces: rawValue,
+        };
+      }
+
+      return { ...prev, [field]: rawValue };
+    });
+  };
+
+  const resetPad = () => {
+    setPad({
+      itemId: "",
+      countedPieces: "",
+    });
+    setEditingLineId(null);
+  };
+
+  const handlePadSubmit = () => {
+    const itemIdNum = Number(pad.itemId || 0);
+    if (!itemIdNum) {
+      setError("Select an item before adding to list.");
+      return;
     }
 
+    const countedVal = Number(pad.countedPieces || 0);
+    if (!Number.isFinite(countedVal) || countedVal < 0) {
+      setError(
+        "Counted pieces must be zero or more (e.g. 0, 1, 2, 0.5)."
+      );
+      return;
+    }
+
+    setError("");
+    setMessage("");
+
+    const stock = stockByItemId[itemIdNum];
+    const sysPieces = stock
+      ? Number(stock.remaining_pieces || 0)
+      : 0;
+    const itemName =
+      stock?.item_name ||
+      stock?.item?.name ||
+      `Item #${itemIdNum}`;
+
+    const diff = countedVal - sysPieces;
+
+    if (!editingLineId) {
+      // Add new
+      setLines((prev) => [
+        ...prev,
+        {
+          id:
+            Date.now().toString() +
+            Math.random().toString(16),
+          itemId: itemIdNum,
+          itemName,
+          systemPieces: sysPieces,
+          countedPieces: countedVal,
+          diffPieces: diff,
+        },
+      ]);
+    } else {
+      // Update existing
+      setLines((prev) =>
+        prev.map((l) =>
+          l.id === editingLineId
+            ? {
+                ...l,
+                itemId: itemIdNum,
+                itemName,
+                systemPieces: sysPieces,
+                countedPieces: countedVal,
+                diffPieces: diff,
+              }
+            : l
+        )
+      );
+    }
+
+    resetPad();
+    scrollPadIntoView();
+  };
+
+  const handleEditLine = (lineId) => {
+    const line = lines.find((l) => l.id === lineId);
+    if (!line) return;
+
+    setEditingLineId(lineId);
+    setPad({
+      itemId: String(line.itemId),
+      countedPieces: String(line.countedPieces),
+    });
+    scrollPadIntoView();
+  };
+
+  const handleRemoveLine = (lineId) => {
+    setLines((prev) => prev.filter((l) => l.id !== lineId));
+    if (editingLineId === lineId) {
+      resetPad();
+    }
+  };
+
+  const hasAnyLine = lines.length > 0;
+
+  // --------- Save draft ---------
+
+  const handleSaveDraft = async () => {
+    if (!shopId) {
+      setError("No shop selected.");
+      return;
+    }
     if (!hasAnyLine) {
-      if (showMessages)
-        setError("Add at least one item with counted pieces before saving.");
-      return null;
+      setError(
+        "Add at least one counted item to the list before saving."
+      );
+      return;
     }
 
     setSavingDraft(true);
-    if (showMessages) {
-      setError("");
-      setMessage("");
-    }
+    setError("");
+    setMessage("");
 
     try {
       const payload = {
-        id: currentCheckId,
+        id: currentCheckId, // null = create; number = update
         shop_id: shopId,
         check_date: checkDate,
-        notes: notes || null,
-        lines: linesForPayload,
+        notes: null, // you requested no notes field in UI
+        lines: lines.map((l) => ({
+          item_id: l.itemId,
+          counted_pieces: l.countedPieces,
+        })),
       };
 
-      const res = await api.post("/inventory-checks/draft", payload);
+      const res = await api.post(
+        "/inventory-checks/draft",
+        payload
+      );
       const data = res.data;
-      setCurrentCheckId(data.id);
 
-      if (showMessages) {
-        setMessage(
-          data.status === STATUS_POSTED
-            ? "Inventory check has already been posted."
-            : "Inventory check draft saved."
-        );
-      }
-      return data.id;
+      setCurrentCheckId(data.id);
+      setCheckDate(formatDate(data.check_date));
+
+      // Rebuild lines from backend response (ensures diffs match server)
+      const rebuilt =
+        (data.lines || []).map((line) => ({
+          id: String(line.id),
+          itemId: line.item_id,
+          itemName: line.item_name,
+          systemPieces: Number(line.system_pieces || 0),
+          countedPieces: Number(line.counted_pieces || 0),
+          diffPieces: Number(line.diff_pieces || 0),
+        })) || [];
+
+      setLines(rebuilt);
+
+      setMessage(
+        data.status === STATUS_POSTED
+          ? "Inventory check has already been posted."
+          : "Inventory check draft saved."
+      );
     } catch (err) {
-      console.error("Error saving inventory check draft:", err);
-      if (showMessages) {
-        setError(
-          err?.response?.data?.detail || "Failed to save inventory check draft."
-        );
-      }
-      return null;
+      console.error(
+        "Error saving inventory check draft:",
+        err
+      );
+      setError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          "Failed to save inventory check draft."
+      );
     } finally {
       setSavingDraft(false);
     }
   };
 
-  const handleSaveDraft = async () => {
-    await saveDraftToServer(true);
-  };
+  // --------- Post (apply) ---------
 
-  // -------------------------------
-  // Post (apply) check
-  // -------------------------------
   const handlePostCheck = async () => {
-    if (!shopId) {
-      setError("No shop selected.");
+    if (!currentCheckId) {
+      setError("Save a draft first before posting.");
       return;
     }
-
-    if (!hasAnyLine && selectedItemId && countInput !== "") {
-      setError(
-        "You have typed physical pieces for the selected item but haven't added it. Click 'Add item' first."
-      );
-      setMessage("");
-      return;
-    }
-
     if (!hasAnyLine) {
-      setError("Add at least one item with counted pieces before posting.");
+      setError(
+        "Cannot post an empty inventory check. Add at least one counted item and save draft first."
+      );
       return;
     }
 
@@ -561,50 +733,67 @@ function InventoryCheckPage() {
     setMessage("");
 
     try {
-      let checkId = currentCheckId;
-      if (!checkId) {
-        const savedId = await saveDraftToServer(false);
-        if (!savedId) {
-          setPosting(false);
-          return;
-        }
-        checkId = savedId;
-      }
-
-      const res = await api.post(`/inventory-checks/${checkId}/post`);
+      const res = await api.post(
+        `/inventory-checks/${currentCheckId}/post`
+      );
       const data = res.data || null;
 
-      setMessage("Inventory check posted and stock updated.");
-      setCurrentCheckId(data?.id || checkId);
+      setMessage(
+        "Inventory check posted and stock updated."
+      );
+      setCurrentCheckId(data?.id || currentCheckId);
 
-      await Promise.all([loadHistory(), api.get(`/shops/${shopId}/stock`)])
-        .then(([historyRes, stockRes]) => {
-          setHistoryRows(historyRes.data || []);
-          const rows = stockRes.data || [];
-          const normalized = rows.map((row) => ({
-            ...row,
-            item_name:
-              row.item_name || row.item?.name || row.name || `Item #${row.item_id}`,
-            item_sku: row.item_sku || row.item?.sku || row.sku || "",
-          }));
-          setStockRows(normalized);
-        })
-        .catch((err) => {
-          console.error("Post succeeded but reload failed:", err);
-        });
+      // After posting, reload history + stock
+      await Promise.all([
+        (async () => {
+          try {
+            await loadHistory();
+          } catch {
+            // ignore
+          }
+        })(),
+        (async () => {
+          try {
+            const stockRes = await api.get(
+              `/shops/${shopId}/stock`
+            );
+            const rows = stockRes.data || [];
+            const normalized = rows.map((row) => ({
+              ...row,
+              item_name:
+                row.item_name ||
+                row.item?.name ||
+                row.name ||
+                `Item #${row.item_id}`,
+              item_sku:
+                row.item_sku ||
+                row.item?.sku ||
+                row.sku ||
+                "",
+            }));
+            setStockRows(normalized);
+          } catch (e) {
+            console.error(
+              "Post succeeded but reload stock failed:",
+              e
+            );
+          }
+        })(),
+      ]);
     } catch (err) {
       console.error("Error posting inventory check:", err);
       setError(
-        err?.response?.data?.detail || "Failed to post inventory check."
+        err?.response?.data?.detail ||
+          err?.message ||
+          "Failed to post inventory check."
       );
     } finally {
       setPosting(false);
     }
   };
 
-  // -------------------------------
-  // Unauthorized / no shop
-  // -------------------------------
+  // --------- Guards ---------
+
   if (!canUseInventoryCheck) {
     return (
       <div style={{ padding: "2rem 3rem" }}>
@@ -619,7 +808,8 @@ function InventoryCheckPage() {
           Inventory check
         </h1>
         <p style={{ color: "#b91c1c" }}>
-          Only OWNER and MANAGER can perform inventory checks.
+          Only OWNER and MANAGER can perform inventory
+          checks.
         </p>
       </div>
     );
@@ -639,121 +829,159 @@ function InventoryCheckPage() {
           Inventory check
         </h1>
         <p style={{ color: "#b91c1c" }}>
-          No shop selected. Open this page from a shop context (e.g.
-          /shops/1/inventory-checks).
+          No shop selected. Open this page from a shop
+          context (e.g. /shops/1/inventory-checks).
         </p>
       </div>
     );
   }
 
-  // -------------------------------
-  // Render
-  // -------------------------------
-  return (
-    <div style={{ padding: "2.2rem 2.6rem" }}>
-      {/* Back link like Purchases, left-aligned */}
-      <button
-        type="button"
-        onClick={() => navigate(`/shops/${shopId}/workspace`)}
-        style={{
-          border: "none",
-          background: "transparent",
-          padding: 0,
-          marginBottom: "0.6rem",
-          display: "inline-flex",
-          alignItems: "center",
-          gap: "0.4rem",
-          color: "#2563eb",
-          fontSize: "0.9rem",
-          cursor: "pointer",
-        }}
-      >
-        <span style={{ fontSize: "1.1rem" }}>←</span>
-        <span>Back to shop workspace</span>
-      </button>
-
-      <h1
-        style={{
-          fontSize: "2.8rem",
-          fontWeight: 800,
-          marginBottom: "0.3rem",
-          color: "#111827",
-        }}
-      >
-        Inventory check
-      </h1>
-
-      <div
-        style={{
-          color: "#2563eb",
-          fontWeight: 600,
-          marginBottom: "1.0rem",
-          fontSize: "1rem",
-        }}
-      >
-        {shopName}
+  if (loading && !shop) {
+    return (
+      <div style={{ padding: "32px" }}>
+        <p>Loading inventory check page...</p>
       </div>
+    );
+  }
 
-      {/* Tabs row – no Shop ID chip */}
+  // --------- Render ---------
+
+  return (
+    <div
+      style={{
+        width: "100%",
+        maxWidth: "1500px",
+        margin: "0 auto",
+        boxSizing: "border-box",
+      }}
+    >
+      {/* Header (same feel as Purchases) */}
       <div
         style={{
-          marginBottom: "1.2rem",
-          display: "flex",
-          flexWrap: "wrap",
-          gap: "0.75rem",
-          alignItems: "center",
+          paddingBottom: "8px",
+          marginBottom: "8px",
+          background:
+            "linear-gradient(to bottom, #f3f4f6 0%, #f3f4f6 65%, rgba(243,244,246,0) 100%)",
+          borderRadius: "18px",
         }}
       >
-        <div style={{ marginLeft: "auto", display: "flex", gap: "0.75rem" }}>
-          <button
-            type="button"
-            onClick={() => setActiveTab("enter")}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "space-between",
+            gap: "12px",
+            marginBottom: "6px",
+          }}
+        >
+          <div
             style={{
-              padding: "0.45rem 1.35rem",
-              borderRadius: "999px",
-              border:
-                activeTab === "enter"
-                  ? "none"
-                  : "1px solid rgba(209,213,219,1)",
-              backgroundColor:
-                activeTab === "enter" ? "#0f2580" : "rgba(249,250,251,1)",
-              color: activeTab === "enter" ? "#ffffff" : "#374151",
-              fontSize: "0.9rem",
-              fontWeight: 600,
-              cursor: "pointer",
-              boxShadow:
-                activeTab === "enter"
-                  ? "0 10px 25px rgba(15,37,128,0.35)"
-                  : "none",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "flex-start",
             }}
           >
-            Enter counts
-          </button>
+            <button
+              onClick={() => navigate(`/shops/${shopId}`)}
+              style={{
+                border: "none",
+                background: "transparent",
+                padding: 0,
+                marginBottom: "6px",
+                fontSize: "12px",
+                color: "#2563eb",
+                cursor: "pointer",
+              }}
+            >
+              ← Back to shop workspace
+            </button>
 
-          <button
-            type="button"
-            onClick={() => setActiveTab("history")}
+            <h1
+              style={{
+                fontSize: "30px",
+                fontWeight: 800,
+                letterSpacing: "0.03em",
+                margin: 0,
+              }}
+            >
+              Inventory check
+            </h1>
+            <div
+              style={{
+                marginTop: "2px",
+                fontSize: "13px",
+                fontWeight: 600,
+                color: "#2563eb",
+              }}
+            >
+              {shopName}
+            </div>
+
+            <div
+              style={{
+                marginTop: "10px",
+                display: "flex",
+                gap: "8px",
+                flexWrap: "wrap",
+              }}
+            >
+              <button
+                type="button"
+                style={tabBtn(activeTab === "enter")}
+                onClick={() => {
+                  setActiveTab("enter");
+                  setError("");
+                  setMessage("");
+                }}
+              >
+                Enter counts
+              </button>
+
+              <button
+                type="button"
+                style={tabBtn(activeTab === "history")}
+                onClick={() => {
+                  setActiveTab("history");
+                  setError("");
+                  setMessage("");
+                }}
+              >
+                History & differences
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Date selector (no notes at top, as requested) */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "12px",
+            marginBottom: "8px",
+          }}
+        >
+          <div
             style={{
-              padding: "0.45rem 1.35rem",
-              borderRadius: "999px",
-              border:
-                activeTab === "history"
-                  ? "none"
-                  : "1px solid rgba(209,213,219,1)",
-              backgroundColor:
-                activeTab === "history" ? "#0f2580" : "rgba(249,250,251,1)",
-              color: activeTab === "history" ? "#ffffff" : "#374151",
-              fontSize: "0.9rem",
-              fontWeight: 600,
-              cursor: "pointer",
-              boxShadow:
-                activeTab === "history"
-                  ? "0 10px 25px rgba(15,37,128,0.35)"
-                  : "none",
+              fontSize: "12px",
+              fontWeight: 700,
+              color: "#6b7280",
             }}
           >
-            History & differences
-          </button>
+            Inventory check date
+          </div>
+          <input
+            type="date"
+            value={checkDate}
+            onChange={(e) => setCheckDate(e.target.value)}
+            style={{
+              padding: "8px 12px",
+              borderRadius: "999px",
+              border: "1px solid #d1d5db",
+              fontSize: "13px",
+              backgroundColor: "#ffffff",
+            }}
+          />
         </div>
       </div>
 
@@ -761,623 +989,495 @@ function InventoryCheckPage() {
         <div
           style={{
             marginBottom: "1rem",
-            padding: "0.75rem 1rem",
+            padding: "0.6rem 0.8rem",
             borderRadius: "0.75rem",
             backgroundColor: error ? "#fef2f2" : "#ecfdf3",
             color: error ? "#b91c1c" : "#166534",
-            fontSize: "0.95rem",
+            fontSize: "0.9rem",
           }}
         >
           {error || message}
         </div>
       )}
 
-      {/* TAB: Enter counts */}
+      {/* ================= TAB: ENTER COUNTS ================= */}
       {activeTab === "enter" && (
-        <div>
-          {/* Only date row now */}
-          <div
+        <div
+          style={{
+            backgroundColor: "#ffffff",
+            borderRadius: "20px",
+            boxShadow: "0 10px 30px rgba(15,37,128,0.06)",
+            padding: "16px 18px 14px",
+          }}
+        >
+          <h2
             style={{
-              display: "grid",
-              gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
-              gap: "1rem",
-              marginBottom: "1.2rem",
-              alignItems: "center",
+              fontSize: "18px",
+              fontWeight: 700,
+              margin: 0,
             }}
           >
-            <div>
-              <label
+            Enter inventory counts for {checkDate}
+          </h2>
+
+          {/* PAD */}
+          <div
+            ref={padRef}
+            style={{
+              marginTop: 12,
+              marginBottom: "12px",
+              padding: "14px 14px 16px",
+              borderRadius: "18px",
+              background: padBg,
+              border: padBorder,
+              color: padText,
+            }}
+          >
+            <div
+              style={{
+                fontSize: "13px",
+                fontWeight: 700,
+                marginBottom: "10px",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: "8px",
+              }}
+            >
+              <span>{padTitle}</span>
+
+              <div
                 style={{
-                  display: "block",
-                  fontSize: "0.85rem",
-                  fontWeight: 600,
-                  marginBottom: "0.3rem",
+                  display: "flex",
+                  gap: "8px",
+                  alignItems: "center",
                 }}
               >
-                Inventory check date
-              </label>
-              <input
-                type="date"
-                value={checkDate}
-                onChange={(e) => setCheckDate(e.target.value)}
-                style={{
-                  width: "100%",
-                  padding: "0.6rem 0.8rem",
-                  borderRadius: "999px",
-                  border: "1px solid #d1d5db",
-                  fontSize: "0.9rem",
-                }}
-              />
-            </div>
-
-            <div />
-          </div>
-
-          {/* Pad container */}
-          <div
-            style={{
-              backgroundColor: "#ffffff",
-              borderRadius: "1.4rem",
-              padding: "1.4rem 1.6rem",
-              boxShadow: "0 10px 30px rgba(15,23,42,0.05)",
-              marginBottom: "1.2rem",
-            }}
-          >
-            <div
-              style={{
-                marginBottom: "0.9rem",
-                fontWeight: 600,
-                fontSize: "0.92rem",
-                color: "#111827",
-              }}
-            >
-              Pad: select item, see system stock, enter physical pieces, then
-              add to list
-            </div>
-
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns:
-                  "minmax(0, 2.4fr) minmax(0, 1.5fr) minmax(0, 1.4fr)",
-                gap: "1rem",
-                alignItems: "flex-start",
-              }}
-            >
-              {/* Column 1: search pad + dropdown limited to pad width */}
-              <div>
-                <label
-                  style={{
-                    display: "block",
-                    fontSize: "0.85rem",
-                    fontWeight: 600,
-                    marginBottom: "0.3rem",
-                  }}
-                >
-                  Type item name to search…
-                </label>
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  onFocus={() => setPadOpen(true)}
-                  onClick={() => setPadOpen(true)}
-                  onBlur={() => {
-                    setTimeout(() => setPadOpen(false), 120);
-                  }}
-                  placeholder="Type item name or SKU…"
-                  style={{
-                    width: "100%",
-                    padding: "0.65rem 0.9rem",
-                    borderRadius: "999px",
-                    border: "1px solid #d1d5db",
-                    fontSize: "0.9rem",
-                  }}
-                />
-
-                {padOpen ? (
-                  <div
-                    style={{
-                      marginTop: "0.4rem",
-                      maxHeight: "260px",
-                      overflow: "auto",
-                      borderRadius: "1.1rem",
-                      border: "1px solid #e5e7eb",
-                    }}
-                  >
-                    {loading ? (
-                      <div
-                        style={{
-                          padding: "0.9rem 1rem",
-                          fontSize: "0.9rem",
-                          color: "#6b7280",
-                        }}
-                      >
-                        Loading current stock…
-                      </div>
-                    ) : filteredStockRows.length === 0 ? (
-                      <div
-                        style={{
-                          padding: "0.9rem 1rem",
-                          fontSize: "0.9rem",
-                          color: "#6b7280",
-                        }}
-                      >
-                        No stock items found for this shop.
-                      </div>
-                    ) : (
-                      <>
-                        <div
-                          style={{
-                            padding: "0.5rem 1rem",
-                            fontSize: "0.82rem",
-                            color: "#9ca3af",
-                            borderBottom: "1px solid #e5e7eb",
-                          }}
-                        >
-                          {filteredStockRows.length} items in dropdown after
-                          filter. Type initials above to get to your item
-                          quickly.
-                        </div>
-                        {filteredStockRows.map((row) => {
-                          const isSelected = selectedItemId === row.item_id;
-                          const systemPieces = Number(row.remaining_pieces || 0);
-
-                          return (
-                            <button
-                              key={row.item_id}
-                              type="button"
-                              onMouseDown={(e) => {
-                                e.preventDefault();
-                                handleItemClick(row.item_id);
-                              }}
-                              style={{
-                                width: "100%",
-                                border: "none",
-                                borderBottom: "1px solid #f3f4f6",
-                                backgroundColor: isSelected
-                                  ? "#eef2ff"
-                                  : "#ffffff",
-                                padding: "0.7rem 1rem",
-                                display: "flex",
-                                justifyContent: "space-between",
-                                alignItems: "center",
-                                textAlign: "left",
-                                cursor: "pointer",
-                              }}
-                            >
-                              <div>
-                                <div
-                                  style={{
-                                    fontSize: "0.9rem",
-                                    fontWeight: 600,
-                                    color: "#111827",
-                                  }}
-                                >
-                                  {row.item_name}
-                                </div>
-                                <div
-                                  style={{
-                                    fontSize: "0.75rem",
-                                    color: "#6b7280",
-                                    marginTop: 2,
-                                  }}
-                                >
-                                  ID: {row.item_id}
-                                  {row.item_sku ? ` · SKU: ${row.item_sku}` : ""}
-                                </div>
-                              </div>
-                              <div
-                                style={{
-                                  fontSize: "0.85rem",
-                                  fontWeight: 600,
-                                  color: "#2563eb",
-                                }}
-                              >
-                                {formatPieces(systemPieces)} pcs
-                              </div>
-                            </button>
-                          );
-                        })}
-                      </>
-                    )}
-                  </div>
-                ) : null}
-              </div>
-
-              {/* Column 2: system preview */}
-              <div>
-                <label
-                  style={{
-                    display: "block",
-                    fontSize: "0.85rem",
-                    fontWeight: 600,
-                    marginBottom: "0.3rem",
-                  }}
-                >
-                  System pieces & price
-                </label>
-                {selectedItemId ? (
-                  (() => {
-                    const stock = stockByItemId[selectedItemId] || {};
-                    return (
-                      <div
-                        style={{
-                          borderRadius: "1rem",
-                          border: "1px solid #e5e7eb",
-                          padding: "0.6rem 0.9rem",
-                          fontSize: "0.86rem",
-                          backgroundColor: "#f9fafb",
-                        }}
-                      >
-                        <div>
-                          System:{" "}
-                          <b>
-                            {formatPieces(stock.remaining_pieces || 0)} pcs
-                          </b>
-                        </div>
-                        <div style={{ marginTop: 2 }}>
-                          Price / piece:{" "}
-                          <b>
-                            {formatMoney(stock.selling_price_per_piece || 0)}{" "}
-                            RWF
-                          </b>
-                        </div>
-                      </div>
-                    );
-                  })()
-                ) : (
-                  <div
-                    style={{
-                      borderRadius: "1rem",
-                      border: "1px solid #e5e7eb",
-                      padding: "0.6rem 0.9rem",
-                      fontSize: "0.86rem",
-                      backgroundColor: "#f9fafb",
-                      color: "#9ca3af",
-                    }}
-                  >
-                    Select an item on the left to see system stock.
-                  </div>
-                )}
-              </div>
-
-              {/* Column 3: physical pieces + Add button */}
-              <div>
-                <label
-                  style={{
-                    display: "block",
-                    fontSize: "0.85rem",
-                    fontWeight: 600,
-                    marginBottom: "0.3rem",
-                  }}
-                >
-                  Physical (counted) pieces
-                </label>
-                <div
-                  style={{
-                    display: "flex",
-                    gap: "0.5rem",
-                    alignItems: "center",
-                  }}
-                >
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    value={countInput}
-                    onChange={(e) => setCountInput(e.target.value)}
-                    placeholder="e.g. 120"
-                    style={{
-                      flex: 1,
-                      padding: "0.6rem 0.8rem",
-                      borderRadius: "999px",
-                      border: "1px solid #d1d5db",
-                      fontSize: "0.9rem",
-                      textAlign: "right",
-                    }}
-                  />
+                {editingLineId && (
                   <button
                     type="button"
-                    onClick={handleAddItem}
+                    onClick={resetPad}
+                    disabled={padSaving}
                     style={{
-                      padding: "0.6rem 1.4rem",
-                      borderRadius: "999px",
-                      border: "none",
-                      backgroundColor: "#2563eb",
-                      color: "#ffffff",
-                      fontSize: "0.9rem",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      whiteSpace: "nowrap",
+                      padding: "0.4rem 1rem",
+                      borderRadius: "9999px",
+                      border: "1px solid #d1d5db",
+                      backgroundColor: "#ffffff",
+                      color: "#111827",
+                      fontSize: "0.8rem",
+                      cursor: padSaving
+                        ? "not-allowed"
+                        : "pointer",
+                      opacity: padSaving ? 0.7 : 1,
                     }}
                   >
-                    Add item
+                    Cancel edit
                   </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={handlePadSubmit}
+                  disabled={padSaving}
+                  style={{
+                    padding: "0.55rem 1.3rem",
+                    borderRadius: "9999px",
+                    border: "none",
+                    backgroundColor: "#2563eb",
+                    color: "white",
+                    fontWeight: 800,
+                    fontSize: "0.9rem",
+                    cursor: padSaving
+                      ? "not-allowed"
+                      : "pointer",
+                    opacity: padSaving ? 0.8 : 1,
+                  }}
+                >
+                  {padSaving ? "Updating..." : padButtonText}
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label style={labelStyle}>Item</label>
+              <ItemComboBox
+                items={pickerItems}
+                valueId={
+                  pad.itemId === ""
+                    ? ""
+                    : String(pad.itemId)
+                }
+                onChangeId={(idStr) =>
+                  updatePad("itemId", idStr)
+                }
+              />
+
+              <div style={helperGridStyle}>
+                <div>
+                  System pieces:{" "}
+                  <strong style={{ color: padText }}>
+                    {pad.itemId
+                      ? formatPieces(padSystemPieces)
+                      : "—"}
+                  </strong>
+                </div>
+                <div>
+                  Counted pieces:{" "}
+                  <strong style={{ color: padText }}>
+                    {pad.itemId &&
+                    padCountedPieces !== null &&
+                    Number.isFinite(padCountedPieces)
+                      ? formatPieces(padCountedPieces)
+                      : "—"}
+                  </strong>
+                </div>
+                <div>
+                  Difference:{" "}
+                  <strong
+                    style={{
+                      color:
+                        padDiff === 0
+                          ? "#6b7280"
+                          : padDiff > 0
+                          ? "#16a34a"
+                          : "#b91c1c",
+                    }}
+                  >
+                    {pad.itemId
+                      ? formatDiff(padDiff)
+                      : "—"}
+                  </strong>
                 </div>
               </div>
             </div>
-          </div>
 
-          {/* Save / Post buttons */}
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "flex-end",
-              gap: "0.75rem",
-              marginBottom: "0.9rem",
-            }}
-          >
-            <button
-              type="button"
-              onClick={handleSaveDraft}
-              disabled={savingDraft || loading || !hasAnyLine}
+            <div
               style={{
-                padding: "0.6rem 1.6rem",
-                borderRadius: "999px",
-                border: "none",
-                backgroundColor:
-                  savingDraft || loading || !hasAnyLine
-                    ? "#9ca3af"
-                    : "#111827",
-                color: "#ffffff",
-                fontSize: "0.9rem",
-                fontWeight: 600,
-                cursor:
-                  savingDraft || loading || !hasAnyLine
-                    ? "not-allowed"
-                    : "pointer",
+                marginTop: "12px",
+                display: "grid",
+                gridTemplateColumns:
+                  "minmax(0, 1fr) 180px 180px",
+                gap: "12px",
+                alignItems: "end",
               }}
             >
-              {savingDraft ? "Saving draft..." : "Save draft"}
-            </button>
+              <div>
+                <label style={labelStyle}>
+                  Counted pieces
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={pad.countedPieces}
+                  onChange={(e) =>
+                    updatePad(
+                      "countedPieces",
+                      e.target.value
+                    )
+                  }
+                  style={inputBase}
+                />
+              </div>
 
-            <button
-              type="button"
-              onClick={handlePostCheck}
-              disabled={posting || !hasAnyLine}
-              style={{
-                padding: "0.6rem 1.8rem",
-                borderRadius: "999px",
-                border: "none",
-                backgroundColor:
-                  posting || !hasAnyLine ? "#6b7280" : "#16a34a",
-                color: "#ffffff",
-                fontSize: "0.9rem",
-                fontWeight: 700,
-                cursor: posting || !hasAnyLine ? "not-allowed" : "pointer",
-              }}
-            >
-              {posting ? "Posting..." : "Post inventory check"}
-            </button>
+              <div>
+                <label style={labelStyle}>
+                  System pieces
+                </label>
+                <input
+                  type="text"
+                  readOnly
+                  value={
+                    pad.itemId
+                      ? formatPieces(
+                          padSystemPieces
+                        )
+                      : ""
+                  }
+                  placeholder="—"
+                  style={{
+                    ...inputBase,
+                    backgroundColor: "#f3f4f6",
+                    fontWeight: 700,
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={labelStyle}>
+                  Difference
+                </label>
+                <input
+                  type="text"
+                  readOnly
+                  value={
+                    pad.itemId
+                      ? formatDiff(padDiff)
+                      : ""
+                  }
+                  placeholder="—"
+                  style={{
+                    ...inputBase,
+                    backgroundColor: "#f3f4f6",
+                    fontWeight: 700,
+                    color:
+                      padDiff === 0
+                        ? "#6b7280"
+                        : padDiff > 0
+                        ? "#16a34a"
+                        : "#b91c1c",
+                  }}
+                />
+              </div>
+            </div>
           </div>
 
-          {/* Counted items table */}
-          {displayLines.length === 0 ? (
-            <p style={{ color: "#6b7280" }}>
-              No items added yet. Use the pad above: select item, enter physical
-              pieces, and click <b>Add item</b>.
-            </p>
+          {/* LIST */}
+          {lines.length === 0 ? (
+            <div
+              style={{
+                padding: "14px 4px 6px",
+                fontSize: "13px",
+                color: "#6b7280",
+              }}
+            >
+              No items counted yet. Use the pad above and
+              click <strong>{padButtonText}</strong>.
+            </div>
           ) : (
             <>
               <div
                 style={{
-                  marginBottom: "0.6rem",
-                  fontSize: "0.9rem",
-                  color: "#4b5563",
-                  display: "flex",
-                  justifyContent: "space-between",
-                  flexWrap: "wrap",
-                  gap: "0.5rem",
+                  fontSize: "12px",
+                  color: "#6b7280",
+                  marginBottom: "6px",
+                  marginTop: "2px",
                 }}
               >
-                <span>
-                  <b>{displayLines.length}</b> item
-                  {displayLines.length > 1 ? "s" : ""} in this inventory check.
-                </span>
-                <span>
-                  Total pieces diff:{" "}
-                  <b>{formatDiff(totalsForCurrent.totalDiffPieces)}</b> ·
-                  Approx. total cost diff:{" "}
-                  <b>{formatMoney(totalsForCurrent.totalCostDiff)} RWF</b>
-                </span>
+                Items counted: {lines.length}
               </div>
 
               <div
                 style={{
+                  borderRadius: "14px",
+                  border: "1px solid #e5e7eb",
                   backgroundColor: "#ffffff",
-                  borderRadius: "1.1rem",
-                  padding: "1rem 1.2rem",
-                  boxShadow: "0 10px 30px rgba(15,23,42,0.05)",
+                  overflow: "hidden",
+                  boxShadow:
+                    "0 6px 18px rgba(15, 23, 42, 0.05)",
                 }}
               >
-                <div style={{ maxHeight: "65vh", overflow: "auto" }}>
+                <div
+                  style={{
+                    maxHeight: "420px",
+                    overflowY: "auto",
+                    overflowX: "auto",
+                    scrollbarGutter: "stable",
+                    backgroundColor: "#ffffff",
+                  }}
+                >
                   <table
                     style={{
                       width: "100%",
                       borderCollapse: "collapse",
-                      fontSize: "0.9rem",
-                      minWidth: "820px",
+                      fontSize: "13px",
+                      minWidth: "720px",
                     }}
                   >
                     <thead>
                       <tr
                         style={{
-                          borderBottom: "1px solid #e5e7eb",
+                          borderBottom:
+                            "1px solid #e5e7eb",
                           backgroundColor: "#f9fafb",
                           color: "#6b7280",
                         }}
                       >
                         <th
                           style={{
-                            padding: "0.55rem 0.6rem",
+                            padding:
+                              "0.55rem 0.6rem",
                             textAlign: "left",
-                            fontWeight: 600,
+                            fontWeight: 700,
+                            fontSize: "11px",
+                            textTransform:
+                              "uppercase",
+                            letterSpacing:
+                              "0.08em",
                           }}
                         >
                           Item
                         </th>
                         <th
                           style={{
-                            padding: "0.55rem 0.6rem",
+                            padding:
+                              "0.55rem 0.6rem",
                             textAlign: "right",
-                            fontWeight: 600,
+                            fontWeight: 700,
+                            fontSize: "11px",
+                            textTransform:
+                              "uppercase",
+                            letterSpacing:
+                              "0.08em",
                           }}
                         >
                           System pieces
                         </th>
                         <th
                           style={{
-                            padding: "0.55rem 0.6rem",
+                            padding:
+                              "0.55rem 0.6rem",
                             textAlign: "right",
-                            fontWeight: 600,
-                          }}
-                        >
-                          Price / piece
-                        </th>
-                        <th
-                          style={{
-                            padding: "0.55rem 0.6rem",
-                            textAlign: "right",
-                            fontWeight: 600,
+                            fontWeight: 700,
+                            fontSize: "11px",
+                            textTransform:
+                              "uppercase",
+                            letterSpacing:
+                              "0.08em",
                           }}
                         >
                           Counted pieces
                         </th>
                         <th
                           style={{
-                            padding: "0.55rem 0.6rem",
+                            padding:
+                              "0.55rem 0.6rem",
                             textAlign: "right",
-                            fontWeight: 600,
+                            fontWeight: 700,
+                            fontSize: "11px",
+                            textTransform:
+                              "uppercase",
+                            letterSpacing:
+                              "0.08em",
                           }}
                         >
                           Difference
                         </th>
                         <th
                           style={{
-                            padding: "0.55rem 0.6rem",
-                            textAlign: "right",
-                            fontWeight: 600,
-                          }}
-                        >
-                          Cost diff (approx.)
-                        </th>
-                        <th
-                          style={{
-                            padding: "0.55rem 0.6rem",
+                            padding:
+                              "0.55rem 0.6rem",
                             textAlign: "center",
-                            fontWeight: 600,
                           }}
                         >
-                          Actions
+                          {/* actions */}
                         </th>
                       </tr>
                     </thead>
                     <tbody>
-                      {displayLines.map((row) => (
+                      {lines.map((line) => (
                         <tr
-                          key={row.item_id}
-                          style={{ borderBottom: "1px solid #f3f4f6" }}
+                          key={line.id}
+                          style={{
+                            borderBottom:
+                              "1px solid #f3f4f6",
+                          }}
                         >
                           <td
                             style={{
-                              padding: "0.5rem 0.6rem",
-                              fontWeight: 500,
-                              color: "#111827",
-                              cursor: "pointer",
-                            }}
-                            onClick={() => focusPadForItem(row.item_id)}
-                          >
-                            {row.item_name}
-                          </td>
-                          <td
-                            style={{
-                              padding: "0.5rem 0.6rem",
-                              textAlign: "right",
+                              padding:
+                                "0.5rem 0.6rem",
                             }}
                           >
-                            {formatPieces(row.systemPieces)}
-                          </td>
-                          <td
-                            style={{
-                              padding: "0.5rem 0.6rem",
-                              textAlign: "right",
-                            }}
-                          >
-                            {formatMoney(row.pricePerPiece)} RWF
-                          </td>
-                          <td
-                            style={{
-                              padding: "0.5rem 0.6rem",
-                              textAlign: "right",
-                            }}
-                          >
-                            <input
-                              type="number"
-                              step="0.01"
-                              min="0"
-                              value={counts[row.item_id] ?? row.counted}
-                              onChange={(e) =>
-                                handleCountChange(row.item_id, e.target.value)
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleEditLine(
+                                  line.id
+                                )
                               }
                               style={{
-                                width: "110px",
-                                padding: "0.32rem 0.45rem",
-                                borderRadius: "999px",
-                                border: "1px solid #d1d5db",
-                                fontSize: "0.85rem",
-                                textAlign: "right",
+                                padding: 0,
+                                margin: 0,
+                                border: "none",
+                                background:
+                                  "transparent",
+                                color: "#2563eb",
+                                fontWeight: 600,
+                                fontSize: "13px",
+                                cursor: "pointer",
+                                textAlign: "left",
                               }}
-                            />
+                              title="Edit this line"
+                            >
+                              {line.itemName}
+                            </button>
                           </td>
                           <td
                             style={{
-                              padding: "0.5rem 0.6rem",
+                              padding:
+                                "0.5rem 0.6rem",
+                              textAlign: "right",
+                            }}
+                          >
+                            {formatPieces(
+                              line.systemPieces
+                            )}
+                          </td>
+                          <td
+                            style={{
+                              padding:
+                                "0.5rem 0.6rem",
+                              textAlign: "right",
+                            }}
+                          >
+                            {formatPieces(
+                              line.countedPieces
+                            )}
+                          </td>
+                          <td
+                            style={{
+                              padding:
+                                "0.5rem 0.6rem",
                               textAlign: "right",
                               fontWeight: 600,
                               color:
-                                row.diffPieces === 0
+                                Number(
+                                  line.diffPieces || 0
+                                ) === 0
                                   ? "#6b7280"
-                                  : row.diffPieces > 0
+                                  : Number(
+                                        line.diffPieces ||
+                                          0
+                                      ) > 0
                                   ? "#16a34a"
                                   : "#b91c1c",
                             }}
                           >
-                            {formatDiff(row.diffPieces)}
+                            {formatDiff(
+                              line.diffPieces
+                            )}
                           </td>
                           <td
                             style={{
-                              padding: "0.5rem 0.6rem",
-                              textAlign: "right",
-                              fontWeight: 600,
-                              color:
-                                row.costDiff === 0
-                                  ? "#6b7280"
-                                  : row.costDiff > 0
-                                  ? "#16a34a"
-                                  : "#b91c1c",
-                            }}
-                          >
-                            {formatMoney(row.costDiff)} RWF
-                          </td>
-                          <td
-                            style={{
-                              padding: "0.5rem 0.6rem",
+                              padding:
+                                "0.5rem 0.6rem",
                               textAlign: "center",
                             }}
                           >
                             <button
                               type="button"
-                              onClick={() => handleRemoveLine(row.item_id)}
+                              onClick={() =>
+                                handleRemoveLine(
+                                  line.id
+                                )
+                              }
                               style={{
-                                border: "none",
-                                background: "transparent",
+                                width: "28px",
+                                height: "28px",
+                                borderRadius:
+                                  "9999px",
+                                border:
+                                  "1px solid #fee2e2",
+                                backgroundColor:
+                                  "#fef2f2",
                                 color: "#b91c1c",
-                                fontSize: "0.85rem",
+                                fontSize: "16px",
                                 cursor: "pointer",
                               }}
+                              title="Remove line from list"
                             >
-                              Remove
+                              ✕
                             </button>
                           </td>
                         </tr>
@@ -1388,15 +1488,97 @@ function InventoryCheckPage() {
               </div>
             </>
           )}
+
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "flex-end",
+              gap: "12px",
+              marginTop: "14px",
+            }}
+          >
+            <button
+              type="button"
+              onClick={handleSaveDraft}
+              disabled={savingDraft || loading}
+              style={{
+                padding: "0.6rem 1.4rem",
+                borderRadius: "999px",
+                border: "none",
+                backgroundColor: savingDraft
+                  ? "#4b6bfb99"
+                  : "#4b6bfb",
+                color: "#ffffff",
+                fontWeight: 600,
+                fontSize: "0.95rem",
+                cursor:
+                  savingDraft || loading
+                    ? "not-allowed"
+                    : "pointer",
+                opacity:
+                  savingDraft || loading ? 0.85 : 1,
+              }}
+            >
+              {savingDraft
+                ? "Saving draft..."
+                : "Save draft"}
+            </button>
+
+            <button
+              type="button"
+              onClick={handlePostCheck}
+              disabled={
+                posting || !currentCheckId || !hasAnyLine
+              }
+              title={
+                !currentCheckId
+                  ? "Save draft first before posting."
+                  : !hasAnyLine
+                  ? "Cannot post an empty inventory check."
+                  : ""
+              }
+              style={{
+                padding: "0.6rem 1.8rem",
+                borderRadius: "999px",
+                border: "none",
+                backgroundColor:
+                  posting ||
+                  !currentCheckId ||
+                  !hasAnyLine
+                    ? "#9ca3af"
+                    : "#16a34a",
+                color: "white",
+                fontWeight: 700,
+                fontSize: "0.95rem",
+                cursor:
+                  posting ||
+                  !currentCheckId ||
+                  !hasAnyLine
+                    ? "not-allowed"
+                    : "pointer",
+                opacity:
+                  posting ||
+                  !currentCheckId ||
+                  !hasAnyLine
+                    ? 0.85
+                    : 1,
+              }}
+            >
+              {posting
+                ? "Posting..."
+                : "Post inventory check"}
+            </button>
+          </div>
         </div>
       )}
 
-      {/* TAB: History */}
+      {/* ============== TAB: HISTORY & DIFFERENCES ============== */}
       {activeTab === "history" && (
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "minmax(0, 1.3fr) minmax(0, 1fr)",
+            gridTemplateColumns:
+              "minmax(0, 1.3fr) minmax(0, 1fr)",
             gap: "1.1rem",
             alignItems: "flex-start",
           }}
@@ -1407,7 +1589,8 @@ function InventoryCheckPage() {
               backgroundColor: "#ffffff",
               borderRadius: "1.1rem",
               padding: "1.3rem 1.4rem",
-              boxShadow: "0 10px 30px rgba(15,23,42,0.05)",
+              boxShadow:
+                "0 10px 30px rgba(15,23,42,0.05)",
             }}
           >
             <h2
@@ -1421,13 +1604,21 @@ function InventoryCheckPage() {
             </h2>
 
             {historyLoading ? (
-              <p style={{ color: "#6b7280" }}>Loading history...</p>
+              <p style={{ color: "#6b7280" }}>
+                Loading history...
+              </p>
             ) : historyRows.length === 0 ? (
               <p style={{ color: "#6b7280" }}>
-                No inventory checks recorded yet for this shop.
+                No inventory checks recorded yet for this
+                shop.
               </p>
             ) : (
-              <div style={{ maxHeight: "65vh", overflow: "auto" }}>
+              <div
+                style={{
+                  maxHeight: "65vh",
+                  overflow: "auto",
+                }}
+              >
                 <table
                   style={{
                     width: "100%",
@@ -1439,7 +1630,8 @@ function InventoryCheckPage() {
                   <thead>
                     <tr
                       style={{
-                        borderBottom: "1px solid #e5e7eb",
+                        borderBottom:
+                          "1px solid #e5e7eb",
                         backgroundColor: "#f9fafb",
                         color: "#6b7280",
                       }}
@@ -1498,9 +1690,12 @@ function InventoryCheckPage() {
                     {historyRows.map((row) => (
                       <tr
                         key={row.id}
-                        onClick={() => handleHistoryRowClick(row)}
+                        onClick={() =>
+                          handleHistoryRowClick(row)
+                        }
                         style={{
-                          borderBottom: "1px solid #f3f4f6",
+                          borderBottom:
+                            "1px solid #f3f4f6",
                           cursor: "pointer",
                         }}
                       >
@@ -1520,16 +1715,20 @@ function InventoryCheckPage() {
                           <span
                             style={{
                               display: "inline-block",
-                              padding: "0.12rem 0.55rem",
-                              borderRadius: "999px",
+                              padding:
+                                "0.12rem 0.55rem",
+                              borderRadius:
+                                "999px",
                               fontSize: "0.75rem",
                               fontWeight: 600,
                               backgroundColor:
-                                row.status === STATUS_POSTED
+                                row.status ===
+                                STATUS_POSTED
                                   ? "#dcfce7"
                                   : "#e0f2fe",
                               color:
-                                row.status === STATUS_POSTED
+                                row.status ===
+                                STATUS_POSTED
                                   ? "#166534"
                                   : "#0369a1",
                             }}
@@ -1551,7 +1750,9 @@ function InventoryCheckPage() {
                             textAlign: "right",
                           }}
                         >
-                          {formatPieces(row.total_system_pieces)}
+                          {formatPieces(
+                            row.total_system_pieces
+                          )}
                         </td>
                         <td
                           style={{
@@ -1559,7 +1760,9 @@ function InventoryCheckPage() {
                             textAlign: "right",
                           }}
                         >
-                          {formatPieces(row.total_counted_pieces)}
+                          {formatPieces(
+                            row.total_counted_pieces
+                          )}
                         </td>
                         <td
                           style={{
@@ -1567,14 +1770,22 @@ function InventoryCheckPage() {
                             textAlign: "right",
                             fontWeight: 600,
                             color:
-                              Number(row.total_diff_pieces || 0) === 0
+                              Number(
+                                row.total_diff_pieces ||
+                                  0
+                              ) === 0
                                 ? "#6b7280"
-                                : Number(row.total_diff_pieces || 0) > 0
+                                : Number(
+                                      row.total_diff_pieces ||
+                                        0
+                                    ) > 0
                                 ? "#16a34a"
                                 : "#b91c1c",
                           }}
                         >
-                          {formatDiff(row.total_diff_pieces)}
+                          {formatDiff(
+                            row.total_diff_pieces
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -1590,7 +1801,8 @@ function InventoryCheckPage() {
               backgroundColor: "#ffffff",
               borderRadius: "1.1rem",
               padding: "1.3rem 1.4rem",
-              boxShadow: "0 10px 30px rgba(15,23,42,0.05)",
+              boxShadow:
+                "0 10px 30px rgba(15,23,42,0.05)",
             }}
           >
             <h2
@@ -1604,10 +1816,13 @@ function InventoryCheckPage() {
             </h2>
 
             {selectedHistoryLoading ? (
-              <p style={{ color: "#6b7280" }}>Loading details...</p>
+              <p style={{ color: "#6b7280" }}>
+                Loading details...
+              </p>
             ) : !selectedHistoryCheck ? (
               <p style={{ color: "#6b7280" }}>
-                Click a row on the left to see full details.
+                Click a row on the left to see full
+                details.
               </p>
             ) : (
               <>
@@ -1620,58 +1835,58 @@ function InventoryCheckPage() {
                 >
                   <div>
                     <b>Date:</b>{" "}
-                    {formatDate(selectedHistoryCheck.check_date)}
+                    {formatDate(
+                      selectedHistoryCheck.check_date
+                    )}
                   </div>
                   <div>
-                    <b>Status:</b> {selectedHistoryCheck.status}
+                    <b>Status:</b>{" "}
+                    {selectedHistoryCheck.status}
                   </div>
-                  {selectedHistoryCheck.performed_by_username && (
+                  {selectedHistoryCheck
+                    .performed_by_username && (
                     <div>
                       <b>Performed by:</b>{" "}
-                      {selectedHistoryCheck.performed_by_username}
+                      {
+                        selectedHistoryCheck.performed_by_username
+                      }
                     </div>
                   )}
                   {selectedHistoryCheck.notes && (
                     <div>
-                      <b>Notes:</b> {selectedHistoryCheck.notes}
+                      <b>Notes:</b>{" "}
+                      {selectedHistoryCheck.notes}
                     </div>
                   )}
-                  <div style={{ marginTop: "0.4rem" }}>
-                    <b>Total cost difference (approx.):</b>{" "}
-                    {formatMoney(historyCostView.totalCostDiff)} RWF
-                  </div>
-                  <div
-                    style={{
-                      fontSize: "0.75rem",
-                      color: "#9ca3af",
-                      marginTop: "0.1rem",
-                    }}
-                  >
-                    Based on current price/piece; historical cost may differ
-                    slightly.
-                  </div>
                 </div>
 
-                <div style={{ maxHeight: "55vh", overflow: "auto" }}>
+                <div
+                  style={{
+                    maxHeight: "55vh",
+                    overflow: "auto",
+                  }}
+                >
                   <table
                     style={{
                       width: "100%",
                       borderCollapse: "collapse",
                       fontSize: "0.86rem",
-                      minWidth: "620px",
+                      minWidth: "520px",
                     }}
                   >
                     <thead>
                       <tr
                         style={{
-                          borderBottom: "1px solid #e5e7eb",
+                          borderBottom:
+                            "1px solid #e5e7eb",
                           backgroundColor: "#f9fafb",
                           color: "#6b7280",
                         }}
                       >
                         <th
                           style={{
-                            padding: "0.45rem 0.55rem",
+                            padding:
+                              "0.45rem 0.55rem",
                             textAlign: "left",
                           }}
                         >
@@ -1679,7 +1894,8 @@ function InventoryCheckPage() {
                         </th>
                         <th
                           style={{
-                            padding: "0.45rem 0.55rem",
+                            padding:
+                              "0.45rem 0.55rem",
                             textAlign: "right",
                           }}
                         >
@@ -1687,7 +1903,8 @@ function InventoryCheckPage() {
                         </th>
                         <th
                           style={{
-                            padding: "0.45rem 0.55rem",
+                            padding:
+                              "0.45rem 0.55rem",
                             textAlign: "right",
                           }}
                         >
@@ -1695,101 +1912,84 @@ function InventoryCheckPage() {
                         </th>
                         <th
                           style={{
-                            padding: "0.45rem 0.55rem",
+                            padding:
+                              "0.45rem 0.55rem",
                             textAlign: "right",
                           }}
                         >
                           Diff
                         </th>
-                        <th
-                          style={{
-                            padding: "0.45rem 0.55rem",
-                            textAlign: "right",
-                          }}
-                        >
-                          Price / piece
-                        </th>
-                        <th
-                          style={{
-                            padding: "0.45rem 0.55rem",
-                            textAlign: "right",
-                          }}
-                        >
-                          Cost diff (approx.)
-                        </th>
                       </tr>
                     </thead>
                     <tbody>
-                      {historyCostView.lines.map((line) => (
-                        <tr
-                          key={line.id}
-                          style={{ borderBottom: "1px solid #f3f4f6" }}
-                        >
-                          <td
+                      {selectedHistoryCheck.lines.map(
+                        (line) => (
+                          <tr
+                            key={line.id}
                             style={{
-                              padding: "0.45rem 0.55rem",
-                              fontWeight: 500,
-                              color: "#111827",
+                              borderBottom:
+                                "1px solid #f3f4f6",
                             }}
                           >
-                            {line.item_name}
-                          </td>
-                          <td
-                            style={{
-                              padding: "0.45rem 0.55rem",
-                              textAlign: "right",
-                            }}
-                          >
-                            {formatPieces(line.system_pieces)}
-                          </td>
-                          <td
-                            style={{
-                              padding: "0.45rem 0.55rem",
-                              textAlign: "right",
-                            }}
-                          >
-                            {formatPieces(line.counted_pieces)}
-                          </td>
-                          <td
-                            style={{
-                              padding: "0.45rem 0.55rem",
-                              textAlign: "right",
-                              fontWeight: 600,
-                              color:
-                                Number(line.diff_pieces || 0) === 0
-                                  ? "#6b7280"
-                                  : Number(line.diff_pieces || 0) > 0
-                                  ? "#16a34a"
-                                  : "#b91c1c",
-                            }}
-                          >
-                            {formatDiff(line.diff_pieces)}
-                          </td>
-                          <td
-                            style={{
-                              padding: "0.45rem 0.55rem",
-                              textAlign: "right",
-                            }}
-                          >
-                            {formatMoney(line.pricePerPiece || 0)} RWF
-                          </td>
-                          <td
-                            style={{
-                              padding: "0.45rem 0.55rem",
-                              textAlign: "right",
-                              fontWeight: 600,
-                              color:
-                                Number(line.costDiff || 0) === 0
-                                  ? "#6b7280"
-                                  : Number(line.costDiff || 0) > 0
-                                  ? "#16a34a"
-                                  : "#b91c1c",
-                            }}
-                          >
-                            {formatMoney(line.costDiff || 0)} RWF
-                          </td>
-                        </tr>
-                      ))}
+                            <td
+                              style={{
+                                padding:
+                                  "0.45rem 0.55rem",
+                                fontWeight: 500,
+                                color: "#111827",
+                              }}
+                            >
+                              {line.item_name}
+                            </td>
+                            <td
+                              style={{
+                                padding:
+                                  "0.45rem 0.55rem",
+                                textAlign: "right",
+                              }}
+                            >
+                              {formatPieces(
+                                line.system_pieces
+                              )}
+                            </td>
+                            <td
+                              style={{
+                                padding:
+                                  "0.45rem 0.55rem",
+                                textAlign: "right",
+                              }}
+                            >
+                              {formatPieces(
+                                line.counted_pieces
+                              )}
+                            </td>
+                            <td
+                              style={{
+                                padding:
+                                  "0.45rem 0.55rem",
+                                textAlign: "right",
+                                fontWeight: 600,
+                                color:
+                                  Number(
+                                    line.diff_pieces ||
+                                      0
+                                  ) === 0
+                                    ? "#6b7280"
+                                    : Number(
+                                          line.diff_pieces ||
+                                            0
+                                        ) > 0
+                                    ? "#16a34a"
+                                    : "#b91c1c",
+                              }}
+                            >
+                              {formatDiff(
+                                line.diff_pieces
+                              )}
+                            </td>
+                          </tr>
+                        )
+                      )}
                     </tbody>
                   </table>
                 </div>
