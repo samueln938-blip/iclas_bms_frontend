@@ -31,6 +31,13 @@ const ENV_API_BASE =
 
 const API_BASE = normalizeBaseUrl(ENV_API_BASE) || PROD_API_BASE;
 
+// ✅ Always store/use a clean raw token (never "Bearer ...")
+function cleanToken(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+  return s.startsWith("Bearer ") ? s.slice(7).trim() : s;
+}
+
 // ✅ Normalize backend roles -> frontend roles used in guards/menus
 function normalizeRole(role) {
   const r = String(role || "").trim();
@@ -93,12 +100,14 @@ function getStoredAuth() {
     if (!raw) return null;
     const parsed = JSON.parse(raw);
 
-    const restoredToken =
+    const restoredTokenRaw =
       parsed?.token ||
       parsed?.access_token ||
       parsed?.accessToken ||
       parsed?.data?.access_token ||
       null;
+
+    const restoredToken = cleanToken(restoredTokenRaw);
 
     const restoredUser = normalizeUser(parsed?.user || parsed?.data?.user) || null;
 
@@ -125,19 +134,22 @@ export function AuthProvider({ children }) {
 
   // ✅ Common headers (no Content-Type here, safe for GET/POST without JSON)
   const authHeadersNoJson = useMemo(() => {
-    return token ? { Authorization: `Bearer ${token}` } : {};
+    const t = cleanToken(token);
+    return t ? { Authorization: `Bearer ${t}` } : {};
   }, [token]);
 
   // ✅ JSON headers (used when sending JSON bodies)
   const authHeaders = useMemo(() => {
-    return token
-      ? { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }
+    const t = cleanToken(token);
+    return t
+      ? { Authorization: `Bearer ${t}`, "Content-Type": "application/json" }
       : { "Content-Type": "application/json" };
   }, [token]);
 
   // ✅ Optional: a strict getter-style function for pages that call it like authHeadersNoJson()
   const authHeadersNoJsonStrict = useCallback(() => {
-    return token ? { Authorization: `Bearer ${token}` } : {};
+    const t = cleanToken(token);
+    return t ? { Authorization: `Bearer ${t}` } : {};
   }, [token]);
 
   // Load auth state from localStorage
@@ -173,7 +185,7 @@ export function AuthProvider({ children }) {
           "Content-Type": "application/x-www-form-urlencoded",
           Accept: "application/json",
         },
-        body, // ✅ pass URLSearchParams directly
+        body,
       });
     } catch (e) {
       throw new Error(
@@ -192,7 +204,9 @@ export function AuthProvider({ children }) {
       throw new Error(getErrorMessageFromResponse(data, "Invalid username or password"));
     }
 
-    const accessToken = data?.access_token || data?.token || data?.accessToken || null;
+    const accessTokenRaw = data?.access_token || data?.token || data?.accessToken || null;
+    const accessToken = cleanToken(accessTokenRaw);
+
     if (!accessToken) {
       console.warn("No access token in login response:", data);
       throw new Error("Login succeeded but no token was returned by the server.");
@@ -203,7 +217,6 @@ export function AuthProvider({ children }) {
     if (data?.user && typeof data.user === "object") {
       me = normalizeUser(data.user);
     } else {
-      // Fallback: safest default is cashier, never admin
       me = normalizeUser({
         id: data?.user_id ?? data?.id ?? null,
         username: data?.username ?? username,
@@ -217,7 +230,7 @@ export function AuthProvider({ children }) {
     // 🔑 Compute expiry from token (preferred) or fallback to 24h from now
     let expiryMs = getTokenExpiryMs(accessToken);
     if (!expiryMs) {
-      expiryMs = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
+      expiryMs = Date.now() + 24 * 60 * 60 * 1000;
     }
 
     const payload = { token: accessToken, user: me, sessionExpiryMs: expiryMs };
@@ -231,7 +244,6 @@ export function AuthProvider({ children }) {
   };
 
   const logout = useCallback(() => {
-    // Clear any scheduled auto-logout
     if (logoutTimerRef.current) {
       clearTimeout(logoutTimerRef.current);
       logoutTimerRef.current = null;
@@ -241,14 +253,10 @@ export function AuthProvider({ children }) {
     setToken(null);
     setSessionExpiryMs(null);
     localStorage.removeItem(STORAGE_KEY);
-
-    // If you want a visible message, you can uncomment:
-    // alert("Your session has expired. Please log in again.");
   }, []);
 
   // 🔁 Auto-logout when token reaches expiry time
   useEffect(() => {
-    // clear any existing timer
     if (logoutTimerRef.current) {
       clearTimeout(logoutTimerRef.current);
       logoutTimerRef.current = null;
@@ -259,18 +267,15 @@ export function AuthProvider({ children }) {
     const now = Date.now();
     const delay = sessionExpiryMs - now;
 
-    // Already expired → logout immediately
     if (delay <= 0) {
       logout();
       return;
     }
 
-    // Schedule logout
     logoutTimerRef.current = setTimeout(() => {
       logout();
     }, delay);
 
-    // Cleanup
     return () => {
       if (logoutTimerRef.current) {
         clearTimeout(logoutTimerRef.current);
@@ -279,7 +284,7 @@ export function AuthProvider({ children }) {
     };
   }, [token, sessionExpiryMs, logout]);
 
-  // Extra safety: if app opens and session is already expired, logout instantly
+  // Extra safety
   useEffect(() => {
     if (!token || !sessionExpiryMs) return;
     if (Date.now() >= sessionExpiryMs) {
@@ -295,17 +300,13 @@ export function AuthProvider({ children }) {
         loading,
         login,
         logout,
-        API_BASE, // helpful for debugging
+        API_BASE,
 
-        // ✅ Headers
-        authHeaders, // JSON requests
-        authHeadersNoJson, // GET/POST without JSON
-        authHeadersNoJsonStrict, // function form if any page expects calling it
+        authHeaders,
+        authHeadersNoJson,
+        authHeadersNoJsonStrict,
 
-        // ✅ Optional helper (useful in some pages)
         getStoredAuth,
-
-        // Optional: session expiry info (could help for UI later)
         sessionExpiryMs,
       }}
     >
