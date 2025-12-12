@@ -31,6 +31,12 @@ function getTokenFromStorage() {
 
     if (typeof parsed === "string") return parsed;
 
+    // Support shapes:
+    // { token: "..." }
+    // { access_token: "..." }
+    // { accessToken: "..." }
+    // { data: { access_token: "..." } }
+    // { token: "...", user: {...} } ✅ your current shape
     const token =
       parsed?.token ||
       parsed?.access_token ||
@@ -40,16 +46,9 @@ function getTokenFromStorage() {
 
     return token;
   } catch {
+    // raw wasn't JSON → treat it as token string
     return raw;
   }
-}
-
-function cleanToken(token) {
-  const t = String(token || "").trim();
-  if (!t) return null;
-  if (t === "null" || t === "undefined") return null;
-  // remove "Bearer " (any case) + trim
-  return t.replace(/^bearer\s+/i, "").trim();
 }
 
 const api = axios.create({
@@ -60,12 +59,13 @@ const api = axios.create({
 // ✅ Automatically attach Authorization: Bearer <token>
 api.interceptors.request.use(
   (config) => {
-    const stored = getTokenFromStorage();
-    const token = cleanToken(stored);
-
+    const token = getTokenFromStorage();
     if (token) {
       config.headers = config.headers || {};
-      config.headers.Authorization = `Bearer ${token}`;
+      const clean = String(token).startsWith("Bearer ")
+        ? String(token).slice(7)
+        : String(token);
+      config.headers.Authorization = `Bearer ${clean}`;
     }
     return config;
   },
