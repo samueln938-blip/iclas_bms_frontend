@@ -1,7 +1,7 @@
 // FILE: src/pages/shop/InventoryCheckPage.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
-import api from "../../api/client";
+import api from "../../api/client.jsx";
 import { useAuth } from "../../context/AuthContext.jsx";
 
 const STATUS_DRAFT = "DRAFT";
