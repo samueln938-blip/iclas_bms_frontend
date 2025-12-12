@@ -37,7 +37,7 @@ function formatDate(iso) {
 
 function InventoryCheckPage() {
   const { shopId: shopIdParam } = useParams();
-  const { user, API_BASE } = useAuth();
+  const { user } = useAuth(); // ✅ removed unused API_BASE
 
   // -------------------------------
   // Role guard
@@ -143,7 +143,8 @@ function InventoryCheckPage() {
         // Enrich with item_name/item_sku if not present (defensive)
         const normalized = rows.map((row) => ({
           ...row,
-          item_name: row.item_name || row.item?.name || row.name || `Item #${row.item_id}`,
+          item_name:
+            row.item_name || row.item?.name || row.name || `Item #${row.item_id}`,
           item_sku: row.item_sku || row.item?.sku || row.sku || "",
         }));
 
@@ -310,7 +311,8 @@ function InventoryCheckPage() {
           const rows = stockRes.data || [];
           const normalized = rows.map((row) => ({
             ...row,
-            item_name: row.item_name || row.item?.name || row.name || `Item #${row.item_id}`,
+            item_name:
+              row.item_name || row.item?.name || row.name || `Item #${row.item_id}`,
             item_sku: row.item_sku || row.item?.sku || row.sku || "",
           }));
           setStockRows(normalized);
@@ -365,7 +367,8 @@ function InventoryCheckPage() {
           Inventory check
         </h1>
         <p style={{ color: "#b91c1c" }}>
-          No shop selected. Open this page from a shop context (e.g. /shops/1/inventory-checks).
+          No shop selected. Open this page from a shop context (e.g.
+          /shops/1/inventory-checks).
         </p>
       </div>
     );
@@ -389,7 +392,8 @@ function InventoryCheckPage() {
       </h1>
 
       <p style={{ color: "#6b7280", marginBottom: "0.8rem" }}>
-        Compare <b>system stock</b> vs <b>physical counts</b> for this shop and bring the system back in line.
+        Compare <b>system stock</b> vs <b>physical counts</b> for this shop and
+        bring the system back in line.
       </p>
 
       <div
@@ -613,9 +617,7 @@ function InventoryCheckPage() {
                 padding: "0.55rem 1.4rem",
                 borderRadius: "999px",
                 border: "none",
-                backgroundColor: savingDraft
-                  ? "#4b6bfb99"
-                  : "#4b6bfb",
+                backgroundColor: savingDraft ? "#4b6bfb99" : "#4b6bfb",
                 color: "#ffffff",
                 fontSize: "0.9rem",
                 fontWeight: 600,
@@ -724,9 +726,8 @@ function InventoryCheckPage() {
                     const systemPieces = Number(row.remaining_pieces || 0);
                     const countedRaw = counts[itemId];
                     const countedVal = Number(countedRaw || 0);
-                    const diff = countedRaw === undefined
-                      ? 0
-                      : countedVal - systemPieces;
+                    const diff =
+                      countedRaw === undefined ? 0 : countedVal - systemPieces;
 
                     return (
                       <tr
