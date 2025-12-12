@@ -82,7 +82,8 @@ function ShopWorkspacePage() {
       {
         key: "closure-history",
         title: "Daily Closure History",
-        description: "View daily closure summaries for all cashiers for this shop.",
+        description:
+          "View daily closure summaries for all cashiers for this shop.",
         accentColor: "#ea580c",
         bgColor: "#fff7ed",
         onClick: () => navigate(`/shops/${shopId}/closures-history`),
@@ -90,10 +91,21 @@ function ShopWorkspacePage() {
       {
         key: "credits",
         title: "Credits",
-        description: "See customer credits and payments linked to this shop's sales.",
+        description:
+          "See customer credits and payments linked to this shop's sales.",
         accentColor: "#0f766e",
         bgColor: "#ecfeff",
         onClick: () => navigate(`/shops/${shopId}/credits`),
+      },
+      // ✅ NEW: Inventory check card (LAST)
+      {
+        key: "inventory-checks",
+        title: "Inventory check",
+        description:
+          "Enter physical counts, compare with system stock, and post adjustments.",
+        accentColor: "#0f172a",
+        bgColor: "#eef2ff",
+        onClick: () => navigate(`/shops/${shopId}/inventory-checks`),
       },
     ],
     [navigate, shopId]
