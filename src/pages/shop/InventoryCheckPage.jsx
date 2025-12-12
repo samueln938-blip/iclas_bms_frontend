@@ -88,7 +88,8 @@ function InventoryCheckPage() {
   const [checkDate, setCheckDate] = useState(() =>
     new Date().toISOString().slice(0, 10)
   );
-  const [notes, setNotes] = useState("");
+  // we still support notes in backend, but no field on UI
+  const [notes] = useState("");
 
   // counted pieces keyed by item_id (only added items)
   const [counts, setCounts] = useState({}); // { [itemId]: "123.45" }
@@ -97,6 +98,7 @@ function InventoryCheckPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedItemId, setSelectedItemId] = useState(null);
   const [countInput, setCountInput] = useState("");
+  const [padOpen, setPadOpen] = useState(false); // dropdown appears when pad focused
 
   // history tab
   const [activeTab, setActiveTab] = useState("enter"); // "enter" | "history"
@@ -545,7 +547,7 @@ function InventoryCheckPage() {
   // -------------------------------
   return (
     <div style={{ padding: "2.2rem 2.6rem" }}>
-      {/* Back link like Purchases page */}
+      {/* Back link on LEFT, like Purchases */}
       <button
         type="button"
         onClick={() => navigate(`/shops/${shopId}/workspace`)}
@@ -566,7 +568,7 @@ function InventoryCheckPage() {
         <span>Back to shop workspace</span>
       </button>
 
-      {/* Header like Purchases: title + shop name under it */}
+      {/* Title + shop name LEFT aligned */}
       <h1
         style={{
           fontSize: "2.8rem",
@@ -589,7 +591,7 @@ function InventoryCheckPage() {
         {shopName}
       </div>
 
-      {/* Tabs (Enter / History) aligned to the right, like pills */}
+      {/* Tabs + chips row */}
       <div
         style={{
           marginBottom: "1.2rem",
@@ -700,11 +702,11 @@ function InventoryCheckPage() {
       {/* TAB: Enter counts */}
       {activeTab === "enter" && (
         <div>
-          {/* Date + notes row (like Purchases filters row) */}
+          {/* Only DATE on top row now */}
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+              gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
               gap: "1rem",
               marginBottom: "1.2rem",
               alignItems: "center",
@@ -735,36 +737,10 @@ function InventoryCheckPage() {
               />
             </div>
 
-            <div>
-              <label
-                style={{
-                  display: "block",
-                  fontSize: "0.85rem",
-                  fontWeight: 600,
-                  marginBottom: "0.3rem",
-                }}
-              >
-                Notes (optional)
-              </label>
-              <input
-                type="text"
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                placeholder="e.g. Full stock count at end of month"
-                style={{
-                  width: "100%",
-                  padding: "0.6rem 0.8rem",
-                  borderRadius: "999px",
-                  border: "1px solid #d1d5db",
-                  fontSize: "0.9rem",
-                }}
-              />
-            </div>
-
             <div />
           </div>
 
-          {/* Pad container – styled like Purchases pad */}
+          {/* Pad container – same concept as Purchases */}
           <div
             style={{
               backgroundColor: "#ffffff",
@@ -797,7 +773,7 @@ function InventoryCheckPage() {
                 marginBottom: "0.9rem",
               }}
             >
-              {/* Search input – type initials like Purchases */}
+              {/* Search input – like Purchases pad; dropdown opens when focused */}
               <div>
                 <label
                   style={{
@@ -813,6 +789,8 @@ function InventoryCheckPage() {
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
+                  onFocus={() => setPadOpen(true)}
+                  onClick={() => setPadOpen(true)}
                   placeholder="Type item name or SKU…"
                   style={{
                     width: "100%",
@@ -937,106 +915,122 @@ function InventoryCheckPage() {
               </div>
             </div>
 
-            {/* Scrollable item list like Purchases */}
-            <div
-              style={{
-                maxHeight: "260px",
-                overflow: "auto",
-                borderRadius: "1.1rem",
-                border: "1px solid #e5e7eb",
-              }}
-            >
-              {loading ? (
-                <div
-                  style={{
-                    padding: "0.9rem 1rem",
-                    fontSize: "0.9rem",
-                    color: "#6b7280",
-                  }}
-                >
-                  Loading current stock…
-                </div>
-              ) : filteredStockRows.length === 0 ? (
-                <div
-                  style={{
-                    padding: "0.9rem 1rem",
-                    fontSize: "0.9rem",
-                    color: "#6b7280",
-                  }}
-                >
-                  No stock items found for this shop.
-                </div>
-              ) : (
-                <>
+            {/* Item dropdown: only shows after user clicks in pad (padOpen) */}
+            {padOpen ? (
+              <div
+                style={{
+                  maxHeight: "260px",
+                  overflow: "auto",
+                  borderRadius: "1.1rem",
+                  border: "1px solid #e5e7eb",
+                }}
+              >
+                {loading ? (
                   <div
                     style={{
-                      padding: "0.5rem 1rem",
-                      fontSize: "0.82rem",
-                      color: "#9ca3af",
-                      borderBottom: "1px solid #e5e7eb",
+                      padding: "0.9rem 1rem",
+                      fontSize: "0.9rem",
+                      color: "#6b7280",
                     }}
                   >
-                    {filteredStockRows.length} items in dropdown after filter.
-                    Type initials above to get to your item quickly.
+                    Loading current stock…
                   </div>
-                  {filteredStockRows.map((row) => {
-                    const isSelected = selectedItemId === row.item_id;
-                    const systemPieces = Number(row.remaining_pieces || 0);
+                ) : filteredStockRows.length === 0 ? (
+                  <div
+                    style={{
+                      padding: "0.9rem 1rem",
+                      fontSize: "0.9rem",
+                      color: "#6b7280",
+                    }}
+                  >
+                    No stock items found for this shop.
+                  </div>
+                ) : (
+                  <>
+                    <div
+                      style={{
+                        padding: "0.5rem 1rem",
+                        fontSize: "0.82rem",
+                        color: "#9ca3af",
+                        borderBottom: "1px solid #e5e7eb",
+                      }}
+                    >
+                      {filteredStockRows.length} items in dropdown after filter.
+                      Type initials above to get to your item quickly.
+                    </div>
+                    {filteredStockRows.map((row) => {
+                      const isSelected = selectedItemId === row.item_id;
+                      const systemPieces = Number(row.remaining_pieces || 0);
 
-                    return (
-                      <button
-                        key={row.item_id}
-                        type="button"
-                        onClick={() => handleItemClick(row.item_id)}
-                        style={{
-                          width: "100%",
-                          border: "none",
-                          borderBottom: "1px solid #f3f4f6",
-                          backgroundColor: isSelected ? "#eef2ff" : "#ffffff",
-                          padding: "0.7rem 1rem",
-                          display: "flex",
-                          justifyContent: "space-between",
-                          alignItems: "center",
-                          textAlign: "left",
-                          cursor: "pointer",
-                        }}
-                      >
-                        <div>
-                          <div
-                            style={{
-                              fontSize: "0.9rem",
-                              fontWeight: 600,
-                              color: "#111827",
-                            }}
-                          >
-                            {row.item_name}
-                          </div>
-                          <div
-                            style={{
-                              fontSize: "0.75rem",
-                              color: "#6b7280",
-                              marginTop: 2,
-                            }}
-                          >
-                            ID: {row.item_id}
-                            {row.item_sku ? ` · SKU: ${row.item_sku}` : ""}
-                          </div>
-                        </div>
-                        <div
+                      return (
+                        <button
+                          key={row.item_id}
+                          type="button"
+                          onMouseDown={(e) => {
+                            // use mousedown so selection works even if input loses focus
+                            e.preventDefault();
+                            handleItemClick(row.item_id);
+                          }}
                           style={{
-                            fontSize: "0.85rem",
-                            fontWeight: 600,
-                            color: "#2563eb",
+                            width: "100%",
+                            border: "none",
+                            borderBottom: "1px solid #f3f4f6",
+                            backgroundColor: isSelected ? "#eef2ff" : "#ffffff",
+                            padding: "0.7rem 1rem",
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            textAlign: "left",
+                            cursor: "pointer",
                           }}
                         >
-                          {formatPieces(systemPieces)} pcs
-                        </div>
-                      </button>
-                    );
-                  })}
-                </>
-              )}
-            </div>
+                          <div>
+                            <div
+                              style={{
+                                fontSize: "0.9rem",
+                                fontWeight: 600,
+                                color: "#111827",
+                              }}
+                            >
+                              {row.item_name}
+                            </div>
+                            <div
+                              style={{
+                                fontSize: "0.75rem",
+                                color: "#6b7280",
+                                marginTop: 2,
+                              }}
+                            >
+                              ID: {row.item_id}
+                              {row.item_sku ? ` · SKU: ${row.item_sku}` : ""}
+                            </div>
+                          </div>
+                          <div
+                            style={{
+                              fontSize: "0.85rem",
+                              fontWeight: 600,
+                              color: "#2563eb",
+                            }}
+                          >
+                            {formatPieces(systemPieces)} pcs
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </>
+                )}
+              </div>
+            ) : (
+              <div
+                style={{
+                  marginTop: "0.3rem",
+                  fontSize: "0.85rem",
+                  color: "#9ca3af",
+                }}
+              >
+                Click in the item pad above to open the list of items.
+              </div>
+            )}
           </div>
 
           {/* Save / Post buttons */}
