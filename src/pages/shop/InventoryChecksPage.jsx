@@ -1,5 +1,5 @@
 // FILE: src/pages/shop/InventoryChecksPage.jsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import api from "../../api/client";
 import { useAuth } from "../../context/AuthContext.jsx";
@@ -39,6 +39,7 @@ function extractArray(payload) {
 
 /**
  * Normalize stock rows so dropdown never shows blank due to field name mismatch.
+ * Supports multiple possible field names coming from backend/older versions.
  */
 function normalizeStockRow(row) {
   const itemId = row?.item_id ?? row?.itemId ?? row?.item?.id ?? row?.id ?? null;
@@ -69,7 +70,7 @@ function normalizeStockRow(row) {
 
 function InventoryChecksPage() {
   const { shopId } = useParams();
-  const navigate = useNavigate();
+  const navigate = useNavigate(); // (kept even if you add a Back button later)
   const auth = useAuth();
 
   const [shop, setShop] = useState(null);
@@ -122,65 +123,88 @@ function InventoryChecksPage() {
   const isPosted = currentCheck?.status === "POSTED";
 
   // ------------------------------------------
-  // Inventory checks endpoint compatibility
-  // Many backends use "/inventory_checks" instead of "/inventory-checks"
-  // We try both safely.
+  // Auth headers (safe fallback)
   // ------------------------------------------
-  const INV_PREFIXES = ["/inventory-checks", "/inventory_checks"];
+  const authHeaders = useMemo(() => {
+    const token =
+      auth?.token ||
+      auth?.accessToken ||
+      auth?.authToken ||
+      localStorage.getItem("token") ||
+      localStorage.getItem("access_token") ||
+      localStorage.getItem("accessToken") ||
+      "";
 
-  const invGet = async (suffix, config) => {
-    let lastErr = null;
-    for (const p of INV_PREFIXES) {
-      try {
-        return await api.get(`${p}${suffix}`, config);
-      } catch (e) {
-        lastErr = e;
-      }
-    }
-    throw lastErr;
-  };
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }, [auth]);
 
-  const invPost = async (suffix, data, config) => {
-    let lastErr = null;
-    for (const p of INV_PREFIXES) {
+  // ------------------------------------------
+  // Load Stock items (match Stock page endpoint)
+  // ------------------------------------------
+  const loadStockItemsForShop = async (shopIdToLoad) => {
+    setStockLoading(true);
+    setStockHint("");
+
+    try {
+      // ✅ Primary: SAME endpoint as ShopStockPage.jsx
+      const bust = Date.now();
+      let stockRes;
       try {
-        return await api.post(`${p}${suffix}`, data, config);
-      } catch (e) {
-        lastErr = e;
+        stockRes = await api.get("/stock/", {
+          params: { shop_id: shopIdToLoad, _: bust },
+          headers: authHeaders,
+        });
+      } catch (primaryErr) {
+        // ✅ Fallback: older endpoint if it exists in some versions
+        stockRes = await api.get("/stock/summary", {
+          params: { shop_id: shopIdToLoad, _: bust },
+          headers: authHeaders,
+        });
       }
+
+      let items = extractArray(stockRes.data).map(normalizeStockRow);
+
+      // Keep only valid item_id rows (prevents blank dropdown)
+      items = items.filter(
+        (r) => r && Number.isFinite(Number(r.item_id)) && Number(r.item_id) > 0
+      );
+
+      // sort alphabetically by item name for nicer dropdown
+      items = [...items].sort((a, b) =>
+        String(a.item_name || "")
+          .toLowerCase()
+          .localeCompare(String(b.item_name || "").toLowerCase())
+      );
+
+      setStockItems(items);
+
+      if (items.length === 0) {
+        // Helpful diagnostics: show response keys if any
+        const raw = extractArray(stockRes.data);
+        const sample = raw?.[0] || null;
+        const keys = sample ? Object.keys(sample).slice(0, 12).join(", ") : "none";
+        setStockHint(
+          `No stock items returned for this shop. If Stock page shows items, the backend may be filtering differently.\n` +
+            `Sample keys from response: ${keys}`
+        );
+      }
+    } catch (err) {
+      console.error("Error loading stock items for inventory checks", err);
+      setStockItems([]);
+      setStockHint(
+        err?.response?.data?.detail ||
+          "Failed to load stock items for this shop. Check if /stock/ is reachable and your token is valid."
+      );
+    } finally {
+      setStockLoading(false);
     }
-    throw lastErr;
   };
 
   // ------------------------------------------
   // Load shop + stock + summary
-  // IMPORTANT: wait for auth to finish loading to avoid storms
   // ------------------------------------------
-  const loadControllerRef = useRef(null);
-
   useEffect(() => {
-    if (!shopId) return;
-
-    // Wait until auth restoration completes
-    if (auth?.loading) {
-      setLoadingPage(true);
-      return;
-    }
-
-    // If no token after loading, bounce to login
-    if (!auth?.token) {
-      setLoadingPage(false);
-      setPageError("Not authenticated. Please login again.");
-      // optional: navigate("/login");
-      return;
-    }
-
-    // cancel previous in-flight load
-    if (loadControllerRef.current) {
-      loadControllerRef.current.abort();
-    }
-    const controller = new AbortController();
-    loadControllerRef.current = controller;
+    let cancelled = false;
 
     const loadAll = async () => {
       setLoadingPage(true);
@@ -191,114 +215,79 @@ function InventoryChecksPage() {
 
       try {
         // 1) Load shop basic info
-        const shopRes = await api.get(`/shops/${shopId}`, { signal: controller.signal });
+        const shopRes = await api.get(`/shops/${shopId}`, {
+          headers: authHeaders,
+        });
+        if (cancelled) return;
         setShop(shopRes.data);
 
-        // 2) Load stock items for this shop
-        setStockLoading(true);
-        try {
-          const stockRes = await api.get("/stock/summary", {
-            params: { shop_id: shopId },
-            signal: controller.signal,
-          });
-
-          let items = extractArray(stockRes.data).map(normalizeStockRow);
-
-          items = items.filter(
-            (r) => r && Number.isFinite(Number(r.item_id)) && Number(r.item_id) > 0
-          );
-
-          items = [...items].sort((a, b) =>
-            String(a.item_name || "")
-              .toLowerCase()
-              .localeCompare(String(b.item_name || "").toLowerCase())
-          );
-
-          setStockItems(items);
-
-          if (items.length === 0) {
-            setStockHint(
-              "No stock items returned. If Stock page shows items, share backend stock summary response shape."
-            );
-          }
-        } finally {
-          setStockLoading(false);
-        }
+        // 2) Load stock items (must match Stock page)
+        await loadStockItemsForShop(shopId);
+        if (cancelled) return;
 
         // 3) Load summary and try to pick latest DRAFT
-        await loadSummaryAndMaybeDraft(shopId, controller.signal);
+        await loadSummaryAndMaybeDraft(shopId);
       } catch (err) {
-        if (controller.signal.aborted) return;
-
         console.error("Error loading inventory check page", err);
-
-        // If token became invalid, show clear message
-        const status = err?.response?.status;
-        if (status === 401) {
-          setPageError("Session expired or invalid token. Please logout/login again.");
-          return;
-        }
-
-        setPageError(err?.response?.data?.detail || err?.message || "Failed to load inventory check page.");
+        if (cancelled) return;
+        setPageError(
+          err?.response?.data?.detail || "Failed to load inventory check page."
+        );
       } finally {
-        if (!controller.signal.aborted) setLoadingPage(false);
+        if (cancelled) return;
+        setLoadingPage(false);
       }
     };
 
-    loadAll();
+    if (shopId) loadAll();
 
     return () => {
-      controller.abort();
+      cancelled = true;
     };
-    // Depend only on shopId + auth.loading + auth.token (avoid object identity loops)
-  }, [shopId, auth?.loading, auth?.token]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shopId, authHeaders]);
 
-  const loadSummaryAndMaybeDraft = async (shopIdToLoad, signal) => {
+  const loadSummaryAndMaybeDraft = async (shopIdToLoad) => {
     setSummaryLoading(true);
     setSummary([]);
     try {
-      const res = await invGet(
-        "/summary",
-        {
-          params: { shop_id: shopIdToLoad, skip: 0, limit: 100 },
-          signal,
-        }
-      );
-
+      const res = await api.get("/inventory-checks/summary", {
+        params: { shop_id: shopIdToLoad, skip: 0, limit: 100 },
+        headers: authHeaders,
+      });
       const list = extractArray(res.data);
       setSummary(list);
 
+      // Find latest DRAFT, if any
       const draft = list.find((row) => row.status === "DRAFT");
       if (draft) {
-        await loadCheckDetails(draft.id, { switchToEntry: true }, signal);
+        await loadCheckDetails(draft.id, { switchToEntry: true });
       } else {
         resetEntryFormToNew();
       }
     } catch (err) {
-      if (signal?.aborted) return;
       console.error("Error loading inventory checks summary", err);
       setError(
         err?.response?.data?.detail ||
-          err?.message ||
-          "Failed to load inventory checks summary. (Likely wrong route name or backend not deployed.)"
+          "Failed to load inventory checks summary."
       );
     } finally {
-      if (!signal?.aborted) setSummaryLoading(false);
+      setSummaryLoading(false);
     }
   };
 
-  const loadCheckDetails = async (checkId, opts = {}, signal) => {
+  const loadCheckDetails = async (checkId, opts = {}) => {
     const { switchToEntry = false } = opts;
     setError("");
     setMessage("");
     try {
-      const res = await invGet(`/${checkId}`, { signal });
+      const res = await api.get(`/inventory-checks/${checkId}`, {
+        headers: authHeaders,
+      });
       const check = res.data;
       setCurrentCheck(check);
 
-      if (check.check_date) setCheckDate(String(check.check_date));
-      else setCheckDate(todayInputDate());
-
+      setCheckDate(check.check_date ? String(check.check_date) : todayInputDate());
       setNotes(check.notes || "");
 
       const newLines =
@@ -315,9 +304,11 @@ function InventoryChecksPage() {
 
       if (switchToEntry) setActiveTab("entry");
     } catch (err) {
-      if (signal?.aborted) return;
       console.error("Error loading inventory check details", err);
-      setError(err?.response?.data?.detail || err?.message || "Failed to load inventory check details.");
+      setError(
+        err?.response?.data?.detail ||
+          "Failed to load inventory check details."
+      );
     }
   };
 
@@ -375,7 +366,6 @@ function InventoryChecksPage() {
 
     const systemPieces = toNumberSafe(stockRow.remaining_pieces);
     const diffPieces = counted - systemPieces;
-
     const itemName = stockRow.item_name || `Item #${itemId}`;
 
     setLinesDraft((prev) => {
@@ -445,7 +435,9 @@ function InventoryChecksPage() {
         })),
       };
 
-      const res = await invPost("/draft", payload);
+      const res = await api.post("/inventory-checks/draft", payload, {
+        headers: authHeaders,
+      });
       const saved = res.data;
       setCurrentCheck(saved);
 
@@ -455,7 +447,10 @@ function InventoryChecksPage() {
       setMessage("Inventory check draft saved.");
     } catch (err) {
       console.error("Error saving inventory check draft", err);
-      setError(err?.response?.data?.detail || err?.message || "Failed to save inventory check draft.");
+      setError(
+        err?.response?.data?.detail ||
+          "Failed to save inventory check draft."
+      );
     } finally {
       setSavingDraft(false);
     }
@@ -482,17 +477,24 @@ function InventoryChecksPage() {
     setMessage("");
 
     try {
-      const res = await invPost(`/${currentCheck.id}/post`, null);
+      const res = await api.post(
+        `/inventory-checks/${currentCheck.id}/post`,
+        null,
+        { headers: authHeaders }
+      );
       const posted = res.data;
       setCurrentCheck(posted);
 
       await loadCheckDetails(posted.id);
       await loadSummaryAndMaybeDraft(shopId);
 
+      // ✅ Also refresh dropdown stock after posting (so it reflects the new remaining_pieces)
+      await loadStockItemsForShop(shopId);
+
       setMessage("Inventory check posted and stock updated.");
     } catch (err) {
       console.error("Error posting inventory check", err);
-      setError(err?.response?.data?.detail || err?.message || "Failed to post inventory check.");
+      setError(err?.response?.data?.detail || "Failed to post inventory check.");
     } finally {
       setPosting(false);
     }
@@ -510,7 +512,7 @@ function InventoryChecksPage() {
   };
 
   // ------------------------------------------
-  // Derived totals
+  // Derived totals for current draft (entry tab)
   // ------------------------------------------
   const totalsDraft = useMemo(() => {
     let totalSystem = 0;
@@ -539,32 +541,38 @@ function InventoryChecksPage() {
     return (
       <div style={{ padding: "24px", color: "red" }}>
         <p>{pageError}</p>
-        <button
-          type="button"
-          onClick={() => navigate(-1)}
-          style={{
-            marginTop: "10px",
-            padding: "0.5rem 1rem",
-            borderRadius: "10px",
-            border: "1px solid #d1d5db",
-            background: "#fff",
-            cursor: "pointer",
-          }}
-        >
-          Go back
-        </button>
       </div>
     );
   }
 
   return (
     <div style={{ padding: isMobile ? "18px 14px 22px" : "26px 32px 32px" }}>
-      <div style={{ marginBottom: "18px", display: "flex", flexDirection: "column", gap: "4px" }}>
-        <h1 style={{ fontSize: isMobile ? "24px" : "30px", fontWeight: 800, margin: 0 }}>
+      <div
+        style={{
+          marginBottom: "18px",
+          display: "flex",
+          flexDirection: "column",
+          gap: "4px",
+        }}
+      >
+        <h1
+          style={{
+            fontSize: isMobile ? "24px" : "30px",
+            fontWeight: 800,
+            margin: 0,
+          }}
+        >
           Inventory check – {shopName}
         </h1>
-        <p style={{ margin: 0, fontSize: isMobile ? "13px" : "14px", color: "#4b5563" }}>
-          Compare system remaining pieces with physical counts, adjust, and post to keep stock in sync.
+        <p
+          style={{
+            margin: 0,
+            fontSize: isMobile ? "13px" : "14px",
+            color: "#4b5563",
+          }}
+        >
+          Compare system remaining pieces with physical counts, adjust, and post
+          to keep stock in sync.
         </p>
       </div>
 
@@ -576,13 +584,18 @@ function InventoryChecksPage() {
           style={{
             padding: "0.4rem 1.2rem",
             borderRadius: "999px",
-            border: activeTab === "entry" ? "none" : "1px solid rgba(209,213,219,1)",
-            backgroundColor: activeTab === "entry" ? "#0f2580" : "rgba(249,250,251,1)",
+            border:
+              activeTab === "entry" ? "none" : "1px solid rgba(209,213,219,1)",
+            backgroundColor:
+              activeTab === "entry" ? "#0f2580" : "rgba(249,250,251,1)",
             color: activeTab === "entry" ? "#ffffff" : "#374151",
             fontSize: "0.88rem",
             fontWeight: 600,
             cursor: "pointer",
-            boxShadow: activeTab === "entry" ? "0 10px 25px rgba(15,37,128,0.35)" : "none",
+            boxShadow:
+              activeTab === "entry"
+                ? "0 10px 25px rgba(15,37,128,0.35)"
+                : "none",
           }}
         >
           Enter counts
@@ -594,13 +607,20 @@ function InventoryChecksPage() {
           style={{
             padding: "0.4rem 1.2rem",
             borderRadius: "999px",
-            border: activeTab === "history" ? "none" : "1px solid rgba(209,213,219,1)",
-            backgroundColor: activeTab === "history" ? "#0f2580" : "rgba(249,250,251,1)",
+            border:
+              activeTab === "history"
+                ? "none"
+                : "1px solid rgba(209,213,219,1)",
+            backgroundColor:
+              activeTab === "history" ? "#0f2580" : "rgba(249,250,251,1)",
             color: activeTab === "history" ? "#ffffff" : "#374151",
             fontSize: "0.88rem",
             fontWeight: 600,
             cursor: "pointer",
-            boxShadow: activeTab === "history" ? "0 10px 25px rgba(15,37,128,0.35)" : "none",
+            boxShadow:
+              activeTab === "history"
+                ? "0 10px 25px rgba(15,37,128,0.35)"
+                : "none",
           }}
         >
           History
@@ -633,7 +653,7 @@ function InventoryChecksPage() {
             marginBottom: "2rem",
           }}
         >
-          {/* Header */}
+          {/* Header row */}
           <div
             style={{
               display: "flex",
@@ -645,7 +665,14 @@ function InventoryChecksPage() {
           >
             <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
               <div>
-                <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#6b7280", marginBottom: "0.2rem" }}>
+                <div
+                  style={{
+                    fontSize: "0.8rem",
+                    fontWeight: 600,
+                    color: "#6b7280",
+                    marginBottom: "0.2rem",
+                  }}
+                >
                   Check date
                 </div>
                 <input
@@ -663,7 +690,14 @@ function InventoryChecksPage() {
               </div>
 
               <div>
-                <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#6b7280", marginBottom: "0.2rem" }}>
+                <div
+                  style={{
+                    fontSize: "0.8rem",
+                    fontWeight: 600,
+                    color: "#6b7280",
+                    marginBottom: "0.2rem",
+                  }}
+                >
                   Status
                 </div>
                 <span
@@ -677,12 +711,23 @@ function InventoryChecksPage() {
                     color: isPosted ? "#166534" : "#92400e",
                   }}
                 >
-                  {currentCheck ? (currentCheck.status === "POSTED" ? "POSTED" : "DRAFT") : "NEW DRAFT"}
+                  {currentCheck
+                    ? currentCheck.status === "POSTED"
+                      ? "POSTED"
+                      : "DRAFT"
+                    : "NEW DRAFT"}
                 </span>
               </div>
 
               <div>
-                <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#6b7280", marginBottom: "0.2rem" }}>
+                <div
+                  style={{
+                    fontSize: "0.8rem",
+                    fontWeight: 600,
+                    color: "#6b7280",
+                    marginBottom: "0.2rem",
+                  }}
+                >
                   Check ID
                 </div>
                 <span style={{ fontSize: "0.9rem", color: "#4b5563" }}>
@@ -691,7 +736,14 @@ function InventoryChecksPage() {
               </div>
             </div>
 
-            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", justifyContent: isMobile ? "flex-start" : "flex-end" }}>
+            <div
+              style={{
+                display: "flex",
+                gap: "0.5rem",
+                flexWrap: "wrap",
+                justifyContent: isMobile ? "flex-start" : "flex-end",
+              }}
+            >
               <button
                 type="button"
                 onClick={handleStartNewDraft}
@@ -717,7 +769,8 @@ function InventoryChecksPage() {
                   padding: "0.45rem 1.4rem",
                   borderRadius: "999px",
                   border: "none",
-                  backgroundColor: savingDraft || isPosted ? "#4b6bfb99" : "#4b6bfb",
+                  backgroundColor:
+                    savingDraft || isPosted ? "#4b6bfb99" : "#4b6bfb",
                   color: "#ffffff",
                   fontSize: "0.9rem",
                   fontWeight: 600,
@@ -735,11 +788,17 @@ function InventoryChecksPage() {
                   padding: "0.45rem 1.4rem",
                   borderRadius: "999px",
                   border: "none",
-                  backgroundColor: !isDraft || posting || linesDraft.length === 0 ? "#05966966" : "#059669",
+                  backgroundColor:
+                    !isDraft || posting || linesDraft.length === 0
+                      ? "#05966966"
+                      : "#059669",
                   color: "#ffffff",
                   fontSize: "0.9rem",
                   fontWeight: 600,
-                  cursor: !isDraft || posting || linesDraft.length === 0 ? "not-allowed" : "pointer",
+                  cursor:
+                    !isDraft || posting || linesDraft.length === 0
+                      ? "not-allowed"
+                      : "pointer",
                 }}
               >
                 {posting ? "Posting..." : "Post inventory check"}
@@ -762,7 +821,16 @@ function InventoryChecksPage() {
             }}
           >
             <div style={{ flex: 3, width: "100%" }}>
-              <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#4b5563", marginBottom: "0.2rem" }}>Item</div>
+              <div
+                style={{
+                  fontSize: "0.8rem",
+                  fontWeight: 600,
+                  color: "#4b5563",
+                  marginBottom: "0.2rem",
+                }}
+              >
+                Item
+              </div>
               <select
                 value={selectedItemId}
                 onChange={(e) => setSelectedItemId(e.target.value)}
@@ -806,6 +874,7 @@ function InventoryChecksPage() {
                     border: "1px solid #fde68a",
                     padding: "0.45rem 0.6rem",
                     borderRadius: "0.6rem",
+                    whiteSpace: "pre-line",
                   }}
                 >
                   {stockHint}
@@ -814,7 +883,14 @@ function InventoryChecksPage() {
             </div>
 
             <div style={{ flex: 1, width: "100%" }}>
-              <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#4b5563", marginBottom: "0.2rem" }}>
+              <div
+                style={{
+                  fontSize: "0.8rem",
+                  fontWeight: 600,
+                  color: "#4b5563",
+                  marginBottom: "0.2rem",
+                }}
+              >
                 Physical pieces
               </div>
               <input
@@ -835,7 +911,14 @@ function InventoryChecksPage() {
               />
             </div>
 
-            <div style={{ flexShrink: 0, display: "flex", alignItems: "flex-end", width: isMobile ? "100%" : "auto" }}>
+            <div
+              style={{
+                flexShrink: 0,
+                display: "flex",
+                alignItems: "flex-end",
+                width: isMobile ? "100%" : "auto",
+              }}
+            >
               <button
                 type="button"
                 onClick={handleAddOrUpdateLine}
@@ -861,7 +944,13 @@ function InventoryChecksPage() {
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
               <thead>
-                <tr style={{ textAlign: "left", borderBottom: "1px solid #e5e7eb", color: "#6b7280" }}>
+                <tr
+                  style={{
+                    textAlign: "left",
+                    borderBottom: "1px solid #e5e7eb",
+                    color: "#6b7280",
+                  }}
+                >
                   <th style={{ padding: "0.4rem 0.55rem", minWidth: 200 }}>Item</th>
                   <th style={{ padding: "0.4rem 0.55rem", minWidth: 110 }}>System pieces</th>
                   <th style={{ padding: "0.4rem 0.55rem", minWidth: 110 }}>Physical pieces</th>
@@ -872,7 +961,14 @@ function InventoryChecksPage() {
               <tbody>
                 {linesDraft.length === 0 ? (
                   <tr>
-                    <td colSpan={5} style={{ padding: "0.55rem 0.55rem", color: "#9ca3af", fontSize: "0.88rem" }}>
+                    <td
+                      colSpan={5}
+                      style={{
+                        padding: "0.55rem 0.55rem",
+                        color: "#9ca3af",
+                        fontSize: "0.88rem",
+                      }}
+                    >
                       No lines yet. Select an item above and add physical pieces.
                     </td>
                   </tr>
@@ -901,7 +997,12 @@ function InventoryChecksPage() {
                       <td
                         style={{
                           padding: "0.5rem 0.55rem",
-                          color: ln.diff_pieces > 0 ? "#059669" : ln.diff_pieces < 0 ? "#b91c1c" : "#4b5563",
+                          color:
+                            ln.diff_pieces > 0
+                              ? "#059669"
+                              : ln.diff_pieces < 0
+                              ? "#b91c1c"
+                              : "#4b5563",
                           fontWeight: 600,
                         }}
                       >
@@ -932,7 +1033,6 @@ function InventoryChecksPage() {
                   ))
                 )}
               </tbody>
-
               {linesDraft.length > 0 && (
                 <tfoot>
                   <tr style={{ borderTop: "2px solid #e5e7eb", backgroundColor: "#f9fafb" }}>
@@ -950,7 +1050,11 @@ function InventoryChecksPage() {
                         padding: "0.5rem 0.55rem",
                         fontWeight: 600,
                         color:
-                          totalsDraft.totalDiff > 0 ? "#059669" : totalsDraft.totalDiff < 0 ? "#b91c1c" : "#111827",
+                          totalsDraft.totalDiff > 0
+                            ? "#059669"
+                            : totalsDraft.totalDiff < 0
+                            ? "#b91c1c"
+                            : "#111827",
                       }}
                     >
                       {formatPieces(totalsDraft.totalDiff)}
@@ -974,8 +1078,18 @@ function InventoryChecksPage() {
             boxShadow: "0 10px 30px rgba(15,23,42,0.06)",
           }}
         >
-          <div style={{ marginBottom: "0.75rem", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.5rem" }}>
-            <h2 style={{ margin: 0, fontSize: "1.1rem", fontWeight: 700 }}>Inventory checks history</h2>
+          <div
+            style={{
+              marginBottom: "0.75rem",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: "0.5rem",
+            }}
+          >
+            <h2 style={{ margin: 0, fontSize: "1.1rem", fontWeight: 700 }}>
+              Inventory checks history
+            </h2>
             <button
               type="button"
               onClick={() => loadSummaryAndMaybeDraft(shopId)}
@@ -996,12 +1110,20 @@ function InventoryChecksPage() {
           {summaryLoading ? (
             <p style={{ color: "#6b7280", fontSize: "0.9rem" }}>Loading checks...</p>
           ) : summary.length === 0 ? (
-            <p style={{ color: "#6b7280", fontSize: "0.9rem" }}>No inventory checks recorded yet for this shop.</p>
+            <p style={{ color: "#6b7280", fontSize: "0.9rem" }}>
+              No inventory checks recorded yet for this shop.
+            </p>
           ) : (
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
                 <thead>
-                  <tr style={{ textAlign: "left", borderBottom: "1px solid #e5e7eb", color: "#6b7280" }}>
+                  <tr
+                    style={{
+                      textAlign: "left",
+                      borderBottom: "1px solid #e5e7eb",
+                      color: "#6b7280",
+                    }}
+                  >
                     <th style={{ padding: "0.4rem 0.55rem" }}>Date</th>
                     <th style={{ padding: "0.4rem 0.55rem" }}>Check ID</th>
                     <th style={{ padding: "0.4rem 0.55rem" }}>Status</th>
@@ -1040,8 +1162,12 @@ function InventoryChecksPage() {
                         </span>
                       </td>
                       <td style={{ padding: "0.45rem 0.55rem" }}>{row.total_items}</td>
-                      <td style={{ padding: "0.45rem 0.55rem" }}>{formatPieces(row.total_system_pieces)}</td>
-                      <td style={{ padding: "0.45rem 0.55rem" }}>{formatPieces(row.total_counted_pieces)}</td>
+                      <td style={{ padding: "0.45rem 0.55rem" }}>
+                        {formatPieces(row.total_system_pieces)}
+                      </td>
+                      <td style={{ padding: "0.45rem 0.55rem" }}>
+                        {formatPieces(row.total_counted_pieces)}
+                      </td>
                       <td
                         style={{
                           padding: "0.45rem 0.55rem",
@@ -1057,7 +1183,9 @@ function InventoryChecksPage() {
                         {formatPieces(row.total_diff_pieces)}
                       </td>
                       <td style={{ padding: "0.45rem 0.55rem" }}>
-                        {row.created_at ? String(row.created_at).replace("T", " ").slice(0, 16) : "—"}
+                        {row.created_at
+                          ? String(row.created_at).replace("T", " ").slice(0, 16)
+                          : "—"}
                       </td>
                     </tr>
                   ))}
