@@ -88,11 +88,20 @@ function InventoryChecksPage() {
         const shopRes = await api.get(`/shops/${shopId}`);
         setShop(shopRes.data);
 
-        // 2) Load stock items for this shop
+        // 2) Load stock items for this shop (same data as Stock page)
         setStockLoading(true);
         try {
-          const stockRes = await api.get(`/shops/${shopId}/stock`);
-          setStockItems(stockRes.data || []);
+          const stockRes = await api.get("/stock/summary", {
+            params: { shop_id: shopId },
+          });
+          let items = Array.isArray(stockRes.data) ? stockRes.data : [];
+          // sort alphabetically by item name for nicer dropdown
+          items = [...items].sort((a, b) =>
+            String(a.item_name || "")
+              .toLowerCase()
+              .localeCompare(String(b.item_name || "").toLowerCase())
+          );
+          setStockItems(items);
         } finally {
           setStockLoading(false);
         }
@@ -660,7 +669,8 @@ function InventoryChecksPage() {
                   padding: "0.45rem 1.4rem",
                   borderRadius: "999px",
                   border: "none",
-                  backgroundColor: savingDraft || isPosted ? "#4b6bfb99" : "#4b6bfb",
+                  backgroundColor:
+                    savingDraft || isPosted ? "#4b6bfb99" : "#4b6bfb",
                   color: "#ffffff",
                   fontSize: "0.9rem",
                   fontWeight: 600,
@@ -698,36 +708,6 @@ function InventoryChecksPage() {
                 {posting ? "Posting..." : "Post inventory check"}
               </button>
             </div>
-          </div>
-
-          {/* Notes */}
-          <div style={{ marginBottom: "1rem" }}>
-            <label
-              style={{
-                display: "block",
-                fontSize: "0.85rem",
-                fontWeight: 600,
-                color: "#4b5563",
-                marginBottom: "0.25rem",
-              }}
-            >
-              Notes (optional)
-            </label>
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              disabled={isPosted}
-              rows={2}
-              style={{
-                width: "100%",
-                padding: "0.5rem 0.65rem",
-                borderRadius: "0.65rem",
-                border: "1px solid #d1d5db",
-                fontSize: "0.9rem",
-                resize: "vertical",
-              }}
-              placeholder="Example: monthly full stock count, or partial check for expensive items."
-            />
           </div>
 
           {/* New line entry */}
@@ -770,7 +750,8 @@ function InventoryChecksPage() {
                 <option value="">Select item...</option>
                 {stockItems.map((row) => (
                   <option key={row.id} value={row.item_id}>
-                    {row.item_name} — system: {formatPieces(row.remaining_pieces)} pcs
+                    {row.item_name} — system:{" "}
+                    {formatPieces(row.remaining_pieces)} pcs
                   </option>
                 ))}
               </select>
