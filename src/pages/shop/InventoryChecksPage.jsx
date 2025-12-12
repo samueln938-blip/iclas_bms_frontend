@@ -70,7 +70,7 @@ function normalizeStockRow(row) {
 function InventoryChecksPage() {
   const { shopId } = useParams();
   const navigate = useNavigate();
-  const { token } = useAuth();
+  const auth = useAuth();
 
   const [shop, setShop] = useState(null);
   const [loadingPage, setLoadingPage] = useState(true);
@@ -78,23 +78,30 @@ function InventoryChecksPage() {
 
   const [activeTab, setActiveTab] = useState("entry"); // "entry" | "history"
 
+  // Stock items for this shop (used for system remaining_pieces + item name)
   const [stockItems, setStockItems] = useState([]);
   const [stockLoading, setStockLoading] = useState(false);
   const [stockHint, setStockHint] = useState("");
 
+  // Summary list
   const [summary, setSummary] = useState([]);
   const [summaryLoading, setSummaryLoading] = useState(false);
 
+  // Current check details (from backend)
   const [currentCheck, setCurrentCheck] = useState(null);
 
+  // Editable header fields
   const [checkDate, setCheckDate] = useState(todayInputDate());
   const [notes, setNotes] = useState("");
 
+  // Editable lines in the form
   const [linesDraft, setLinesDraft] = useState([]);
 
+  // New line entry inputs
   const [selectedItemId, setSelectedItemId] = useState("");
   const [entryCountedPieces, setEntryCountedPieces] = useState("");
 
+  // Flags + alerts
   const [savingDraft, setSavingDraft] = useState(false);
   const [posting, setPosting] = useState(false);
   const [message, setMessage] = useState("");
@@ -114,76 +121,55 @@ function InventoryChecksPage() {
   const isDraft = currentCheck?.status === "DRAFT";
   const isPosted = currentCheck?.status === "POSTED";
 
-  // ✅ Use SAME auth pattern as ShopStockPage (token from AuthContext)
+  // ------------------------------------------
+  // Auth headers (safe fallback)
+  // ------------------------------------------
   const authHeaders = useMemo(() => {
-    const h = {};
-    if (token) h.Authorization = `Bearer ${token}`;
-    return h;
-  }, [token]);
+    const token =
+      auth?.token ||
+      auth?.accessToken ||
+      auth?.authToken ||
+      localStorage.getItem("token") ||
+      localStorage.getItem("access_token") ||
+      localStorage.getItem("accessToken") ||
+      "";
+
+    const clean = String(token || "").trim().startsWith("Bearer ")
+      ? String(token).trim().slice(7)
+      : String(token || "").trim();
+
+    return clean ? { Authorization: `Bearer ${clean}` } : {};
+  }, [auth]);
 
   // ------------------------------------------
-  // Load stock items (match ShopStockPage endpoint)
+  // Inventory checks endpoint compatibility
+  // Many backends use "/inventory_checks" instead of "/inventory-checks"
+  // We try both to avoid CORS errors from hitting a non-existent route.
   // ------------------------------------------
-  const loadStockItemsForShop = async (shopIdToLoad) => {
-    setStockLoading(true);
-    setStockHint("");
+  const INV_PREFIXES = ["/inventory-checks", "/inventory_checks"];
 
-    try {
-      const bust = Date.now();
-
-      // ✅ Primary: same endpoint as ShopStockPage.jsx
-      let stockRes;
+  const invGet = async (suffix, config) => {
+    let lastErr = null;
+    for (const p of INV_PREFIXES) {
       try {
-        stockRes = await api.get("/stock/", {
-          params: { shop_id: shopIdToLoad, _: bust },
-          headers: authHeaders,
-        });
-      } catch (primaryErr) {
-        // ✅ Fallback: if your backend also has /stock/summary
-        stockRes = await api.get("/stock/summary", {
-          params: { shop_id: shopIdToLoad, _: bust },
-          headers: authHeaders,
-        });
+        return await api.get(`${p}${suffix}`, config);
+      } catch (e) {
+        lastErr = e;
       }
-
-      let items = extractArray(stockRes.data).map(normalizeStockRow);
-
-      items = items.filter(
-        (r) => r && Number.isFinite(Number(r.item_id)) && Number(r.item_id) > 0
-      );
-
-      items = [...items].sort((a, b) =>
-        String(a.item_name || "")
-          .toLowerCase()
-          .localeCompare(String(b.item_name || "").toLowerCase())
-      );
-
-      setStockItems(items);
-
-      if (items.length === 0) {
-        const raw = extractArray(stockRes.data);
-        const sample = raw?.[0] || null;
-        const keys = sample ? Object.keys(sample).slice(0, 12).join(", ") : "none";
-        setStockHint(
-          `No stock items returned for this shop.\nSample keys from response: ${keys}`
-        );
-      }
-    } catch (err) {
-      console.error("Error loading stock items for inventory checks", err);
-
-      const status = err?.response?.status;
-      const detail = err?.response?.data?.detail;
-
-      setStockItems([]);
-      setStockHint(
-        detail ||
-          (status === 401 || status === 403
-            ? "Not authorized to load stock. Token might be missing/expired."
-            : "Failed to load stock items. Check backend endpoint /stock/ and CORS.")
-      );
-    } finally {
-      setStockLoading(false);
     }
+    throw lastErr;
+  };
+
+  const invPost = async (suffix, data, config) => {
+    let lastErr = null;
+    for (const p of INV_PREFIXES) {
+      try {
+        return await api.post(`${p}${suffix}`, data, config);
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    throw lastErr;
   };
 
   // ------------------------------------------
@@ -198,13 +184,44 @@ function InventoryChecksPage() {
       setStockHint("");
 
       try {
+        // 1) Load shop basic info
         const shopRes = await api.get(`/shops/${shopId}`, {
           headers: authHeaders,
         });
         setShop(shopRes.data);
 
-        await loadStockItemsForShop(shopId);
+        // 2) Load stock items for this shop
+        setStockLoading(true);
+        try {
+          const stockRes = await api.get("/stock/summary", {
+            params: { shop_id: shopId },
+            headers: authHeaders,
+          });
 
+          let items = extractArray(stockRes.data).map(normalizeStockRow);
+
+          items = items.filter(
+            (r) => r && Number.isFinite(Number(r.item_id)) && Number(r.item_id) > 0
+          );
+
+          items = [...items].sort((a, b) =>
+            String(a.item_name || "")
+              .toLowerCase()
+              .localeCompare(String(b.item_name || "").toLowerCase())
+          );
+
+          setStockItems(items);
+
+          if (items.length === 0) {
+            setStockHint(
+              "No stock items returned. If Stock page shows items, share backend stock summary response shape."
+            );
+          }
+        } finally {
+          setStockLoading(false);
+        }
+
+        // 3) Load summary and try to pick latest DRAFT
         await loadSummaryAndMaybeDraft(shopId);
       } catch (err) {
         console.error("Error loading inventory check page", err);
@@ -218,16 +235,17 @@ function InventoryChecksPage() {
 
     if (shopId) loadAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shopId, token]);
+  }, [shopId, authHeaders]);
 
   const loadSummaryAndMaybeDraft = async (shopIdToLoad) => {
     setSummaryLoading(true);
     setSummary([]);
     try {
-      const res = await api.get("/inventory-checks/summary", {
+      const res = await invGet("/summary", {
         params: { shop_id: shopIdToLoad, skip: 0, limit: 100 },
         headers: authHeaders,
       });
+
       const list = extractArray(res.data);
       setSummary(list);
 
@@ -241,7 +259,7 @@ function InventoryChecksPage() {
       console.error("Error loading inventory checks summary", err);
       setError(
         err?.response?.data?.detail ||
-          "Failed to load inventory checks summary."
+          "Failed to load inventory checks summary. (Likely wrong route name or backend not deployed.)"
       );
     } finally {
       setSummaryLoading(false);
@@ -253,13 +271,15 @@ function InventoryChecksPage() {
     setError("");
     setMessage("");
     try {
-      const res = await api.get(`/inventory-checks/${checkId}`, {
+      const res = await invGet(`/${checkId}`, {
         headers: authHeaders,
       });
       const check = res.data;
       setCurrentCheck(check);
 
-      setCheckDate(check.check_date ? String(check.check_date) : todayInputDate());
+      if (check.check_date) setCheckDate(String(check.check_date));
+      else setCheckDate(todayInputDate());
+
       setNotes(check.notes || "");
 
       const newLines =
@@ -292,6 +312,9 @@ function InventoryChecksPage() {
     setEntryCountedPieces("");
   };
 
+  // ------------------------------------------
+  // Helpers for stock lookups
+  // ------------------------------------------
   const shopName = shop?.name || `Shop ${shopId}`;
 
   const stockByItemId = useMemo(() => {
@@ -304,6 +327,9 @@ function InventoryChecksPage() {
     return map;
   }, [stockItems]);
 
+  // ------------------------------------------
+  // Entry tab: add/update lines
+  // ------------------------------------------
   const handleAddOrUpdateLine = () => {
     if (!selectedItemId) {
       setError("Please select an item first.");
@@ -375,6 +401,9 @@ function InventoryChecksPage() {
     setLinesDraft((prev) => prev.filter((ln) => ln.item_id !== itemId));
   };
 
+  // ------------------------------------------
+  // Save draft
+  // ------------------------------------------
   const handleSaveDraft = async () => {
     if (!shopId) return;
     if (linesDraft.length === 0) {
@@ -398,9 +427,10 @@ function InventoryChecksPage() {
         })),
       };
 
-      const res = await api.post("/inventory-checks/draft", payload, {
+      const res = await invPost("/draft", payload, {
         headers: authHeaders,
       });
+
       const saved = res.data;
       setCurrentCheck(saved);
 
@@ -410,12 +440,17 @@ function InventoryChecksPage() {
       setMessage("Inventory check draft saved.");
     } catch (err) {
       console.error("Error saving inventory check draft", err);
-      setError(err?.response?.data?.detail || "Failed to save inventory check draft.");
+      setError(
+        err?.response?.data?.detail || "Failed to save inventory check draft."
+      );
     } finally {
       setSavingDraft(false);
     }
   };
 
+  // ------------------------------------------
+  // Post (apply) inventory check
+  // ------------------------------------------
   const handlePostCheck = async () => {
     if (!currentCheck || !isDraft) return;
     if (linesDraft.length === 0) {
@@ -434,7 +469,7 @@ function InventoryChecksPage() {
     setMessage("");
 
     try {
-      const res = await api.post(`/inventory-checks/${currentCheck.id}/post`, null, {
+      const res = await invPost(`/${currentCheck.id}/post`, null, {
         headers: authHeaders,
       });
 
@@ -443,9 +478,6 @@ function InventoryChecksPage() {
 
       await loadCheckDetails(posted.id);
       await loadSummaryAndMaybeDraft(shopId);
-
-      // ✅ refresh dropdown stock so it matches Stock page immediately
-      await loadStockItemsForShop(shopId);
 
       setMessage("Inventory check posted and stock updated.");
     } catch (err) {
@@ -467,6 +499,9 @@ function InventoryChecksPage() {
     setError("");
   };
 
+  // ------------------------------------------
+  // Derived totals
+  // ------------------------------------------
   const totalsDraft = useMemo(() => {
     let totalSystem = 0;
     let totalCounted = 0;
@@ -479,6 +514,9 @@ function InventoryChecksPage() {
     return { totalSystem, totalCounted, totalDiff };
   }, [linesDraft]);
 
+  // ------------------------------------------
+  // Render
+  // ------------------------------------------
   if (loadingPage) {
     return (
       <div style={{ padding: "24px" }}>
@@ -571,7 +609,7 @@ function InventoryChecksPage() {
             marginBottom: "2rem",
           }}
         >
-          {/* Header row */}
+          {/* Header */}
           <div
             style={{
               display: "flex",
@@ -591,7 +629,12 @@ function InventoryChecksPage() {
                   value={checkDate}
                   onChange={(e) => setCheckDate(e.target.value)}
                   disabled={isPosted}
-                  style={{ padding: "0.4rem 0.6rem", borderRadius: "0.5rem", border: "1px solid #d1d5db", fontSize: "0.9rem" }}
+                  style={{
+                    padding: "0.4rem 0.6rem",
+                    borderRadius: "0.5rem",
+                    border: "1px solid #d1d5db",
+                    fontSize: "0.9rem",
+                  }}
                 />
               </div>
 
@@ -628,7 +671,16 @@ function InventoryChecksPage() {
               <button
                 type="button"
                 onClick={handleStartNewDraft}
-                style={{ padding: "0.45rem 1.1rem", borderRadius: "999px", border: "1px solid #e5e7eb", backgroundColor: "#f9fafb", color: "#374151", fontSize: "0.85rem", fontWeight: 600, cursor: "pointer" }}
+                style={{
+                  padding: "0.45rem 1.1rem",
+                  borderRadius: "999px",
+                  border: "1px solid #e5e7eb",
+                  backgroundColor: "#f9fafb",
+                  color: "#374151",
+                  fontSize: "0.85rem",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
               >
                 New draft
               </button>
@@ -687,12 +739,17 @@ function InventoryChecksPage() {
           >
             <div style={{ flex: 3, width: "100%" }}>
               <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#4b5563", marginBottom: "0.2rem" }}>Item</div>
-
               <select
                 value={selectedItemId}
                 onChange={(e) => setSelectedItemId(e.target.value)}
                 disabled={isPosted || stockLoading}
-                style={{ width: "100%", padding: "0.45rem 0.6rem", borderRadius: "0.5rem", border: "1px solid #d1d5db", fontSize: "0.9rem" }}
+                style={{
+                  width: "100%",
+                  padding: "0.45rem 0.6rem",
+                  borderRadius: "0.5rem",
+                  border: "1px solid #d1d5db",
+                  fontSize: "0.9rem",
+                }}
               >
                 <option value="">Select item...</option>
                 {stockItems.map((row) => (
@@ -725,7 +782,6 @@ function InventoryChecksPage() {
                     border: "1px solid #fde68a",
                     padding: "0.45rem 0.6rem",
                     borderRadius: "0.6rem",
-                    whiteSpace: "pre-line",
                   }}
                 >
                   {stockHint}
@@ -744,7 +800,13 @@ function InventoryChecksPage() {
                 value={entryCountedPieces}
                 disabled={isPosted}
                 onChange={(e) => setEntryCountedPieces(e.target.value)}
-                style={{ width: "100%", padding: "0.45rem 0.6rem", borderRadius: "0.5rem", border: "1px solid #d1d5db", fontSize: "0.9rem" }}
+                style={{
+                  width: "100%",
+                  padding: "0.45rem 0.6rem",
+                  borderRadius: "0.5rem",
+                  border: "1px solid #d1d5db",
+                  fontSize: "0.9rem",
+                }}
                 placeholder="e.g. 5"
               />
             </div>
@@ -803,7 +865,13 @@ function InventoryChecksPage() {
                           value={ln.counted_pieces === 0 ? "0" : String(ln.counted_pieces)}
                           disabled={isPosted}
                           onChange={(e) => handleLineCountChange(ln.item_id, e.target.value)}
-                          style={{ width: "100%", padding: "0.35rem 0.5rem", borderRadius: "0.45rem", border: "1px solid #d1d5db", fontSize: "0.85rem" }}
+                          style={{
+                            width: "100%",
+                            padding: "0.35rem 0.5rem",
+                            borderRadius: "0.45rem",
+                            border: "1px solid #d1d5db",
+                            fontSize: "0.85rem",
+                          }}
                         />
                       </td>
                       <td
@@ -820,7 +888,16 @@ function InventoryChecksPage() {
                           <button
                             type="button"
                             onClick={() => handleRemoveLine(ln.item_id)}
-                            style={{ width: "1.9rem", height: "1.9rem", borderRadius: "999px", border: "1px solid #fee2e2", backgroundColor: "#fef2f2", color: "#b91c1c", fontSize: "1rem", cursor: "pointer" }}
+                            style={{
+                              width: "1.9rem",
+                              height: "1.9rem",
+                              borderRadius: "999px",
+                              border: "1px solid #fee2e2",
+                              backgroundColor: "#fef2f2",
+                              color: "#b91c1c",
+                              fontSize: "1rem",
+                              cursor: "pointer",
+                            }}
                             title="Remove line"
                           >
                             ×
@@ -831,19 +908,25 @@ function InventoryChecksPage() {
                   ))
                 )}
               </tbody>
+
               {linesDraft.length > 0 && (
                 <tfoot>
                   <tr style={{ borderTop: "2px solid #e5e7eb", backgroundColor: "#f9fafb" }}>
                     <td style={{ padding: "0.5rem 0.55rem", fontWeight: 600, fontSize: "0.9rem" }}>
                       Totals ({linesDraft.length} items)
                     </td>
-                    <td style={{ padding: "0.5rem 0.55rem", fontWeight: 600 }}>{formatPieces(totalsDraft.totalSystem)}</td>
-                    <td style={{ padding: "0.5rem 0.55rem", fontWeight: 600 }}>{formatPieces(totalsDraft.totalCounted)}</td>
+                    <td style={{ padding: "0.5rem 0.55rem", fontWeight: 600 }}>
+                      {formatPieces(totalsDraft.totalSystem)}
+                    </td>
+                    <td style={{ padding: "0.5rem 0.55rem", fontWeight: 600 }}>
+                      {formatPieces(totalsDraft.totalCounted)}
+                    </td>
                     <td
                       style={{
                         padding: "0.5rem 0.55rem",
                         fontWeight: 600,
-                        color: totalsDraft.totalDiff > 0 ? "#059669" : totalsDraft.totalDiff < 0 ? "#b91c1c" : "#111827",
+                        color:
+                          totalsDraft.totalDiff > 0 ? "#059669" : totalsDraft.totalDiff < 0 ? "#b91c1c" : "#111827",
                       }}
                     >
                       {formatPieces(totalsDraft.totalDiff)}
@@ -857,7 +940,7 @@ function InventoryChecksPage() {
         </div>
       )}
 
-      {/* HISTORY TAB (unchanged UI) */}
+      {/* HISTORY TAB */}
       {activeTab === "history" && (
         <div
           style={{
@@ -872,7 +955,15 @@ function InventoryChecksPage() {
             <button
               type="button"
               onClick={() => loadSummaryAndMaybeDraft(shopId)}
-              style={{ padding: "0.3rem 0.9rem", borderRadius: "999px", border: "1px solid #d1d5db", backgroundColor: "#f9fafb", fontSize: "0.8rem", fontWeight: 600, cursor: "pointer" }}
+              style={{
+                padding: "0.3rem 0.9rem",
+                borderRadius: "999px",
+                border: "1px solid #d1d5db",
+                backgroundColor: "#f9fafb",
+                fontSize: "0.8rem",
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
             >
               Refresh
             </button>
@@ -931,7 +1022,11 @@ function InventoryChecksPage() {
                         style={{
                           padding: "0.45rem 0.55rem",
                           color:
-                            toNumberSafe(row.total_diff_pieces) > 0 ? "#059669" : toNumberSafe(row.total_diff_pieces) < 0 ? "#b91c1c" : "#111827",
+                            toNumberSafe(row.total_diff_pieces) > 0
+                              ? "#059669"
+                              : toNumberSafe(row.total_diff_pieces) < 0
+                              ? "#b91c1c"
+                              : "#111827",
                           fontWeight: 600,
                         }}
                       >
