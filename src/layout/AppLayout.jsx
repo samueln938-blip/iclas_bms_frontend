@@ -1,4 +1,4 @@
-//src/layout/AppLayout.jsx
+// src/layout/AppLayout.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { NavLink, useNavigate, useLocation } from "react-router-dom";
 import api from "../api/client";
@@ -17,7 +17,7 @@ function AppLayout({ children }) {
   const MOBILE_BREAKPOINT_PX = 900;
 
   // ✅ Get user + logout from auth context
-  const { user, logout } = useAuth();
+  const { user, logout, token, loading: authLoading } = useAuth();
 
   // Support both old ("admin") and new ("OWNER") naming
   const role = String(user?.role || "").toLowerCase(); // "owner" | "manager" | "cashier" | maybe "admin"
@@ -77,7 +77,13 @@ function AppLayout({ children }) {
   const [sidebarLoading, setSidebarLoading] = useState(false);
   const [sidebarError, setSidebarError] = useState("");
 
-  const myShopId = user?.shop_id || null;
+  // ✅ Normalize shop_id to a number so comparisons work
+  const myShopId = useMemo(() => {
+    const v = user?.shop_id;
+    if (v === null || v === undefined || v === "") return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }, [user?.shop_id]);
 
   // Only show shops relevant to the current user:
   // - OWNER/MANAGER: all shops
@@ -85,31 +91,66 @@ function AppLayout({ children }) {
   const visibleShops = useMemo(() => {
     if (isGlobalViewer) return sidebarShops || [];
     if (!myShopId) return [];
-    return (sidebarShops || []).filter((s) => s.id === myShopId);
+    return (sidebarShops || []).filter((s) => Number(s.id) === Number(myShopId));
   }, [isGlobalViewer, sidebarShops, myShopId]);
 
+  // ✅ IMPORTANT FIX:
+  // - Wait for auth to finish loading
+  // - Reload shops whenever token/user changes
+  // - If token is invalid (401), auto-logout and send to login
   useEffect(() => {
+    if (authLoading) return;
+
+    // If not logged in, clear shops state (don’t spam backend)
+    if (!token) {
+      setSidebarShops([]);
+      setSidebarError("");
+      setSidebarLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+
     const loadSidebarShops = async () => {
       setSidebarLoading(true);
       setSidebarError("");
 
       try {
-        // only_active=true so we don’t show deactivated shops
+        // ✅ Use trailing slash to avoid 307 redirect issues
         const res = await api.get("/shops/?only_active=true");
+        if (cancelled) return;
         setSidebarShops(res.data || []);
       } catch (err) {
+        if (cancelled) return;
+
         console.error("Error loading shops for sidebar", err);
+
+        const status = err?.response?.status;
+
+        // ✅ If token can't be validated, force a clean re-login
+        if (status === 401) {
+          setSidebarError("Session expired or invalid token. Please login again.");
+          logout();
+          navigate("/login", { replace: true });
+          return;
+        }
+
         setSidebarError(
           err?.response?.data?.detail ||
+            err?.message ||
             "Failed to load shops (backend may still block this role)."
         );
       } finally {
-        setSidebarLoading(false);
+        if (!cancelled) setSidebarLoading(false);
       }
     };
 
     loadSidebarShops();
-  }, []);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authLoading, token, user?.id, logout, navigate]);
 
   // ✅ Cashiers: land on Sales & POS by default
   // (we do NOT block them from going to Credits later)
@@ -308,7 +349,7 @@ function AppLayout({ children }) {
     backgroundColor: "#f3f4f6",
     minWidth: 0,
     overflow: "auto", // ✅ enables horizontal scroll for wide tables (no clipping)
-    scrollbarGutter: "stable", // ✅ reduces layout shift when scrollbar appears (supported in modern Chrome)
+    scrollbarGutter: "stable",
   };
 
   // ✅ FIX: wide pages should NOT be padding:0 (that causes the “hitting edges” look)
@@ -371,7 +412,6 @@ function AppLayout({ children }) {
             </button>
           )}
 
-          {/* ✅ Clickable brand: quick way back to Summary (Owner/Manager) or POS (Cashier) */}
           <button
             type="button"
             style={brandButtonStyle}
@@ -385,7 +425,6 @@ function AppLayout({ children }) {
         </div>
 
         <button style={userButtonStyle} onClick={handleLogout} title="Logout">
-          {/* small red bubble icon */}
           <span
             style={{
               display: "inline-flex",
@@ -410,14 +449,11 @@ function AppLayout({ children }) {
 
       {/* SIDEBAR + MAIN */}
       <div style={bodyStyle}>
-        {/* Mobile overlay */}
         {isMobile && sidebarOpen && (
           <div style={overlayStyle} onClick={() => setSidebarOpen(false)} />
         )}
 
-        {/* LEFT SIDEBAR */}
         <aside style={sidebarStyle}>
-          {/* ✅ OWNER + MANAGER GLOBAL MENU (same view) */}
           {isGlobalViewer && (
             <>
               <div style={sidebarSectionTitleStyle}>GLOBAL</div>
@@ -469,7 +505,6 @@ function AppLayout({ children }) {
             </>
           )}
 
-          {/* ✅ CASHIER MENU (always anchored to their shop) */}
           {isCashier && (
             <>
               <div style={sidebarSectionTitleStyle}>CASHIER MENU</div>
@@ -506,7 +541,6 @@ function AppLayout({ children }) {
             </>
           )}
 
-          {/* SHOPS PANEL (dynamic) */}
           <div style={{ ...sidebarSectionTitleStyle, marginTop: "12px" }}>
             SHOPS
           </div>
@@ -516,14 +550,10 @@ function AppLayout({ children }) {
               Loading shops...
             </div>
           ) : sidebarError ? (
-            <div style={{ fontSize: "13px", color: "#b91c1c" }}>
-              {sidebarError}
-            </div>
+            <div style={{ fontSize: "13px", color: "#b91c1c" }}>{sidebarError}</div>
           ) : visibleShops.length === 0 ? (
             <div style={{ fontSize: "13px", color: "#9ca3af" }}>
-              {isGlobalViewer
-                ? "No shops yet."
-                : "No shop available for your account."}
+              {isGlobalViewer ? "No shops yet." : "No shop available for your account."}
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
@@ -534,13 +564,9 @@ function AppLayout({ children }) {
                   onClick={() => {
                     closeSidebarIfMobile();
 
-                    // ✅ remember last opened shop
                     saveLastShopId(shop.id);
 
-                    // ✅ Cashier clicking a shop goes straight to POS
                     if (isCashier) return navigate(`/shops/${shop.id}/pos`);
-
-                    // Owner/Manager → shop workspace
                     return navigate(`/shops/${shop.id}`);
                   }}
                 >
@@ -552,7 +578,6 @@ function AppLayout({ children }) {
           )}
         </aside>
 
-        {/* MAIN CONTENT */}
         <main style={mainStyle}>
           <div style={mainInnerStyle}>{children}</div>
         </main>
