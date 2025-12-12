@@ -1,13 +1,13 @@
-// src/pages/shop/InventoryCheckPage.jsx
+// FILE: src/pages/shop/InventoryCheckPage.jsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext.jsx";
 
-// ✅ Same API_BASE pattern as Purchases / POS
+// ✅ Same single source of truth as other pages
 import { API_BASE as CLIENT_API_BASE } from "../../api/client.jsx";
 const API_BASE = CLIENT_API_BASE;
 
-// ---------- small helpers ----------
+/* ---------- Small helpers ---------- */
 
 function todayISO() {
   const d = new Date();
@@ -20,19 +20,16 @@ function todayISO() {
 function toISODate(raw) {
   const s = String(raw || "").trim();
   if (!s) return "";
-
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
 
   if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
     const [dd, mm, yyyy] = s.split("/");
     return `${yyyy}-${mm}-${dd}`;
   }
-
   if (/^\d{2}-\d{2}-\d{4}$/.test(s)) {
     const [dd, mm, yyyy] = s.split("-");
     return `${yyyy}-${mm}-${dd}`;
   }
-
   const dt = new Date(s);
   if (!Number.isFinite(dt.getTime())) return "";
   const y = dt.getFullYear();
@@ -41,24 +38,24 @@ function toISODate(raw) {
   return `${y}-${m}-${d}`;
 }
 
-function formatQty(v) {
-  if (v === null || v === undefined || v === "") return "";
-  const n = Number(v);
-  if (!Number.isFinite(n)) return String(v);
+function formatQty(value) {
+  if (value === null || value === undefined || value === "") return "";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value);
   return n.toLocaleString("en-RW", { maximumFractionDigits: 2 });
 }
 
-function formatMoney(v) {
-  if (v === null || v === undefined || v === "") return "0";
-  const n = Number(v);
-  const safe = Number.isFinite(n) ? n : 0;
+function formatMoney(value) {
+  if (value === null || value === undefined || value === "") return "0";
+  const num = Number(value);
+  const safe = Number.isFinite(num) ? num : 0;
   return safe.toLocaleString("en-RW", {
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
   });
 }
 
-// ---------- same style combo box as purchases ----------
+/* ---------- ComboBox copied from Purchases (lightly simplified) ---------- */
 
 function ItemComboBox({ items, valueId, onChangeId, disabled }) {
   const wrapRef = useRef(null);
@@ -70,7 +67,6 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
     return items.find((it) => String(it.id) === String(valueId)) || null;
   }, [items, valueId]);
 
-  // show selected label when closed
   useEffect(() => {
     if (!open) setQ(selected ? selected.label : "");
   }, [selected, open]);
@@ -83,12 +79,9 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
       .slice(0, 800);
   }, [items, q]);
 
-  // close when clicking outside
   useEffect(() => {
     const onDown = (e) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target)) {
-        setOpen(false);
-      }
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
     };
     document.addEventListener("pointerdown", onDown);
     return () => document.removeEventListener("pointerdown", onDown);
@@ -109,9 +102,7 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
             setQ(e.target.value);
             setOpen(true);
           }}
-          onFocus={() => {
-            if (!disabled) setOpen(true); // ✅ dropdown only when cursor is in pad
-          }}
+          onFocus={() => !disabled && setOpen(true)}
           onKeyDown={(e) => {
             if (disabled) return;
             if (e.key === "Escape") setOpen(false);
@@ -178,7 +169,7 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
             border: "1px solid #e5e7eb",
             borderRadius: "12px",
             boxShadow: "0 12px 30px rgba(0,0,0,0.12)",
-            maxHeight: "260px", // ✅ does not extend past pad
+            maxHeight: "280px",
             overflowY: "auto",
             zIndex: 999,
           }}
@@ -224,7 +215,7 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
   );
 }
 
-// ---------- main page ----------
+/* ---------- Main page ---------- */
 
 function InventoryCheckPage() {
   const { shopId } = useParams();
@@ -243,38 +234,84 @@ function InventoryCheckPage() {
     return h;
   }, [token]);
 
-  const [activeTab, setActiveTab] = useState(1); // 1 = Enter counts, 2 = History
+  const [activeTab, setActiveTab] = useState(1); // 1=Enter counts, 2=History
+
   const [shop, setShop] = useState(null);
   const [stockRows, setStockRows] = useState([]);
   const [itemsCatalog, setItemsCatalog] = useState([]);
+
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
 
-  const [inventoryDate, setInventoryDate] = useState(() => todayISO());
-  const [headerId, setHeaderId] = useState(null);
+  // Current check state
+  const [checkDate, setCheckDate] = useState(() => todayISO());
+  const [notes, setNotes] = useState("");
+  const [currentCheckId, setCurrentCheckId] = useState(null);
+  const [currentStatus, setCurrentStatus] = useState("DRAFT"); // DRAFT | POSTED
 
-  const [lines, setLines] = useState([]); // each: {id, dbId?, itemId, systemPieces, countedPieces}
-  const [pad, setPad] = useState({
-    itemId: "",
-    countedPieces: "",
-  });
+  const [lines, setLines] = useState([]); // [{tempId, itemId, itemName, systemPieces, countedPieces, diffPieces, direction}]
+  const [pad, setPad] = useState({ itemId: "", countedPieces: "" });
+  const [editingLineTempId, setEditingLineTempId] = useState(null);
 
   const [savingDraft, setSavingDraft] = useState(false);
   const [posting, setPosting] = useState(false);
 
-  const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
+  // History summaries
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [summary, setSummary] = useState([]);
 
-  const padRef = useRef(null);
+  /* ------ Derived helpers ------ */
 
-  // ---------- load shop + stock + items (same as Purchases) ----------
+  const stockByItemId = useMemo(() => {
+    const m = {};
+    for (const s of stockRows) {
+      m[s.item_id] = s;
+    }
+    return m;
+  }, [stockRows]);
+
+  const pickerItems = useMemo(() => {
+    const byId = new Map();
+
+    // Prefer item_name from stock
+    for (const s of stockRows || []) {
+      if (s?.item_id == null) continue;
+      const label = s.item_name || `Item #${s.item_id}`;
+      byId.set(Number(s.item_id), label);
+    }
+
+    // Add any missing items from catalogue
+    for (const it of itemsCatalog || []) {
+      const id = it?.id ?? it?.item_id;
+      if (id == null) continue;
+      const label = it?.name ?? it?.item_name ?? `Item #${id}`;
+      if (!byId.has(Number(id))) byId.set(Number(id), label);
+    }
+
+    return Array.from(byId.entries())
+      .map(([id, label]) => ({ id, label }))
+      .sort((a, b) => String(a.label).localeCompare(String(b.label)));
+  }, [stockRows, itemsCatalog]);
+
+  const shopName = shop?.name || `Shop ${shopId}`;
+
+  const totalDiffPieces = useMemo(
+    () =>
+      lines.reduce((sum, l) => sum + Number(l.diffPieces || 0), 0),
+    [lines]
+  );
+
+  /* ------ Loading initial data (shop, stock, items, summary) ------ */
 
   useEffect(() => {
-    async function load() {
+    async function loadAll() {
       setLoading(true);
       setError("");
       setMessage("");
 
       try {
+        // shop
         const shopRes = await fetch(`${API_BASE}/shops/${shopId}`, {
           headers: authHeadersNoJson,
         });
@@ -283,14 +320,14 @@ function InventoryCheckPage() {
         }
         const shopData = await shopRes.json();
 
+        // stock for system pieces
         const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`, {
           headers: authHeadersNoJson,
         });
-        if (!stockRes.ok) {
-          throw new Error("Failed to load stock.");
-        }
+        if (!stockRes.ok) throw new Error("Failed to load stock.");
         const stockData = await stockRes.json();
 
+        // items for real item names
         let itemsData = [];
         try {
           const itemsResShop = await fetch(
@@ -308,7 +345,7 @@ function InventoryCheckPage() {
             }
           }
         } catch {
-          // fine – pad will still work with stock list
+          itemsData = [];
         }
 
         setShop(shopData);
@@ -316,333 +353,116 @@ function InventoryCheckPage() {
         setItemsCatalog(Array.isArray(itemsData) ? itemsData : []);
       } catch (e) {
         console.error(e);
-        setError(e?.message || "Failed to load inventory check data.");
+        setError(
+          e?.message || "Failed to load shop / stock / items for inventory check."
+        );
       } finally {
         setLoading(false);
       }
     }
 
-    load();
+    loadAll();
   }, [shopId, authHeadersNoJson]);
 
-  // ---------- derived maps ----------
-
-  const stockByItemId = useMemo(() => {
-    const m = {};
-    for (const s of stockRows || []) {
-      if (s?.item_id == null) continue;
-      m[Number(s.item_id)] = s;
-    }
-    return m;
-  }, [stockRows]);
-
-  // use real item names from stock + item catalogue
-  const pickerItems = useMemo(() => {
-    const byId = new Map();
-
-    for (const s of stockRows || []) {
-      if (s?.item_id == null) continue;
-      const label = s?.item_name || `Item ${s.item_id}`;
-      byId.set(Number(s.item_id), label);
-    }
-
-    for (const it of itemsCatalog || []) {
-      const id = it?.id ?? it?.item_id;
-      if (id == null) continue;
-      const label = it?.name ?? it?.item_name ?? `Item ${id}`;
-      if (!byId.has(Number(id))) byId.set(Number(id), label);
-    }
-
-    return Array.from(byId.entries())
-      .map(([id, label]) => ({ id, label }))
-      .sort((a, b) => String(a.label).localeCompare(String(b.label)));
-  }, [stockRows, itemsCatalog]);
-
-  const shopName = shop?.name || `Shop ${shopId}`;
-
-  // ---------- load existing draft from backend (behaviour like Purchases) ----------
-
-  async function loadDraftForDate(dateIso) {
-    const iso = toISODate(dateIso);
-    if (!iso) return;
-
-    try {
-      const url = `${API_BASE}/inventory-checks/draft?shop_id=${shopId}&inventory_date=${iso}`;
-      const res = await fetch(url, { headers: authHeadersNoJson });
-
-      if (!res.ok) {
-        // If 404 or similar: treat as "no data yet", do not scream “Failed to fetch”
-        setHeaderId(null);
-        setLines([]);
-        return;
-      }
-
-      const data = await res.json().catch(() => null);
-      if (!data) {
-        setHeaderId(null);
-        setLines([]);
-        return;
-      }
-
-      setHeaderId(data.id ?? null);
-
-      const mapped =
-        (data.lines || []).map((ln) => ({
-          id: `db-${ln.id}`,
-          dbId: ln.id,
-          itemId: ln.item_id,
-          systemPieces:
-            ln.system_pieces ??
-            ln.system_qty ??
-            stockByItemId[ln.item_id]?.pieces_in_stock ??
-            0,
-          countedPieces: ln.counted_pieces ?? ln.counted_qty ?? 0,
-          diffPieces: ln.difference_pieces ?? ln.diff_pieces ?? 0,
-          diffCost: ln.diff_cost_total ?? 0,
-        })) || [];
-
-      setLines(mapped);
-    } catch (e) {
-      console.error(e);
-      // This is where a real network/CORS failure would show – same as other pages.
-      setError(
-        "Failed to fetch inventory draft. Check backend /inventory-checks endpoints and CORS."
-      );
-    }
-  }
-
-  // load draft whenever date changes (like Purchases "Today" tab)
-  useEffect(() => {
-    if (!loading) {
-      loadDraftForDate(inventoryDate);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inventoryDate, loading, shopId]);
-
-  // ---------- pad / list behaviour ----------
-
-  const updatePad = (field, raw) => {
-    setPad((prev) => ({
-      ...prev,
-      [field]: raw,
-    }));
-  };
-
-  const clearPad = () => {
-    setPad({
-      itemId: "",
-      countedPieces: "",
-    });
-  };
-
-  const handleAddToList = () => {
-    const itemId = Number(pad.itemId || 0);
-    if (!itemId) {
-      setError("Select an item before adding to list.");
-      setMessage("");
-      return;
-    }
-
-    const countedPieces = Number(pad.countedPieces || 0);
-    if (!Number.isFinite(countedPieces) || countedPieces < 0) {
-      setError("Counted pieces must be zero or more.");
-      setMessage("");
-      return;
-    }
-
-    const stockRow = stockByItemId[itemId];
-    const systemPieces =
-      stockRow?.pieces_in_stock ??
-      stockRow?.stock_pieces ??
-      stockRow?.total_pieces ??
-      0;
-
-    const diffPieces = countedPieces - Number(systemPieces || 0);
-
-    setLines((prev) => {
-      const existing = prev.find((l) => l.itemId === itemId && !l.dbId);
-      if (existing) {
-        return prev.map((l) =>
-          l === existing
-            ? {
-                ...l,
-                systemPieces,
-                countedPieces,
-                diffPieces,
-              }
-            : l
-        );
-      }
-      return [
-        ...prev,
-        {
-          id: `local-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-          itemId,
-          systemPieces,
-          countedPieces,
-          diffPieces,
-        },
-      ];
-    });
-
-    setError("");
-    setMessage("");
-    clearPad();
-
-    if (padRef.current) {
-      padRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-  };
-
-  const removeLine = (id) => {
-    setLines((prev) => prev.filter((l) => l.id !== id));
-  };
-
-  const systemTotalDiffPieces = useMemo(
-    () =>
-      lines.reduce(
-        (sum, l) => sum + Number(l.diffPieces || 0),
-        0
-      ),
-    [lines]
-  );
-
-  // ---------- save draft to backend (similar to Save purchase) ----------
-
-  const handleSaveDraft = async () => {
-    if (!lines.length) {
-      setError("No items in this inventory check.");
-      setMessage("");
-      return;
-    }
-
-    setSavingDraft(true);
-    setError("");
-    setMessage("");
-
-    try {
-      const iso = toISODate(inventoryDate);
-      const payload = {
-        shop_id: Number(shopId),
-        inventory_date: iso,
-        header_id: headerId,
-        lines: lines.map((l) => ({
-          id: l.dbId ?? null,
-          item_id: l.itemId,
-          system_pieces: Number(l.systemPieces || 0),
-          counted_pieces: Number(l.countedPieces || 0),
-        })),
-      };
-
-      const res = await fetch(`${API_BASE}/inventory-checks/draft`, {
-        method: "POST",
-        headers: authHeaders,
-        body: JSON.stringify(payload),
-      });
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        const msg =
-          body?.detail ||
-          `Failed to save inventory draft. Status: ${res.status}`;
-        throw new Error(msg);
-      }
-
-      const data = await res.json().catch(() => null);
-
-      // refresh header + lines from backend response, like Purchases
-      setHeaderId(data?.id ?? null);
-
-      const mapped =
-        (data?.lines || []).map((ln) => ({
-          id: `db-${ln.id}`,
-          dbId: ln.id,
-          itemId: ln.item_id,
-          systemPieces:
-            ln.system_pieces ??
-            ln.system_qty ??
-            stockByItemId[ln.item_id]?.pieces_in_stock ??
-            0,
-          countedPieces: ln.counted_pieces ?? ln.counted_qty ?? 0,
-          diffPieces: ln.difference_pieces ?? ln.diff_pieces ?? 0,
-          diffCost: ln.diff_cost_total ?? 0,
-        })) || [];
-
-      setLines(mapped);
-      setMessage("Inventory draft saved.");
-    } catch (e) {
-      console.error(e);
-      setError(e?.message || "Failed to save inventory draft.");
-      setMessage("");
-    } finally {
-      setSavingDraft(false);
-    }
-  };
-
-  // ---------- post inventory check (similar idea to “Save purchase”) ----------
-
-  const handlePostInventory = async () => {
-    if (!headerId) {
-      setError("Save the inventory draft first before posting.");
-      setMessage("");
-      return;
-    }
-
-    setPosting(true);
-    setError("");
-    setMessage("");
-
+  // History summary
+  const loadSummary = async () => {
+    setSummaryLoading(true);
     try {
       const res = await fetch(
-        `${API_BASE}/inventory-checks/${headerId}/post`,
-        {
-          method: "POST",
-          headers: authHeaders,
-        }
+        `${API_BASE}/inventory-checks/summary?shop_id=${shopId}`,
+        { headers: authHeadersNoJson }
       );
-
       if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        const msg =
-          body?.detail ||
-          `Failed to post inventory check. Status: ${res.status}`;
-        throw new Error(msg);
+        throw new Error(`Failed to load inventory checks (status ${res.status}).`);
       }
-
-      await res.json().catch(() => null);
-
-      setMessage(
-        "Inventory check posted. Stock should now be reconciled to counted pieces."
-      );
-
-      // reload from backend, in case posted header has updated lines
-      await loadDraftForDate(inventoryDate);
+      const data = await res.json().catch(() => []);
+      setSummary(Array.isArray(data) ? data : []);
     } catch (e) {
       console.error(e);
-      setError(e?.message || "Failed to post inventory check.");
-      setMessage("");
+      setError(e?.message || "Failed to load inventory history.");
     } finally {
-      setPosting(false);
+      setSummaryLoading(false);
     }
   };
 
-  // ---------- UI styles (reuse Purchases feel) ----------
+  useEffect(() => {
+    if (!loading) {
+      loadSummary();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading]);
 
-  if (loading) {
-    return (
-      <div style={{ padding: "32px" }}>
-        <p>Loading inventory check page…</p>
-      </div>
-    );
-  }
+  /* ------ Loading an existing check (when selecting from history or date) ------ */
 
-  const labelStyle = {
-    display: "block",
-    fontSize: "12px",
-    fontWeight: 700,
-    color: "#111827",
-    marginBottom: "6px",
+  const loadCheckById = async (checkId) => {
+    if (!checkId) return;
+    try {
+      const res = await fetch(`${API_BASE}/inventory-checks/${checkId}`, {
+        headers: authHeadersNoJson,
+      });
+      if (!res.ok) {
+        throw new Error(`Failed to load inventory check (status ${res.status}).`);
+      }
+      const data = await res.json();
+
+      setCurrentCheckId(data.id);
+      setCheckDate(toISODate(data.check_date));
+      setNotes(data.notes || "");
+      setCurrentStatus(data.status || "DRAFT");
+
+      const newLines = (data.lines || []).map((ln) => {
+        const sys = Number(ln.system_pieces || 0);
+        const counted = Number(ln.counted_pieces || 0);
+        const diff = Number(ln.diff_pieces || 0);
+
+        return {
+          tempId: `db-${ln.id}`,
+          itemId: ln.item_id,
+          itemName: ln.item_name || `Item #${ln.item_id}`,
+          systemPieces: sys,
+          countedPieces: counted,
+          diffPieces: diff,
+          direction: ln.difference_direction || (diff === 0
+            ? "match"
+            : diff > 0
+            ? "over"
+            : "short"),
+          fromDb: true,
+        };
+      });
+
+      setLines(newLines);
+      setPad({ itemId: "", countedPieces: "" });
+      setEditingLineTempId(null);
+      setMessage("");
+      setError("");
+    } catch (e) {
+      console.error(e);
+      setError(e?.message || "Failed to load inventory check.");
+    }
   };
+
+  // When date changes: if there is a check for that date in summary, load it. Otherwise clear.
+  useEffect(() => {
+    const iso = toISODate(checkDate);
+    if (!iso || summary.length === 0) return;
+
+    const existing = summary.find((s) => toISODate(s.check_date) === iso);
+    if (existing) {
+      loadCheckById(existing.id);
+    } else {
+      // new draft
+      setCurrentCheckId(null);
+      setCurrentStatus("DRAFT");
+      setNotes("");
+      setLines([]);
+      setPad({ itemId: "", countedPieces: "" });
+      setEditingLineTempId(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checkDate, summary.length]);
+
+  /* ------ Pad behaviour ------ */
 
   const inputBase = {
     width: "100%",
@@ -654,6 +474,271 @@ function InventoryCheckPage() {
     backgroundColor: "#ffffff",
     color: "#111827",
   };
+
+  const labelStyle = {
+    display: "block",
+    fontSize: "12px",
+    fontWeight: 700,
+    color: "#111827",
+    marginBottom: "6px",
+  };
+
+  const updatePad = (field, value) => {
+    setPad((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handlePadAddOrUpdate = () => {
+    const itemId = Number(pad.itemId || 0);
+    if (!itemId) {
+      setError("Select an item first.");
+      return;
+    }
+
+    const counted = Number(pad.countedPieces || 0);
+    if (counted < 0) {
+      setError("Counted pieces cannot be negative.");
+      return;
+    }
+
+    const s = stockByItemId[itemId];
+    const systemPieces = s ? Number(s.remaining_pieces || 0) : 0;
+    const diff = counted - systemPieces;
+    const direction = diff === 0 ? "match" : diff > 0 ? "over" : "short";
+
+    const nameEntry = pickerItems.find((i) => Number(i.id) === itemId);
+    const itemName = nameEntry?.label || `Item #${itemId}`;
+
+    if (!editingLineTempId) {
+      // new line
+      setLines((prev) => [
+        ...prev,
+        {
+          tempId: `tmp-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          itemId,
+          itemName,
+          systemPieces,
+          countedPieces: counted,
+          diffPieces: diff,
+          direction,
+          fromDb: false,
+        },
+      ]);
+    } else {
+      // edit existing
+      setLines((prev) =>
+        prev.map((l) =>
+          l.tempId === editingLineTempId
+            ? {
+                ...l,
+                itemId,
+                itemName,
+                systemPieces,
+                countedPieces: counted,
+                diffPieces: diff,
+                direction,
+              }
+            : l
+        )
+      );
+    }
+
+    setEditingLineTempId(null);
+    setPad({ itemId: "", countedPieces: "" });
+    setError("");
+  };
+
+  const startEditLine = (tempId) => {
+    const l = lines.find((x) => x.tempId === tempId);
+    if (!l) return;
+    setEditingLineTempId(tempId);
+    setPad({
+      itemId: String(l.itemId),
+      countedPieces: String(l.countedPieces ?? ""),
+    });
+  };
+
+  const removeLine = (tempId) => {
+    setLines((prev) => prev.filter((l) => l.tempId !== tempId));
+    if (editingLineTempId === tempId) {
+      setEditingLineTempId(null);
+      setPad({ itemId: "", countedPieces: "" });
+    }
+  };
+
+  /* ------ Save draft / Post ------ */
+
+  const handleSaveDraft = async () => {
+    if (!lines.length) {
+      setError("Add at least one item before saving draft.");
+      return;
+    }
+
+    const iso = toISODate(checkDate);
+    if (!iso) {
+      setError("Choose a valid inventory date.");
+      return;
+    }
+
+    setSavingDraft(true);
+    setError("");
+    setMessage("");
+
+    try {
+      const payload = {
+        id: currentCheckId ?? null,
+        shop_id: Number(shopId),
+        check_date: iso,
+        notes: notes || null,
+        lines: lines.map((l) => ({
+          item_id: l.itemId,
+          counted_pieces: Number(l.countedPieces || 0),
+        })),
+      };
+
+      const res = await fetch(`${API_BASE}/inventory-checks/draft`, {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        let detail = "";
+        try {
+          const data = await res.json();
+          detail = data?.detail || "";
+        } catch {
+          // ignore
+        }
+        throw new Error(
+          detail || `Failed to save draft (status ${res.status}).`
+        );
+      }
+
+      const data = await res.json();
+
+      setCurrentCheckId(data.id);
+      setCurrentStatus(data.status || "DRAFT");
+      setCheckDate(toISODate(data.check_date));
+      setNotes(data.notes || "");
+
+      const newLines = (data.lines || []).map((ln) => {
+        const sys = Number(ln.system_pieces || 0);
+        const counted = Number(ln.counted_pieces || 0);
+        const diff = Number(ln.diff_pieces || 0);
+        return {
+          tempId: `db-${ln.id}`,
+          itemId: ln.item_id,
+          itemName: ln.item_name || `Item #${ln.item_id}`,
+          systemPieces: sys,
+          countedPieces: counted,
+          diffPieces: diff,
+          direction:
+            ln.difference_direction ||
+            (diff === 0 ? "match" : diff > 0 ? "over" : "short"),
+          fromDb: true,
+        };
+      });
+
+      setLines(newLines);
+      setPad({ itemId: "", countedPieces: "" });
+      setEditingLineTempId(null);
+
+      await loadSummary();
+
+      setMessage("Inventory draft saved.");
+      setError("");
+    } catch (e) {
+      console.error(e);
+      setError(e?.message || "Failed to save inventory draft.");
+    } finally {
+      setSavingDraft(false);
+    }
+  };
+
+  const handlePost = async () => {
+    if (!currentCheckId) {
+      setError("Save a draft first before posting.");
+      return;
+    }
+    if (currentStatus === "POSTED") {
+      setError("This inventory check is already POSTED.");
+      return;
+    }
+
+    setPosting(true);
+    setError("");
+    setMessage("");
+
+    try {
+      const res = await fetch(
+        `${API_BASE}/inventory-checks/${currentCheckId}/post`,
+        {
+          method: "POST",
+          headers: authHeaders,
+        }
+      );
+
+      if (!res.ok) {
+        let detail = "";
+        try {
+          const data = await res.json();
+          detail = data?.detail || "";
+        } catch {
+          // ignore
+        }
+        throw new Error(
+          detail || `Failed to post inventory check (status ${res.status}).`
+        );
+      }
+
+      const data = await res.json();
+
+      setCurrentStatus(data.status || "POSTED");
+      setCheckDate(toISODate(data.check_date));
+      setNotes(data.notes || "");
+
+      const newLines = (data.lines || []).map((ln) => {
+        const sys = Number(ln.system_pieces || 0);
+        const counted = Number(ln.counted_pieces || 0);
+        const diff = Number(ln.diff_pieces || 0);
+        return {
+          tempId: `db-${ln.id}`,
+          itemId: ln.item_id,
+          itemName: ln.item_name || `Item #${ln.item_id}`,
+          systemPieces: sys,
+          countedPieces: counted,
+          diffPieces: diff,
+          direction:
+            ln.difference_direction ||
+            (diff === 0 ? "match" : diff > 0 ? "over" : "short"),
+          fromDb: true,
+        };
+      });
+
+      setLines(newLines);
+      await loadSummary();
+
+      setMessage(
+        "Inventory check POSTED and stock adjusted using these differences."
+      );
+      setError("");
+    } catch (e) {
+      console.error(e);
+      setError(e?.message || "Failed to post inventory check.");
+    } finally {
+      setPosting(false);
+    }
+  };
+
+  /* ---------- Rendering ---------- */
+
+  if (loading) {
+    return (
+      <div style={{ padding: "32px" }}>
+        <p>Loading inventory check page…</p>
+      </div>
+    );
+  }
 
   const tabBtn = (active) => ({
     padding: "8px 12px",
@@ -675,7 +760,7 @@ function InventoryCheckPage() {
         boxSizing: "border-box",
       }}
     >
-      {/* Header – same layout as Purchases */}
+      {/* Header block (same style as Purchases) */}
       <div
         style={{
           paddingBottom: "8px",
@@ -753,18 +838,16 @@ function InventoryCheckPage() {
               >
                 Enter counts
               </button>
-
               <button
                 type="button"
                 style={tabBtn(activeTab === 2)}
                 onClick={() => setActiveTab(2)}
               >
-                History &amp; differences
+                History & differences
               </button>
             </div>
           </div>
 
-          {/* small summary card */}
           <div
             style={{
               minWidth: "260px",
@@ -779,9 +862,7 @@ function InventoryCheckPage() {
               fontSize: "12px",
             }}
           >
-            <div
-              style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}
-            >
+            <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>
               Inventory summary
             </div>
             <div
@@ -793,42 +874,53 @@ function InventoryCheckPage() {
                 marginBottom: "4px",
               }}
             >
-              Date: {toISODate(inventoryDate) || inventoryDate}
+              Date: {toISODate(checkDate) || checkDate}
             </div>
-            <div>
-              <div
+            <div style={{ fontSize: "12px", color: "#6b7280" }}>
+              Status:{" "}
+              <strong
                 style={{
-                  fontSize: "10px",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.1em",
-                  color: "#6b7280",
+                  color: currentStatus === "POSTED" ? "#16a34a" : "#92400e",
                 }}
               >
-                Total pieces diff
-              </div>
-              <div
-                style={{ fontSize: "18px", fontWeight: 800, color: "#111827" }}
-              >
-                {formatQty(systemTotalDiffPieces)}
-              </div>
+                {currentStatus}
+              </strong>
+            </div>
+            <div style={{ fontSize: "12px", color: "#6b7280" }}>
+              Total diff pieces:{" "}
+              <strong>{formatQty(totalDiffPieces)}</strong>
             </div>
           </div>
         </div>
 
-        {/* date only (no notes at top) */}
+        {/* Date & notes row */}
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "160px",
+            gridTemplateColumns: "160px minmax(0, 1fr)",
             gap: "12px",
             marginBottom: "8px",
           }}
         >
           <input
             type="date"
-            value={toISODate(inventoryDate)}
-            onChange={(e) => setInventoryDate(e.target.value)}
+            value={toISODate(checkDate)}
+            onChange={(e) => setCheckDate(e.target.value)}
             style={{
+              padding: "8px 12px",
+              borderRadius: "999px",
+              border: "1px solid #d1d5db",
+              fontSize: "13px",
+              backgroundColor: "#ffffff",
+            }}
+          />
+          <input
+            type="text"
+            placeholder="Notes (optional)"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            style={{
+              width: "100%",
               padding: "8px 12px",
               borderRadius: "999px",
               border: "1px solid #d1d5db",
@@ -854,7 +946,7 @@ function InventoryCheckPage() {
         </div>
       )}
 
-      {/* TAB 1 – Enter counts (only one fully wired for now) */}
+      {/* ================= TAB 1: Enter counts ================= */}
       {activeTab === 1 && (
         <div
           style={{
@@ -865,20 +957,18 @@ function InventoryCheckPage() {
           }}
         >
           <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>
-            Enter inventory counts for {toISODate(inventoryDate) || inventoryDate}
+            Enter inventory counts for {toISODate(checkDate) || checkDate}
           </h2>
 
-          {/* PAD */}
+          {/* Pad */}
           <div
-            ref={padRef}
             style={{
               marginTop: 12,
-              marginBottom: "12px",
+              marginBottom: 12,
               padding: "14px 14px 16px",
               borderRadius: "18px",
               background: "#ffffff",
               border: "1px solid #e5e7eb",
-              color: "#111827",
             }}
           >
             <div
@@ -893,12 +983,13 @@ function InventoryCheckPage() {
               }}
             >
               <span>
-                Pad: select item, enter counted pieces, then add to list
+                Pad: select item, see system pieces, enter counted pieces, then
+                add to list
               </span>
 
               <button
                 type="button"
-                onClick={handleAddToList}
+                onClick={handlePadAddOrUpdate}
                 style={{
                   padding: "0.55rem 1.3rem",
                   borderRadius: "9999px",
@@ -910,31 +1001,30 @@ function InventoryCheckPage() {
                   cursor: "pointer",
                 }}
               >
-                + Add to list
+                {editingLineTempId ? "Update item" : "+ Add to list"}
               </button>
             </div>
 
-            <div>
+            <div style={{ marginBottom: "10px" }}>
               <label style={labelStyle}>Item</label>
               <ItemComboBox
                 items={pickerItems}
                 valueId={pad.itemId === "" ? "" : String(pad.itemId)}
                 onChangeId={(idStr) => updatePad("itemId", idStr)}
-                disabled={false}
+                disabled={currentStatus === "POSTED"}
               />
             </div>
 
             <div
               style={{
-                marginTop: "12px",
                 display: "grid",
                 gridTemplateColumns:
-                  "minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr)",
+                  "repeat(3, minmax(0, 1fr)) minmax(0, 1.2fr)",
                 gap: "12px",
                 alignItems: "end",
               }}
             >
-              {/* system pieces first, then counted, then diff */}
+              {/* System pieces first */}
               <div>
                 <label style={labelStyle}>System pieces</label>
                 <input
@@ -943,32 +1033,36 @@ function InventoryCheckPage() {
                   value={
                     pad.itemId
                       ? formatQty(
-                          stockByItemId[pad.itemId]?.pieces_in_stock ??
-                            stockByItemId[pad.itemId]?.stock_pieces ??
-                            stockByItemId[pad.itemId]?.total_pieces ??
-                            0
+                          stockByItemId[pad.itemId]?.remaining_pieces || 0
                         )
                       : ""
                   }
                   placeholder="—"
-                  style={{ ...inputBase, backgroundColor: "#f3f4f6" }}
+                  style={{
+                    ...inputBase,
+                    backgroundColor: "#f3f4f6",
+                    fontWeight: 700,
+                  }}
                 />
               </div>
 
+              {/* Counted pieces input */}
               <div>
                 <label style={labelStyle}>Counted pieces</label>
                 <input
                   type="number"
+                  min={0}
                   step="0.01"
                   value={pad.countedPieces}
                   onChange={(e) => updatePad("countedPieces", e.target.value)}
-                  placeholder="e.g. 120"
                   style={inputBase}
+                  disabled={currentStatus === "POSTED"}
                 />
               </div>
 
+              {/* Difference */}
               <div>
-                <label style={labelStyle}>Difference</label>
+                <label style={labelStyle}>Difference (counted - system)</label>
                 <input
                   type="text"
                   readOnly
@@ -977,22 +1071,39 @@ function InventoryCheckPage() {
                       ? formatQty(
                           Number(pad.countedPieces || 0) -
                             Number(
-                              stockByItemId[pad.itemId]?.pieces_in_stock ??
-                                stockByItemId[pad.itemId]?.stock_pieces ??
-                                stockByItemId[pad.itemId]?.total_pieces ??
-                                0
+                              stockByItemId[pad.itemId]?.remaining_pieces || 0
                             )
                         )
                       : ""
                   }
                   placeholder="—"
-                  style={{ ...inputBase, backgroundColor: "#f3f4f6" }}
+                  style={{
+                    ...inputBase,
+                    backgroundColor: "#f3f4f6",
+                    fontWeight: 700,
+                  }}
                 />
+              </div>
+
+              <div style={{ fontSize: "12px", color: "#6b7280" }}>
+                <strong>Direction:</strong>{" "}
+                {(() => {
+                  if (!pad.itemId || pad.countedPieces === "") return "—";
+                  const sys =
+                    Number(
+                      stockByItemId[pad.itemId]?.remaining_pieces || 0
+                    ) || 0;
+                  const counted = Number(pad.countedPieces || 0) || 0;
+                  const diff = counted - sys;
+                  if (diff === 0) return "match";
+                  if (diff > 0) return "over (too many pieces)";
+                  return "short (missing pieces)";
+                })()}
               </div>
             </div>
           </div>
 
-          {/* LIST */}
+          {/* Lines list */}
           {lines.length === 0 ? (
             <div
               style={{
@@ -1002,123 +1113,143 @@ function InventoryCheckPage() {
               }}
             >
               No items in this inventory check yet. Use the pad above and click{" "}
-              <strong>+ Add to list</strong>.
+              <strong>{editingLineTempId ? "Update item" : "+ Add to list"}</strong>.
             </div>
           ) : (
-            <>
+            <div
+              style={{
+                borderRadius: "14px",
+                border: "1px solid #e5e7eb",
+                backgroundColor: "#ffffff",
+                overflow: "hidden",
+                boxShadow: "0 6px 18px rgba(15, 23, 42, 0.05)",
+              }}
+            >
               <div
                 style={{
-                  fontSize: "12px",
-                  color: "#6b7280",
-                  marginBottom: "6px",
-                  marginTop: "2px",
-                }}
-              >
-                Items: {lines.length}
-              </div>
-
-              <div
-                style={{
-                  borderRadius: "14px",
-                  border: "1px solid #e5e7eb",
-                  backgroundColor: "#ffffff",
-                  overflow: "hidden",
-                  boxShadow: "0 6px 18px rgba(15, 23, 42, 0.05)",
+                  maxHeight: "420px",
+                  overflowY: "auto",
+                  overflowX: "auto",
+                  scrollbarGutter: "stable",
                 }}
               >
                 <div
                   style={{
-                    maxHeight: "420px",
-                    overflowY: "auto",
-                    overflowX: "auto",
-                    scrollbarGutter: "stable",
-                    backgroundColor: "#ffffff",
+                    display: "grid",
+                    gridTemplateColumns:
+                      "minmax(200px, 2.4fr) 120px 120px 120px 130px 80px",
+                    minWidth: "820px",
+                    alignItems: "center",
+                    padding: "8px 10px",
+                    borderBottom: "1px solid #e5e7eb",
+                    fontSize: "11px",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.08em",
+                    color: "#6b7280",
+                    fontWeight: 700,
+                    position: "sticky",
+                    top: 0,
+                    backgroundColor: "#f9fafb",
+                    zIndex: 5,
                   }}
                 >
+                  <div>Item</div>
+                  <div style={{ textAlign: "right" }}>System pieces</div>
+                  <div style={{ textAlign: "right" }}>Counted pieces</div>
+                  <div style={{ textAlign: "right" }}>Difference</div>
+                  <div style={{ textAlign: "right" }}>Direction</div>
+                  <div></div>
+                </div>
+
+                {lines.map((l) => (
                   <div
+                    key={l.tempId}
                     style={{
                       display: "grid",
                       gridTemplateColumns:
-                        "minmax(220px, 2.3fr) 120px 120px 120px 60px",
-                      minWidth: "700px",
+                        "minmax(200px, 2.4fr) 120px 120px 120px 130px 80px",
+                      minWidth: "820px",
                       alignItems: "center",
-                      padding: "8px 10px",
-                      borderBottom: "1px solid #e5e7eb",
-                      fontSize: "11px",
-                      textTransform: "uppercase",
-                      letterSpacing: "0.08em",
-                      color: "#6b7280",
-                      fontWeight: 700,
-                      position: "sticky",
-                      top: 0,
-                      backgroundColor: "#f9fafb",
-                      zIndex: 5,
+                      padding: "10px 10px",
+                      borderBottom: "1px solid #f3f4f6",
+                      fontSize: "13px",
                     }}
                   >
-                    <div>Item</div>
-                    <div style={{ textAlign: "center" }}>System pieces</div>
-                    <div style={{ textAlign: "center" }}>Counted pieces</div>
-                    <div style={{ textAlign: "center" }}>Difference</div>
-                    <div></div>
-                  </div>
-
-                  {lines.map((line) => {
-                    const itemName =
-                      stockByItemId[line.itemId]?.item_name ||
-                      pickerItems.find((it) => it.id === line.itemId)?.label ||
-                      `Item ${line.itemId}`;
-
-                    return (
-                      <div
-                        key={line.id}
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          currentStatus === "POSTED"
+                            ? null
+                            : startEditLine(l.tempId)
+                        }
                         style={{
-                          display: "grid",
-                          gridTemplateColumns:
-                            "minmax(220px, 2.3fr) 120px 120px 120px 60px",
-                          minWidth: "700px",
-                          alignItems: "center",
-                          padding: "10px 10px",
-                          borderBottom: "1px solid #f3f4f6",
+                          padding: 0,
+                          margin: 0,
+                          border: "none",
+                          background: "transparent",
+                          color:
+                            currentStatus === "POSTED" ? "#111827" : "#2563eb",
+                          fontWeight: 600,
                           fontSize: "13px",
+                          cursor:
+                            currentStatus === "POSTED"
+                              ? "default"
+                              : "pointer",
+                          textAlign: "left",
                         }}
                       >
-                        <div>{itemName}</div>
-                        <div style={{ textAlign: "center" }}>
-                          {formatQty(line.systemPieces)}
-                        </div>
-                        <div style={{ textAlign: "center" }}>
-                          {formatQty(line.countedPieces)}
-                        </div>
-                        <div style={{ textAlign: "center" }}>
-                          {formatQty(line.diffPieces)}
-                        </div>
-                        <div style={{ textAlign: "center" }}>
-                          {!line.dbId ? (
-                            <button
-                              type="button"
-                              onClick={() => removeLine(line.id)}
-                              title="Remove line (not saved yet)"
-                              style={{
-                                width: "28px",
-                                height: "28px",
-                                borderRadius: "9999px",
-                                border: "1px solid #fee2e2",
-                                backgroundColor: "#fef2f2",
-                                color: "#b91c1c",
-                                fontSize: "16px",
-                                cursor: "pointer",
-                              }}
-                            >
-                              ✕
-                            </button>
-                          ) : null}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                        {l.itemName}
+                      </button>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      {formatQty(l.systemPieces)}
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      {formatQty(l.countedPieces)}
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      {formatQty(l.diffPieces)}
+                    </div>
+                    <div
+                      style={{
+                        textAlign: "right",
+                        textTransform: "capitalize",
+                        color:
+                          l.direction === "over"
+                            ? "#16a34a"
+                            : l.direction === "short"
+                            ? "#b91c1c"
+                            : "#4b5563",
+                      }}
+                    >
+                      {l.direction || "match"}
+                    </div>
+                    <div style={{ textAlign: "center" }}>
+                      {currentStatus === "POSTED" ? null : (
+                        <button
+                          type="button"
+                          onClick={() => removeLine(l.tempId)}
+                          style={{
+                            width: "28px",
+                            height: "28px",
+                            borderRadius: "9999px",
+                            border: "1px solid #fee2e2",
+                            backgroundColor: "#fef2f2",
+                            color: "#b91c1c",
+                            fontSize: "16px",
+                            cursor: "pointer",
+                          }}
+                          title="Remove line"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
               </div>
-            </>
+            </div>
           )}
 
           <div
@@ -1132,43 +1263,55 @@ function InventoryCheckPage() {
             <button
               type="button"
               onClick={handleSaveDraft}
-              disabled={savingDraft}
+              disabled={savingDraft || currentStatus === "POSTED"}
               style={{
-                padding: "0.6rem 1.6rem",
+                padding: "0.6rem 1.4rem",
                 borderRadius: "999px",
                 border: "none",
-                backgroundColor: savingDraft ? "#9ca3af" : "#2563eb",
+                backgroundColor:
+                  savingDraft || currentStatus === "POSTED"
+                    ? "#9ca3af"
+                    : "#2563eb",
                 color: "white",
                 fontWeight: 700,
                 fontSize: "0.95rem",
-                cursor: savingDraft ? "not-allowed" : "pointer",
-                opacity: savingDraft ? 0.85 : 1,
+                cursor:
+                  savingDraft || currentStatus === "POSTED"
+                    ? "not-allowed"
+                    : "pointer",
+                opacity:
+                  savingDraft || currentStatus === "POSTED" ? 0.85 : 1,
               }}
             >
-              {savingDraft ? "Saving…" : "Save draft"}
+              {savingDraft ? "Saving..." : "Save draft"}
             </button>
 
             <button
               type="button"
-              onClick={handlePostInventory}
-              disabled={posting || !headerId}
+              onClick={handlePost}
+              disabled={
+                posting || !currentCheckId || currentStatus === "POSTED"
+              }
               style={{
                 padding: "0.6rem 1.8rem",
                 borderRadius: "999px",
                 border: "none",
                 backgroundColor:
-                  posting || !headerId ? "#9ca3af" : "#111827",
+                  posting || !currentCheckId || currentStatus === "POSTED"
+                    ? "#9ca3af"
+                    : "#111827",
                 color: "white",
                 fontWeight: 700,
                 fontSize: "0.95rem",
-                cursor: posting || !headerId ? "not-allowed" : "pointer",
-                opacity: posting || !headerId ? 0.85 : 1,
+                cursor:
+                  posting || !currentCheckId || currentStatus === "POSTED"
+                    ? "not-allowed"
+                    : "pointer",
+                opacity:
+                  posting || !currentCheckId || currentStatus === "POSTED"
+                    ? 0.85
+                    : 1,
               }}
-              title={
-                headerId
-                  ? ""
-                  : "You need to save a draft before posting."
-              }
             >
               {posting ? "Posting…" : "Post inventory check"}
             </button>
@@ -1176,7 +1319,7 @@ function InventoryCheckPage() {
         </div>
       )}
 
-      {/* TAB 2 – just a placeholder for now */}
+      {/* ================= TAB 2: History & differences ================= */}
       {activeTab === 2 && (
         <div
           style={{
@@ -1187,13 +1330,138 @@ function InventoryCheckPage() {
           }}
         >
           <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>
-            History &amp; differences
+            Inventory checks history
           </h2>
-          <p style={{ fontSize: "13px", color: "#6b7280", marginTop: "8px" }}>
-            We will connect this tab to /inventory-checks summary once the
-            backend part is fully stable. For now, focus on Enter counts and
-            saving / posting the inventory check.
-          </p>
+
+          {summaryLoading ? (
+            <div
+              style={{
+                padding: "14px 4px 6px",
+                fontSize: "13px",
+                color: "#6b7280",
+              }}
+            >
+              Loading…
+            </div>
+          ) : summary.length === 0 ? (
+            <div
+              style={{
+                padding: "14px 4px 6px",
+                fontSize: "13px",
+                color: "#6b7280",
+              }}
+            >
+              No inventory checks for this shop yet.
+            </div>
+          ) : (
+            <div
+              style={{
+                marginTop: 12,
+                borderRadius: "14px",
+                border: "1px solid #e5e7eb",
+                backgroundColor: "#ffffff",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  maxHeight: "420px",
+                  overflowY: "auto",
+                  overflowX: "auto",
+                }}
+              >
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns:
+                      "140px 120px 160px 160px 160px 120px",
+                    minWidth: "820px",
+                    alignItems: "center",
+                    padding: "8px 10px",
+                    borderBottom: "1px solid #e5e7eb",
+                    fontSize: "11px",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.08em",
+                    color: "#6b7280",
+                    fontWeight: 700,
+                    position: "sticky",
+                    top: 0,
+                    backgroundColor: "#f9fafb",
+                    zIndex: 5,
+                  }}
+                >
+                  <div>Date</div>
+                  <div>Status</div>
+                  <div style={{ textAlign: "right" }}>Total items</div>
+                  <div style={{ textAlign: "right" }}>System pieces</div>
+                  <div style={{ textAlign: "right" }}>Counted pieces</div>
+                  <div style={{ textAlign: "right" }}>Diff pieces</div>
+                </div>
+
+                {summary.map((s) => (
+                  <div
+                    key={s.id}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns:
+                        "140px 120px 160px 160px 160px 120px",
+                      minWidth: "820px",
+                      alignItems: "center",
+                      padding: "10px 10px",
+                      borderBottom: "1px solid #f3f4f6",
+                      fontSize: "13px",
+                    }}
+                  >
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveTab(1);
+                          setCheckDate(toISODate(s.check_date));
+                          loadCheckById(s.id);
+                        }}
+                        style={{
+                          padding: 0,
+                          margin: 0,
+                          border: "none",
+                          background: "transparent",
+                          color: "#2563eb",
+                          fontWeight: 600,
+                          fontSize: "13px",
+                          cursor: "pointer",
+                          textAlign: "left",
+                        }}
+                        title="Open this inventory check"
+                      >
+                        {toISODate(s.check_date)}
+                      </button>
+                    </div>
+                    <div
+                      style={{
+                        color:
+                          s.status === "POSTED" ? "#16a34a" : "#92400e",
+                        textTransform: "capitalize",
+                      }}
+                    >
+                      {s.status.toLowerCase()}
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      {formatQty(s.total_items)}
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      {formatQty(s.total_system_pieces)}
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      {formatQty(s.total_counted_pieces)}
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      {formatQty(s.total_diff_pieces)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
