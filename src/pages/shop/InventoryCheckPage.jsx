@@ -80,25 +80,23 @@ function InventoryCheckPage() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
-  // stock rows (ShopItem), enriched with real item names
   const [stockRows, setStockRows] = useState([]);
 
-  // current draft
   const [currentCheckId, setCurrentCheckId] = useState(null);
   const [checkDate, setCheckDate] = useState(() =>
     new Date().toISOString().slice(0, 10)
   );
-  // we still support notes in backend, but no field on UI
+  // Notes still supported in backend, but no visible field on UI:
   const [notes] = useState("");
 
-  // counted pieces keyed by item_id (only added items)
+  // counted pieces keyed by item_id
   const [counts, setCounts] = useState({}); // { [itemId]: "123.45" }
 
   // pad UI
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedItemId, setSelectedItemId] = useState(null);
   const [countInput, setCountInput] = useState("");
-  const [padOpen, setPadOpen] = useState(false); // dropdown appears when pad focused
+  const [padOpen, setPadOpen] = useState(false);
 
   // history tab
   const [activeTab, setActiveTab] = useState("enter"); // "enter" | "history"
@@ -247,7 +245,6 @@ function InventoryCheckPage() {
         }
 
         const rows = stockRes.data || [];
-
         const normalized = rows.map((row) => {
           const id = row.item_id;
           const fromItemsName = namesById[id];
@@ -346,7 +343,7 @@ function InventoryCheckPage() {
   };
 
   // -------------------------------
-  // Pad input handlers
+  // Pad handlers
   // -------------------------------
   const handleItemClick = (itemId) => {
     setSelectedItemId(itemId);
@@ -401,22 +398,46 @@ function InventoryCheckPage() {
     });
   };
 
+  // When user clicks an item in the table → open pad ready to edit that item
+  const focusPadForItem = (itemId) => {
+    const stock = stockByItemId[itemId];
+    if (!stock) return;
+
+    setSelectedItemId(itemId);
+    setSearchQuery(stock.item_name || "");
+    setCountInput(
+      counts[itemId] !== undefined && counts[itemId] !== null
+        ? String(counts[itemId])
+        : ""
+    );
+    setPadOpen(true);
+
+    // Scroll pad into view (nice but optional)
+    window.scrollTo({
+      top: 0,
+      behavior: "smooth",
+    });
+  };
+
   // -------------------------------
-  // Save Draft
+  // Shared draft save helper
   // -------------------------------
-  const handleSaveDraft = async () => {
+  const saveDraftToServer = async (showMessages = true) => {
     if (!shopId) {
-      setError("No shop selected.");
-      return;
+      if (showMessages) setError("No shop selected.");
+      return null;
     }
     if (!hasAnyLine) {
-      setError("Add at least one item with counted pieces before saving.");
-      return;
+      if (showMessages)
+        setError("Add at least one item with counted pieces before saving.");
+      return null;
     }
 
     setSavingDraft(true);
-    setError("");
-    setMessage("");
+    if (showMessages) {
+      setError("");
+      setMessage("");
+    }
 
     try {
       const payload = {
@@ -429,29 +450,46 @@ function InventoryCheckPage() {
 
       const res = await api.post("/inventory-checks/draft", payload);
       const data = res.data;
-
       setCurrentCheckId(data.id);
-      setMessage(
-        data.status === STATUS_POSTED
-          ? "Inventory check has already been posted."
-          : "Inventory check draft saved."
-      );
+
+      if (showMessages) {
+        setMessage(
+          data.status === STATUS_POSTED
+            ? "Inventory check has already been posted."
+            : "Inventory check draft saved."
+        );
+      }
+      return data.id;
     } catch (err) {
       console.error("Error saving inventory check draft:", err);
-      setError(
-        err?.response?.data?.detail || "Failed to save inventory check draft."
-      );
+      if (showMessages) {
+        setError(
+          err?.response?.data?.detail || "Failed to save inventory check draft."
+        );
+      }
+      return null;
     } finally {
       setSavingDraft(false);
     }
   };
 
   // -------------------------------
+  // Save Draft (button)
+  // -------------------------------
+  const handleSaveDraft = async () => {
+    await saveDraftToServer(true);
+  };
+
+  // -------------------------------
   // Post (apply) check
   // -------------------------------
   const handlePostCheck = async () => {
-    if (!currentCheckId) {
-      setError("Save a draft first before posting.");
+    if (!shopId) {
+      setError("No shop selected.");
+      return;
+    }
+    if (!hasAnyLine) {
+      setError("Add at least one item with counted pieces before posting.");
       return;
     }
 
@@ -466,13 +504,26 @@ function InventoryCheckPage() {
     setMessage("");
 
     try {
-      const res = await api.post(`/inventory-checks/${currentCheckId}/post`);
+      // 1) Ensure we have a draft on the server (auto-save if needed)
+      let checkId = currentCheckId;
+      if (!checkId) {
+        const savedId = await saveDraftToServer(false);
+        if (!savedId) {
+          // saving failed – error already shown by helper
+          setPosting(false);
+          return;
+        }
+        checkId = savedId;
+      }
+
+      // 2) Post
+      const res = await api.post(`/inventory-checks/${checkId}/post`);
       const data = res.data || null;
 
       setMessage("Inventory check posted and stock updated.");
-      setCurrentCheckId(data?.id || currentCheckId);
+      setCurrentCheckId(data?.id || checkId);
 
-      // After posting, reload history + stock
+      // 3) Reload history + stock
       await Promise.all([loadHistory(), api.get(`/shops/${shopId}/stock`)])
         .then(([historyRes, stockRes]) => {
           setHistoryRows(historyRes.data || []);
@@ -740,7 +791,7 @@ function InventoryCheckPage() {
             <div />
           </div>
 
-          {/* Pad container – same concept as Purchases */}
+          {/* Pad container – like Purchases pad */}
           <div
             style={{
               backgroundColor: "#ffffff",
@@ -773,7 +824,7 @@ function InventoryCheckPage() {
                 marginBottom: "0.9rem",
               }}
             >
-              {/* Search input – like Purchases pad; dropdown opens when focused */}
+              {/* Search pad */}
               <div>
                 <label
                   style={{
@@ -915,7 +966,7 @@ function InventoryCheckPage() {
               </div>
             </div>
 
-            {/* Item dropdown: only shows after user clicks in pad (padOpen) */}
+            {/* Item dropdown – appears when pad is focused */}
             {padOpen ? (
               <div
                 style={{
@@ -967,7 +1018,6 @@ function InventoryCheckPage() {
                           key={row.item_id}
                           type="button"
                           onMouseDown={(e) => {
-                            // use mousedown so selection works even if input loses focus
                             e.preventDefault();
                             handleItemClick(row.item_id);
                           }}
@@ -1069,18 +1119,17 @@ function InventoryCheckPage() {
             <button
               type="button"
               onClick={handlePostCheck}
-              disabled={posting || !currentCheckId}
+              disabled={posting || !hasAnyLine}
               style={{
                 padding: "0.6rem 1.8rem",
                 borderRadius: "999px",
                 border: "none",
                 backgroundColor:
-                  posting || !currentCheckId ? "#6b7280" : "#16a34a",
+                  posting || !hasAnyLine ? "#6b7280" : "#16a34a",
                 color: "#ffffff",
                 fontSize: "0.9rem",
                 fontWeight: 700,
-                cursor:
-                  posting || !currentCheckId ? "not-allowed" : "pointer",
+                cursor: posting || !hasAnyLine ? "not-allowed" : "pointer",
               }}
             >
               {posting ? "Posting..." : "Post inventory check"}
@@ -1219,7 +1268,9 @@ function InventoryCheckPage() {
                               padding: "0.5rem 0.6rem",
                               fontWeight: 500,
                               color: "#111827",
+                              cursor: "pointer",
                             }}
+                            onClick={() => focusPadForItem(row.item_id)}
                           >
                             {row.item_name}
                           </td>
