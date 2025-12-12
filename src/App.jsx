@@ -284,11 +284,12 @@ function ProtectedApp() {
           {/* ----- Shop section ----- */}
           <Route
             path="/shops/:shopId"
-            element>
-            <RequireAuth allowedRoles={["admin", "manager"]}>
-              <ShopWorkspacePage />
-            </RequireAuth>
-          </Route>
+            element={
+              <RequireAuth allowedRoles={["admin", "manager"]}>
+                <ShopWorkspacePage />
+              </RequireAuth>
+            }
+          />
           <Route
             path="/shops/:shopId/workspace"
             element={
