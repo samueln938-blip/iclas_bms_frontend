@@ -1,5 +1,5 @@
 // FILE: src/pages/shop/InventoryChecksPage.jsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import api from "../../api/client";
 import { useAuth } from "../../context/AuthContext.jsx";
@@ -122,29 +122,9 @@ function InventoryChecksPage() {
   const isPosted = currentCheck?.status === "POSTED";
 
   // ------------------------------------------
-  // Auth headers (safe fallback)
-  // ------------------------------------------
-  const authHeaders = useMemo(() => {
-    const token =
-      auth?.token ||
-      auth?.accessToken ||
-      auth?.authToken ||
-      localStorage.getItem("token") ||
-      localStorage.getItem("access_token") ||
-      localStorage.getItem("accessToken") ||
-      "";
-
-    const clean = String(token || "").trim().startsWith("Bearer ")
-      ? String(token).trim().slice(7)
-      : String(token || "").trim();
-
-    return clean ? { Authorization: `Bearer ${clean}` } : {};
-  }, [auth]);
-
-  // ------------------------------------------
   // Inventory checks endpoint compatibility
   // Many backends use "/inventory_checks" instead of "/inventory-checks"
-  // We try both to avoid CORS errors from hitting a non-existent route.
+  // We try both safely.
   // ------------------------------------------
   const INV_PREFIXES = ["/inventory-checks", "/inventory_checks"];
 
@@ -174,8 +154,34 @@ function InventoryChecksPage() {
 
   // ------------------------------------------
   // Load shop + stock + summary
+  // IMPORTANT: wait for auth to finish loading to avoid storms
   // ------------------------------------------
+  const loadControllerRef = useRef(null);
+
   useEffect(() => {
+    if (!shopId) return;
+
+    // Wait until auth restoration completes
+    if (auth?.loading) {
+      setLoadingPage(true);
+      return;
+    }
+
+    // If no token after loading, bounce to login
+    if (!auth?.token) {
+      setLoadingPage(false);
+      setPageError("Not authenticated. Please login again.");
+      // optional: navigate("/login");
+      return;
+    }
+
+    // cancel previous in-flight load
+    if (loadControllerRef.current) {
+      loadControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    loadControllerRef.current = controller;
+
     const loadAll = async () => {
       setLoadingPage(true);
       setPageError("");
@@ -185,9 +191,7 @@ function InventoryChecksPage() {
 
       try {
         // 1) Load shop basic info
-        const shopRes = await api.get(`/shops/${shopId}`, {
-          headers: authHeaders,
-        });
+        const shopRes = await api.get(`/shops/${shopId}`, { signal: controller.signal });
         setShop(shopRes.data);
 
         // 2) Load stock items for this shop
@@ -195,7 +199,7 @@ function InventoryChecksPage() {
         try {
           const stockRes = await api.get("/stock/summary", {
             params: { shop_id: shopId },
-            headers: authHeaders,
+            signal: controller.signal,
           });
 
           let items = extractArray(stockRes.data).map(normalizeStockRow);
@@ -222,58 +226,73 @@ function InventoryChecksPage() {
         }
 
         // 3) Load summary and try to pick latest DRAFT
-        await loadSummaryAndMaybeDraft(shopId);
+        await loadSummaryAndMaybeDraft(shopId, controller.signal);
       } catch (err) {
+        if (controller.signal.aborted) return;
+
         console.error("Error loading inventory check page", err);
-        setPageError(
-          err?.response?.data?.detail || "Failed to load inventory check page."
-        );
+
+        // If token became invalid, show clear message
+        const status = err?.response?.status;
+        if (status === 401) {
+          setPageError("Session expired or invalid token. Please logout/login again.");
+          return;
+        }
+
+        setPageError(err?.response?.data?.detail || err?.message || "Failed to load inventory check page.");
       } finally {
-        setLoadingPage(false);
+        if (!controller.signal.aborted) setLoadingPage(false);
       }
     };
 
-    if (shopId) loadAll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shopId, authHeaders]);
+    loadAll();
 
-  const loadSummaryAndMaybeDraft = async (shopIdToLoad) => {
+    return () => {
+      controller.abort();
+    };
+    // Depend only on shopId + auth.loading + auth.token (avoid object identity loops)
+  }, [shopId, auth?.loading, auth?.token]);
+
+  const loadSummaryAndMaybeDraft = async (shopIdToLoad, signal) => {
     setSummaryLoading(true);
     setSummary([]);
     try {
-      const res = await invGet("/summary", {
-        params: { shop_id: shopIdToLoad, skip: 0, limit: 100 },
-        headers: authHeaders,
-      });
+      const res = await invGet(
+        "/summary",
+        {
+          params: { shop_id: shopIdToLoad, skip: 0, limit: 100 },
+          signal,
+        }
+      );
 
       const list = extractArray(res.data);
       setSummary(list);
 
       const draft = list.find((row) => row.status === "DRAFT");
       if (draft) {
-        await loadCheckDetails(draft.id, { switchToEntry: true });
+        await loadCheckDetails(draft.id, { switchToEntry: true }, signal);
       } else {
         resetEntryFormToNew();
       }
     } catch (err) {
+      if (signal?.aborted) return;
       console.error("Error loading inventory checks summary", err);
       setError(
         err?.response?.data?.detail ||
+          err?.message ||
           "Failed to load inventory checks summary. (Likely wrong route name or backend not deployed.)"
       );
     } finally {
-      setSummaryLoading(false);
+      if (!signal?.aborted) setSummaryLoading(false);
     }
   };
 
-  const loadCheckDetails = async (checkId, opts = {}) => {
+  const loadCheckDetails = async (checkId, opts = {}, signal) => {
     const { switchToEntry = false } = opts;
     setError("");
     setMessage("");
     try {
-      const res = await invGet(`/${checkId}`, {
-        headers: authHeaders,
-      });
+      const res = await invGet(`/${checkId}`, { signal });
       const check = res.data;
       setCurrentCheck(check);
 
@@ -296,10 +315,9 @@ function InventoryChecksPage() {
 
       if (switchToEntry) setActiveTab("entry");
     } catch (err) {
+      if (signal?.aborted) return;
       console.error("Error loading inventory check details", err);
-      setError(
-        err?.response?.data?.detail || "Failed to load inventory check details."
-      );
+      setError(err?.response?.data?.detail || err?.message || "Failed to load inventory check details.");
     }
   };
 
@@ -427,10 +445,7 @@ function InventoryChecksPage() {
         })),
       };
 
-      const res = await invPost("/draft", payload, {
-        headers: authHeaders,
-      });
-
+      const res = await invPost("/draft", payload);
       const saved = res.data;
       setCurrentCheck(saved);
 
@@ -440,9 +455,7 @@ function InventoryChecksPage() {
       setMessage("Inventory check draft saved.");
     } catch (err) {
       console.error("Error saving inventory check draft", err);
-      setError(
-        err?.response?.data?.detail || "Failed to save inventory check draft."
-      );
+      setError(err?.response?.data?.detail || err?.message || "Failed to save inventory check draft.");
     } finally {
       setSavingDraft(false);
     }
@@ -469,10 +482,7 @@ function InventoryChecksPage() {
     setMessage("");
 
     try {
-      const res = await invPost(`/${currentCheck.id}/post`, null, {
-        headers: authHeaders,
-      });
-
+      const res = await invPost(`/${currentCheck.id}/post`, null);
       const posted = res.data;
       setCurrentCheck(posted);
 
@@ -482,7 +492,7 @@ function InventoryChecksPage() {
       setMessage("Inventory check posted and stock updated.");
     } catch (err) {
       console.error("Error posting inventory check", err);
-      setError(err?.response?.data?.detail || "Failed to post inventory check.");
+      setError(err?.response?.data?.detail || err?.message || "Failed to post inventory check.");
     } finally {
       setPosting(false);
     }
@@ -529,6 +539,20 @@ function InventoryChecksPage() {
     return (
       <div style={{ padding: "24px", color: "red" }}>
         <p>{pageError}</p>
+        <button
+          type="button"
+          onClick={() => navigate(-1)}
+          style={{
+            marginTop: "10px",
+            padding: "0.5rem 1rem",
+            borderRadius: "10px",
+            border: "1px solid #d1d5db",
+            background: "#fff",
+            cursor: "pointer",
+          }}
+        >
+          Go back
+        </button>
       </div>
     );
   }
