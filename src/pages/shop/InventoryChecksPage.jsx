@@ -42,12 +42,7 @@ function extractArray(payload) {
  * Supports multiple possible field names coming from backend/older versions.
  */
 function normalizeStockRow(row) {
-  const itemId =
-    row?.item_id ??
-    row?.itemId ??
-    row?.item?.id ??
-    row?.id ??
-    null;
+  const itemId = row?.item_id ?? row?.itemId ?? row?.item?.id ?? row?.id ?? null;
 
   const itemName =
     row?.item_name ??
@@ -75,7 +70,7 @@ function normalizeStockRow(row) {
 
 function InventoryChecksPage() {
   const { shopId } = useParams();
-  const navigate = useNavigate();
+  const navigate = useNavigate(); // (kept even if you add a Back button later)
   const auth = useAuth();
 
   const [shop, setShop] = useState(null);
@@ -87,7 +82,7 @@ function InventoryChecksPage() {
   // Stock items for this shop (used for system remaining_pieces + item name)
   const [stockItems, setStockItems] = useState([]);
   const [stockLoading, setStockLoading] = useState(false);
-  const [stockHint, setStockHint] = useState(""); // helpful diagnostics when dropdown is empty
+  const [stockHint, setStockHint] = useState("");
 
   // Summary list
   const [summary, setSummary] = useState([]);
@@ -100,7 +95,7 @@ function InventoryChecksPage() {
   const [checkDate, setCheckDate] = useState(todayInputDate());
   const [notes, setNotes] = useState("");
 
-  // Editable lines in the form (mirrors backend lines but kept as simple JS)
+  // Editable lines in the form
   const [linesDraft, setLinesDraft] = useState([]);
 
   // New line entry inputs
@@ -144,9 +139,73 @@ function InventoryChecksPage() {
   }, [auth]);
 
   // ------------------------------------------
+  // Load Stock items (match Stock page endpoint)
+  // ------------------------------------------
+  const loadStockItemsForShop = async (shopIdToLoad) => {
+    setStockLoading(true);
+    setStockHint("");
+
+    try {
+      // ✅ Primary: SAME endpoint as ShopStockPage.jsx
+      const bust = Date.now();
+      let stockRes;
+      try {
+        stockRes = await api.get("/stock/", {
+          params: { shop_id: shopIdToLoad, _: bust },
+          headers: authHeaders,
+        });
+      } catch (primaryErr) {
+        // ✅ Fallback: older endpoint if it exists in some versions
+        stockRes = await api.get("/stock/summary", {
+          params: { shop_id: shopIdToLoad, _: bust },
+          headers: authHeaders,
+        });
+      }
+
+      let items = extractArray(stockRes.data).map(normalizeStockRow);
+
+      // Keep only valid item_id rows (prevents blank dropdown)
+      items = items.filter(
+        (r) => r && Number.isFinite(Number(r.item_id)) && Number(r.item_id) > 0
+      );
+
+      // sort alphabetically by item name for nicer dropdown
+      items = [...items].sort((a, b) =>
+        String(a.item_name || "")
+          .toLowerCase()
+          .localeCompare(String(b.item_name || "").toLowerCase())
+      );
+
+      setStockItems(items);
+
+      if (items.length === 0) {
+        // Helpful diagnostics: show response keys if any
+        const raw = extractArray(stockRes.data);
+        const sample = raw?.[0] || null;
+        const keys = sample ? Object.keys(sample).slice(0, 12).join(", ") : "none";
+        setStockHint(
+          `No stock items returned for this shop. If Stock page shows items, the backend may be filtering differently.\n` +
+            `Sample keys from response: ${keys}`
+        );
+      }
+    } catch (err) {
+      console.error("Error loading stock items for inventory checks", err);
+      setStockItems([]);
+      setStockHint(
+        err?.response?.data?.detail ||
+          "Failed to load stock items for this shop. Check if /stock/ is reachable and your token is valid."
+      );
+    } finally {
+      setStockLoading(false);
+    }
+  };
+
+  // ------------------------------------------
   // Load shop + stock + summary
   // ------------------------------------------
   useEffect(() => {
+    let cancelled = false;
+
     const loadAll = async () => {
       setLoadingPage(true);
       setPageError("");
@@ -159,58 +218,32 @@ function InventoryChecksPage() {
         const shopRes = await api.get(`/shops/${shopId}`, {
           headers: authHeaders,
         });
+        if (cancelled) return;
         setShop(shopRes.data);
 
-        // 2) Load stock items for this shop (same data as Stock page)
-        setStockLoading(true);
-        try {
-          const stockRes = await api.get("/stock/summary", {
-            params: { shop_id: shopId },
-            headers: authHeaders,
-          });
-
-          let items = extractArray(stockRes.data).map(normalizeStockRow);
-
-          // Keep only valid item_id rows (prevents blank dropdown)
-          items = items.filter(
-            (r) => r && Number.isFinite(Number(r.item_id)) && Number(r.item_id) > 0
-          );
-
-          // sort alphabetically by item name for nicer dropdown
-          items = [...items].sort((a, b) =>
-            String(a.item_name || "")
-              .toLowerCase()
-              .localeCompare(String(b.item_name || "").toLowerCase())
-          );
-
-          setStockItems(items);
-
-          // Diagnostics if empty
-          if (items.length === 0) {
-            setStockHint(
-              "No stock items returned. If your Stock page shows items, the endpoint/shape may differ. Next: share the Stock page file so we match its exact request."
-            );
-          }
-        } finally {
-          setStockLoading(false);
-        }
+        // 2) Load stock items (must match Stock page)
+        await loadStockItemsForShop(shopId);
+        if (cancelled) return;
 
         // 3) Load summary and try to pick latest DRAFT
         await loadSummaryAndMaybeDraft(shopId);
       } catch (err) {
         console.error("Error loading inventory check page", err);
+        if (cancelled) return;
         setPageError(
-          err?.response?.data?.detail ||
-            "Failed to load inventory check page."
+          err?.response?.data?.detail || "Failed to load inventory check page."
         );
       } finally {
+        if (cancelled) return;
         setLoadingPage(false);
       }
     };
 
-    if (shopId) {
-      loadAll();
-    }
+    if (shopId) loadAll();
+
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shopId, authHeaders]);
 
@@ -230,7 +263,6 @@ function InventoryChecksPage() {
       if (draft) {
         await loadCheckDetails(draft.id, { switchToEntry: true });
       } else {
-        // No draft -> start a fresh check
         resetEntryFormToNew();
       }
     } catch (err) {
@@ -255,16 +287,9 @@ function InventoryChecksPage() {
       const check = res.data;
       setCurrentCheck(check);
 
-      // header fields
-      if (check.check_date) {
-        // check_date is already "YYYY-MM-DD"
-        setCheckDate(String(check.check_date));
-      } else {
-        setCheckDate(todayInputDate());
-      }
+      setCheckDate(check.check_date ? String(check.check_date) : todayInputDate());
       setNotes(check.notes || "");
 
-      // lines
       const newLines =
         (check.lines || []).map((ln) => ({
           id: ln.id,
@@ -277,9 +302,7 @@ function InventoryChecksPage() {
 
       setLinesDraft(newLines);
 
-      if (switchToEntry) {
-        setActiveTab("entry");
-      }
+      if (switchToEntry) setActiveTab("entry");
     } catch (err) {
       console.error("Error loading inventory check details", err);
       setError(
@@ -343,7 +366,6 @@ function InventoryChecksPage() {
 
     const systemPieces = toNumberSafe(stockRow.remaining_pieces);
     const diffPieces = counted - systemPieces;
-
     const itemName = stockRow.item_name || `Item #${itemId}`;
 
     setLinesDraft((prev) => {
@@ -378,11 +400,7 @@ function InventoryChecksPage() {
         if (ln.item_id !== itemId) return ln;
         const systemPieces = toNumberSafe(ln.system_pieces);
         const diffPieces = counted - systemPieces;
-        return {
-          ...ln,
-          counted_pieces: counted,
-          diff_pieces: diffPieces,
-        };
+        return { ...ln, counted_pieces: counted, diff_pieces: diffPieces };
       })
     );
   };
@@ -423,10 +441,7 @@ function InventoryChecksPage() {
       const saved = res.data;
       setCurrentCheck(saved);
 
-      // Refresh details using helper to keep states aligned
       await loadCheckDetails(saved.id);
-
-      // Refresh summary list
       await loadSummaryAndMaybeDraft(shopId);
 
       setMessage("Inventory check draft saved.");
@@ -470,16 +485,16 @@ function InventoryChecksPage() {
       const posted = res.data;
       setCurrentCheck(posted);
 
-      // Reload details + summary to reflect POSTED status
       await loadCheckDetails(posted.id);
       await loadSummaryAndMaybeDraft(shopId);
+
+      // ✅ Also refresh dropdown stock after posting (so it reflects the new remaining_pieces)
+      await loadStockItemsForShop(shopId);
 
       setMessage("Inventory check posted and stock updated.");
     } catch (err) {
       console.error("Error posting inventory check", err);
-      setError(
-        err?.response?.data?.detail || "Failed to post inventory check."
-      );
+      setError(err?.response?.data?.detail || "Failed to post inventory check.");
     } finally {
       setPosting(false);
     }
@@ -531,11 +546,7 @@ function InventoryChecksPage() {
   }
 
   return (
-    <div
-      style={{
-        padding: isMobile ? "18px 14px 22px" : "26px 32px 32px",
-      }}
-    >
+    <div style={{ padding: isMobile ? "18px 14px 22px" : "26px 32px 32px" }}>
       <div
         style={{
           marginBottom: "18px",
@@ -566,13 +577,7 @@ function InventoryChecksPage() {
       </div>
 
       {/* Tabs */}
-      <div
-        style={{
-          display: "flex",
-          gap: "0.5rem",
-          marginBottom: "1rem",
-        }}
-      >
+      <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1rem" }}>
         <button
           type="button"
           onClick={() => setActiveTab("entry")}
@@ -648,7 +653,7 @@ function InventoryChecksPage() {
             marginBottom: "2rem",
           }}
         >
-          {/* Header row: date + status + controls */}
+          {/* Header row */}
           <div
             style={{
               display: "flex",
@@ -725,12 +730,7 @@ function InventoryChecksPage() {
                 >
                   Check ID
                 </div>
-                <span
-                  style={{
-                    fontSize: "0.9rem",
-                    color: "#4b5563",
-                  }}
-                >
+                <span style={{ fontSize: "0.9rem", color: "#4b5563" }}>
                   {currentCheck ? `#${currentCheck.id}` : "Not saved yet"}
                 </span>
               </div>
@@ -853,25 +853,13 @@ function InventoryChecksPage() {
               </select>
 
               {stockLoading && (
-                <div
-                  style={{
-                    marginTop: "0.2rem",
-                    fontSize: "0.75rem",
-                    color: "#6b7280",
-                  }}
-                >
+                <div style={{ marginTop: "0.2rem", fontSize: "0.75rem", color: "#6b7280" }}>
                   Loading stock items...
                 </div>
               )}
 
               {!stockLoading && stockItems.length > 0 && (
-                <div
-                  style={{
-                    marginTop: "0.2rem",
-                    fontSize: "0.75rem",
-                    color: "#6b7280",
-                  }}
-                >
+                <div style={{ marginTop: "0.2rem", fontSize: "0.75rem", color: "#6b7280" }}>
                   Loaded {stockItems.length} stock items.
                 </div>
               )}
@@ -886,6 +874,7 @@ function InventoryChecksPage() {
                     border: "1px solid #fde68a",
                     padding: "0.45rem 0.6rem",
                     borderRadius: "0.6rem",
+                    whiteSpace: "pre-line",
                   }}
                 >
                   {stockHint}
@@ -953,13 +942,7 @@ function InventoryChecksPage() {
 
           {/* Lines table */}
           <div style={{ overflowX: "auto" }}>
-            <table
-              style={{
-                width: "100%",
-                borderCollapse: "collapse",
-                fontSize: "0.9rem",
-              }}
-            >
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
               <thead>
                 <tr
                   style={{
@@ -968,21 +951,11 @@ function InventoryChecksPage() {
                     color: "#6b7280",
                   }}
                 >
-                  <th style={{ padding: "0.4rem 0.55rem", minWidth: 200 }}>
-                    Item
-                  </th>
-                  <th style={{ padding: "0.4rem 0.55rem", minWidth: 110 }}>
-                    System pieces
-                  </th>
-                  <th style={{ padding: "0.4rem 0.55rem", minWidth: 110 }}>
-                    Physical pieces
-                  </th>
-                  <th style={{ padding: "0.4rem 0.55rem", minWidth: 110 }}>
-                    Difference
-                  </th>
-                  <th style={{ padding: "0.4rem 0.55rem", minWidth: 60 }}>
-                    &nbsp;
-                  </th>
+                  <th style={{ padding: "0.4rem 0.55rem", minWidth: 200 }}>Item</th>
+                  <th style={{ padding: "0.4rem 0.55rem", minWidth: 110 }}>System pieces</th>
+                  <th style={{ padding: "0.4rem 0.55rem", minWidth: 110 }}>Physical pieces</th>
+                  <th style={{ padding: "0.4rem 0.55rem", minWidth: 110 }}>Difference</th>
+                  <th style={{ padding: "0.4rem 0.55rem", minWidth: 60 }}>&nbsp;</th>
                 </tr>
               </thead>
               <tbody>
@@ -996,38 +969,22 @@ function InventoryChecksPage() {
                         fontSize: "0.88rem",
                       }}
                     >
-                      No lines yet. Select an item above and add physical
-                      pieces.
+                      No lines yet. Select an item above and add physical pieces.
                     </td>
                   </tr>
                 ) : (
                   linesDraft.map((ln) => (
-                    <tr
-                      key={ln.item_id}
-                      style={{
-                        borderBottom: "1px solid #f3f4f6",
-                      }}
-                    >
-                      <td style={{ padding: "0.5rem 0.55rem" }}>
-                        {ln.item_name}
-                      </td>
-                      <td style={{ padding: "0.5rem 0.55rem" }}>
-                        {formatPieces(ln.system_pieces)}
-                      </td>
+                    <tr key={ln.item_id} style={{ borderBottom: "1px solid #f3f4f6" }}>
+                      <td style={{ padding: "0.5rem 0.55rem" }}>{ln.item_name}</td>
+                      <td style={{ padding: "0.5rem 0.55rem" }}>{formatPieces(ln.system_pieces)}</td>
                       <td style={{ padding: "0.5rem 0.55rem" }}>
                         <input
                           type="number"
                           step="0.01"
                           min="0"
-                          value={
-                            ln.counted_pieces === 0
-                              ? "0"
-                              : String(ln.counted_pieces)
-                          }
+                          value={ln.counted_pieces === 0 ? "0" : String(ln.counted_pieces)}
                           disabled={isPosted}
-                          onChange={(e) =>
-                            handleLineCountChange(ln.item_id, e.target.value)
-                          }
+                          onChange={(e) => handleLineCountChange(ln.item_id, e.target.value)}
                           style={{
                             width: "100%",
                             padding: "0.35rem 0.5rem",
@@ -1078,35 +1035,14 @@ function InventoryChecksPage() {
               </tbody>
               {linesDraft.length > 0 && (
                 <tfoot>
-                  <tr
-                    style={{
-                      borderTop: "2px solid #e5e7eb",
-                      backgroundColor: "#f9fafb",
-                    }}
-                  >
-                    <td
-                      style={{
-                        padding: "0.5rem 0.55rem",
-                        fontWeight: 600,
-                        fontSize: "0.9rem",
-                      }}
-                    >
+                  <tr style={{ borderTop: "2px solid #e5e7eb", backgroundColor: "#f9fafb" }}>
+                    <td style={{ padding: "0.5rem 0.55rem", fontWeight: 600, fontSize: "0.9rem" }}>
                       Totals ({linesDraft.length} items)
                     </td>
-                    <td
-                      style={{
-                        padding: "0.5rem 0.55rem",
-                        fontWeight: 600,
-                      }}
-                    >
+                    <td style={{ padding: "0.5rem 0.55rem", fontWeight: 600 }}>
                       {formatPieces(totalsDraft.totalSystem)}
                     </td>
-                    <td
-                      style={{
-                        padding: "0.5rem 0.55rem",
-                        fontWeight: 600,
-                      }}
-                    >
+                    <td style={{ padding: "0.5rem 0.55rem", fontWeight: 600 }}>
                       {formatPieces(totalsDraft.totalCounted)}
                     </td>
                     <td
@@ -1151,13 +1087,7 @@ function InventoryChecksPage() {
               gap: "0.5rem",
             }}
           >
-            <h2
-              style={{
-                margin: 0,
-                fontSize: "1.1rem",
-                fontWeight: 700,
-              }}
-            >
+            <h2 style={{ margin: 0, fontSize: "1.1rem", fontWeight: 700 }}>
               Inventory checks history
             </h2>
             <button
@@ -1178,22 +1108,14 @@ function InventoryChecksPage() {
           </div>
 
           {summaryLoading ? (
-            <p style={{ color: "#6b7280", fontSize: "0.9rem" }}>
-              Loading checks...
-            </p>
+            <p style={{ color: "#6b7280", fontSize: "0.9rem" }}>Loading checks...</p>
           ) : summary.length === 0 ? (
             <p style={{ color: "#6b7280", fontSize: "0.9rem" }}>
               No inventory checks recorded yet for this shop.
             </p>
           ) : (
             <div style={{ overflowX: "auto" }}>
-              <table
-                style={{
-                  width: "100%",
-                  borderCollapse: "collapse",
-                  fontSize: "0.9rem",
-                }}
-              >
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
                 <thead>
                   <tr
                     style={{
@@ -1206,12 +1128,8 @@ function InventoryChecksPage() {
                     <th style={{ padding: "0.4rem 0.55rem" }}>Check ID</th>
                     <th style={{ padding: "0.4rem 0.55rem" }}>Status</th>
                     <th style={{ padding: "0.4rem 0.55rem" }}>Items</th>
-                    <th style={{ padding: "0.4rem 0.55rem" }}>
-                      System pieces
-                    </th>
-                    <th style={{ padding: "0.4rem 0.55rem" }}>
-                      Counted pieces
-                    </th>
+                    <th style={{ padding: "0.4rem 0.55rem" }}>System pieces</th>
+                    <th style={{ padding: "0.4rem 0.55rem" }}>Counted pieces</th>
                     <th style={{ padding: "0.4rem 0.55rem" }}>Difference</th>
                     <th style={{ padding: "0.4rem 0.55rem" }}>Created at</th>
                   </tr>
@@ -1224,14 +1142,9 @@ function InventoryChecksPage() {
                         loadCheckDetails(row.id, { switchToEntry: true });
                         setActiveTab("entry");
                       }}
-                      style={{
-                        borderBottom: "1px solid #f3f4f6",
-                        cursor: "pointer",
-                      }}
+                      style={{ borderBottom: "1px solid #f3f4f6", cursor: "pointer" }}
                     >
-                      <td style={{ padding: "0.45rem 0.55rem" }}>
-                        {row.check_date}
-                      </td>
+                      <td style={{ padding: "0.45rem 0.55rem" }}>{row.check_date}</td>
                       <td style={{ padding: "0.45rem 0.55rem" }}>#{row.id}</td>
                       <td style={{ padding: "0.45rem 0.55rem" }}>
                         <span
@@ -1241,18 +1154,14 @@ function InventoryChecksPage() {
                             borderRadius: "999px",
                             fontSize: "0.75rem",
                             fontWeight: 600,
-                            backgroundColor:
-                              row.status === "POSTED" ? "#dcfce7" : "#fef3c7",
-                            color:
-                              row.status === "POSTED" ? "#166534" : "#92400e",
+                            backgroundColor: row.status === "POSTED" ? "#dcfce7" : "#fef3c7",
+                            color: row.status === "POSTED" ? "#166534" : "#92400e",
                           }}
                         >
                           {row.status}
                         </span>
                       </td>
-                      <td style={{ padding: "0.45rem 0.55rem" }}>
-                        {row.total_items}
-                      </td>
+                      <td style={{ padding: "0.45rem 0.55rem" }}>{row.total_items}</td>
                       <td style={{ padding: "0.45rem 0.55rem" }}>
                         {formatPieces(row.total_system_pieces)}
                       </td>
