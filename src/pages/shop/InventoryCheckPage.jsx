@@ -1,7 +1,7 @@
 // FILE: src/pages/shop/InventoryCheckPage.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
-import api from "../../api/client.jsx";
+import api from "../../api/client";
 import { useAuth } from "../../context/AuthContext.jsx";
 
 const STATUS_DRAFT = "DRAFT";
@@ -14,6 +14,16 @@ function formatPieces(value) {
   return num.toLocaleString("en-RW", {
     minimumFractionDigits: 0,
     maximumFractionDigits: 2,
+  });
+}
+
+function formatMoney(value) {
+  if (value === null || value === undefined) return "0";
+  const num = Number(value);
+  if (!Number.isFinite(num)) return "0";
+  return num.toLocaleString("en-RW", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
   });
 }
 
@@ -37,7 +47,7 @@ function formatDate(iso) {
 
 function InventoryCheckPage() {
   const { shopId: shopIdParam } = useParams();
-  const { user } = useAuth(); // ✅ removed unused API_BASE
+  const { user } = useAuth();
 
   // -------------------------------
   // Role guard
@@ -68,21 +78,23 @@ function InventoryCheckPage() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
-  // System stock (ShopItem rows)
+  // All stock rows for this shop (ShopItem rows)
   const [stockRows, setStockRows] = useState([]);
 
   // Current draft in progress
   const [currentCheckId, setCurrentCheckId] = useState(null);
-  const [checkDate, setCheckDate] = useState(() => {
-    return new Date().toISOString().slice(0, 10);
-  });
+  const [checkDate, setCheckDate] = useState(() =>
+    new Date().toISOString().slice(0, 10)
+  );
   const [notes, setNotes] = useState("");
 
-  // counted pieces keyed by item_id
+  // counted pieces keyed by item_id (only items we "add" will appear below)
   const [counts, setCounts] = useState({}); // { [itemId]: "123.45" }
 
-  // search box
+  // selector UI
   const [searchQuery, setSearchQuery] = useState("");
+  const [selectedItemId, setSelectedItemId] = useState("");
+  const [countInput, setCountInput] = useState("");
 
   // History tab
   const [activeTab, setActiveTab] = useState("enter"); // "enter" | "history"
@@ -92,8 +104,16 @@ function InventoryCheckPage() {
   const [selectedHistoryLoading, setSelectedHistoryLoading] = useState(false);
 
   // -------------------------------
-  // Derived: filtered items + diffs
+  // Derived helpers
   // -------------------------------
+  const stockByItemId = useMemo(() => {
+    const map = {};
+    for (const row of stockRows) {
+      map[row.item_id] = row;
+    }
+    return map;
+  }, [stockRows]);
+
   const filteredStockRows = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     if (!q) return stockRows;
@@ -105,7 +125,7 @@ function InventoryCheckPage() {
   }, [stockRows, searchQuery]);
 
   const linesForPayload = useMemo(() => {
-    // Build only lines where user typed something
+    // Build only lines where user typed something (added)
     const result = [];
     for (const row of stockRows) {
       const itemId = row.item_id;
@@ -124,6 +144,63 @@ function InventoryCheckPage() {
   }, [stockRows, counts]);
 
   const hasAnyLine = linesForPayload.length > 0;
+
+  const displayLines = useMemo(() => {
+    return linesForPayload.map((line) => {
+      const stock = stockByItemId[line.item_id] || {};
+      const systemPieces = Number(stock.remaining_pieces || 0);
+      const pricePerPiece = Number(stock.selling_price_per_piece || 0);
+      const counted = Number(line.counted_pieces || 0);
+      const diffPieces = counted - systemPieces;
+      const costDiff = diffPieces * pricePerPiece;
+
+      return {
+        ...line,
+        item_name: stock.item_name || `Item #${line.item_id}`,
+        systemPieces,
+        pricePerPiece,
+        counted,
+        diffPieces,
+        costDiff,
+      };
+    });
+  }, [linesForPayload, stockByItemId]);
+
+  const totalsForCurrent = useMemo(() => {
+    let totalDiffPieces = 0;
+    let totalCostDiff = 0;
+    for (const ln of displayLines) {
+      totalDiffPieces += ln.diffPieces;
+      totalCostDiff += ln.costDiff;
+    }
+    return { totalDiffPieces, totalCostDiff };
+  }, [displayLines]);
+
+  // For history details: approximate cost diff with current price per piece
+  const historyCostView = useMemo(() => {
+    if (!selectedHistoryCheck) {
+      return { lines: [], totalCostDiff: 0 };
+    }
+
+    const lines = selectedHistoryCheck.lines.map((line) => {
+      const stock = stockByItemId[line.item_id] || {};
+      const pricePerPiece = Number(stock.selling_price_per_piece || 0);
+      const diffPieces = Number(line.diff_pieces || 0);
+      const costDiff = diffPieces * pricePerPiece;
+      return {
+        ...line,
+        pricePerPiece,
+        costDiff,
+      };
+    });
+
+    const totalCostDiff = lines.reduce(
+      (acc, ln) => acc + (Number(ln.costDiff) || 0),
+      0
+    );
+
+    return { lines, totalCostDiff };
+  }, [selectedHistoryCheck, stockByItemId]);
 
   // -------------------------------
   // Load stock for shop
@@ -233,6 +310,46 @@ function InventoryCheckPage() {
     }));
   };
 
+  const handleAddItem = () => {
+    if (!selectedItemId) {
+      setError("Select an item first.");
+      setMessage("");
+      return;
+    }
+    if (!countInput || Number(countInput) < 0) {
+      setError("Enter a valid counted quantity (>= 0).");
+      setMessage("");
+      return;
+    }
+
+    const numericId = Number(selectedItemId);
+    const stock = stockByItemId[numericId];
+    if (!stock) {
+      setError("Selected item not found in stock.");
+      setMessage("");
+      return;
+    }
+
+    setError("");
+    setMessage("");
+
+    setCounts((prev) => ({
+      ...prev,
+      [numericId]: countInput,
+    }));
+
+    // keep selection, just clear input
+    setCountInput("");
+  };
+
+  const handleRemoveLine = (itemId) => {
+    setCounts((prev) => {
+      const copy = { ...prev };
+      delete copy[itemId];
+      return copy;
+    });
+  };
+
   // -------------------------------
   // Save Draft
   // -------------------------------
@@ -242,7 +359,7 @@ function InventoryCheckPage() {
       return;
     }
     if (!hasAnyLine) {
-      setError("Enter at least one counted quantity before saving.");
+      setError("Add at least one item with counted pieces before saving.");
       return;
     }
 
@@ -512,7 +629,7 @@ function InventoryCheckPage() {
             boxShadow: "0 10px 30px rgba(15,23,42,0.05)",
           }}
         >
-          {/* Top controls: date + notes + search */}
+          {/* Top controls: date + notes */}
           <div
             style={{
               display: "grid",
@@ -582,13 +699,13 @@ function InventoryCheckPage() {
                   marginBottom: "0.3rem",
                 }}
               >
-                Search item
+                Filter items list
               </label>
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search by item name or SKU..."
+                placeholder="Type name or SKU to narrow dropdown…"
                 style={{
                   width: "100%",
                   padding: "0.5rem 0.7rem",
@@ -597,6 +714,167 @@ function InventoryCheckPage() {
                   fontSize: "0.9rem",
                 }}
               />
+            </div>
+          </div>
+
+          {/* Item selector + count input */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "minmax(0, 2.3fr) minmax(0, 1.3fr) minmax(0, 1.3fr)",
+              gap: "1rem",
+              marginBottom: "1.1rem",
+              alignItems: "flex-end",
+            }}
+          >
+            {/* Dropdown */}
+            <div>
+              <label
+                style={{
+                  display: "block",
+                  fontSize: "0.85rem",
+                  fontWeight: 600,
+                  marginBottom: "0.3rem",
+                }}
+              >
+                Select item (real names)
+              </label>
+              <select
+                value={selectedItemId}
+                onChange={(e) => setSelectedItemId(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: "0.55rem 0.7rem",
+                  borderRadius: "0.7rem",
+                  border: "1px solid #d1d5db",
+                  fontSize: "0.9rem",
+                  backgroundColor: "#ffffff",
+                }}
+              >
+                <option value="">Choose item…</option>
+                {filteredStockRows.map((row) => (
+                  <option key={row.item_id} value={row.item_id}>
+                    {row.item_name} (ID: {row.item_id})
+                  </option>
+                ))}
+              </select>
+              <div
+                style={{
+                  marginTop: "0.25rem",
+                  fontSize: "0.78rem",
+                  color: "#9ca3af",
+                }}
+              >
+                {filteredStockRows.length} items in dropdown after filter.
+              </div>
+            </div>
+
+            {/* System preview */}
+            <div>
+              <label
+                style={{
+                  display: "block",
+                  fontSize: "0.85rem",
+                  fontWeight: 600,
+                  marginBottom: "0.3rem",
+                }}
+              >
+                System pieces & price
+              </label>
+              {selectedItemId ? (
+                (() => {
+                  const stock =
+                    stockByItemId[Number(selectedItemId)] || {};
+                  return (
+                    <div
+                      style={{
+                        borderRadius: "0.7rem",
+                        border: "1px solid #e5e7eb",
+                        padding: "0.5rem 0.7rem",
+                        fontSize: "0.85rem",
+                        backgroundColor: "#f9fafb",
+                      }}
+                    >
+                      <div>
+                        System:{" "}
+                        <b>{formatPieces(stock.remaining_pieces || 0)} pcs</b>
+                      </div>
+                      <div style={{ marginTop: 2 }}>
+                        Price / piece:{" "}
+                        <b>{formatMoney(stock.selling_price_per_piece || 0)} RWF</b>
+                      </div>
+                    </div>
+                  );
+                })()
+              ) : (
+                <div
+                  style={{
+                    borderRadius: "0.7rem",
+                    border: "1px solid #e5e7eb",
+                    padding: "0.5rem 0.7rem",
+                    fontSize: "0.85rem",
+                    backgroundColor: "#f9fafb",
+                    color: "#9ca3af",
+                  }}
+                >
+                  Select an item to see system stock.
+                </div>
+              )}
+            </div>
+
+            {/* Physical count + button */}
+            <div>
+              <label
+                style={{
+                  display: "block",
+                  fontSize: "0.85rem",
+                  fontWeight: 600,
+                  marginBottom: "0.3rem",
+                }}
+              >
+                Physical (counted) pieces
+              </label>
+              <div
+                style={{
+                  display: "flex",
+                  gap: "0.5rem",
+                  alignItems: "center",
+                }}
+              >
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={countInput}
+                  onChange={(e) => setCountInput(e.target.value)}
+                  placeholder="e.g. 120"
+                  style={{
+                    flex: 1,
+                    padding: "0.5rem 0.7rem",
+                    borderRadius: "999px",
+                    border: "1px solid #d1d5db",
+                    fontSize: "0.9rem",
+                    textAlign: "right",
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={handleAddItem}
+                  style={{
+                    padding: "0.55rem 1.2rem",
+                    borderRadius: "999px",
+                    border: "none",
+                    backgroundColor: "#111827",
+                    color: "#ffffff",
+                    fontSize: "0.85rem",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  Add item
+                </button>
+              </div>
             </div>
           </div>
 
@@ -612,16 +890,22 @@ function InventoryCheckPage() {
             <button
               type="button"
               onClick={handleSaveDraft}
-              disabled={savingDraft || loading}
+              disabled={savingDraft || loading || !hasAnyLine}
               style={{
                 padding: "0.55rem 1.4rem",
                 borderRadius: "999px",
                 border: "none",
-                backgroundColor: savingDraft ? "#4b6bfb99" : "#4b6bfb",
+                backgroundColor:
+                  savingDraft || loading || !hasAnyLine
+                    ? "#9ca3af"
+                    : "#4b6bfb",
                 color: "#ffffff",
                 fontSize: "0.9rem",
                 fontWeight: 600,
-                cursor: savingDraft || loading ? "not-allowed" : "pointer",
+                cursor:
+                  savingDraft || loading || !hasAnyLine
+                    ? "not-allowed"
+                    : "pointer",
               }}
             >
               {savingDraft ? "Saving draft..." : "Save draft"}
@@ -648,90 +932,127 @@ function InventoryCheckPage() {
             </button>
           </div>
 
-          {/* Table */}
+          {/* Selected / counted items table */}
           {loading ? (
             <p style={{ color: "#6b7280" }}>Loading current stock...</p>
-          ) : filteredStockRows.length === 0 ? (
+          ) : displayLines.length === 0 ? (
             <p style={{ color: "#6b7280" }}>
-              No stock items found for this shop.
+              No items added yet. Select an item above, enter physical pieces,
+              and click <b>Add item</b>.
             </p>
           ) : (
-            <div style={{ maxHeight: "65vh", overflow: "auto" }}>
-              <table
+            <>
+              <div
                 style={{
-                  width: "100%",
-                  borderCollapse: "collapse",
+                  marginBottom: "0.6rem",
                   fontSize: "0.9rem",
-                  minWidth: "720px",
+                  color: "#4b5563",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  flexWrap: "wrap",
+                  gap: "0.5rem",
                 }}
               >
-                <thead>
-                  <tr
-                    style={{
-                      borderBottom: "1px solid #e5e7eb",
-                      backgroundColor: "#f9fafb",
-                      color: "#6b7280",
-                    }}
-                  >
-                    <th
-                      style={{
-                        padding: "0.55rem 0.6rem",
-                        textAlign: "left",
-                        fontWeight: 600,
-                      }}
-                    >
-                      Item
-                    </th>
-                    <th
-                      style={{
-                        padding: "0.55rem 0.6rem",
-                        textAlign: "right",
-                        fontWeight: 600,
-                      }}
-                    >
-                      System pieces
-                    </th>
-                    <th
-                      style={{
-                        padding: "0.55rem 0.6rem",
-                        textAlign: "right",
-                        fontWeight: 600,
-                      }}
-                    >
-                      Price / piece
-                    </th>
-                    <th
-                      style={{
-                        padding: "0.55rem 0.6rem",
-                        textAlign: "right",
-                        fontWeight: 600,
-                      }}
-                    >
-                      Counted pieces
-                    </th>
-                    <th
-                      style={{
-                        padding: "0.55rem 0.6rem",
-                        textAlign: "right",
-                        fontWeight: 600,
-                      }}
-                    >
-                      Difference
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredStockRows.map((row) => {
-                    const itemId = row.item_id;
-                    const systemPieces = Number(row.remaining_pieces || 0);
-                    const countedRaw = counts[itemId];
-                    const countedVal = Number(countedRaw || 0);
-                    const diff =
-                      countedRaw === undefined ? 0 : countedVal - systemPieces;
+                <span>
+                  <b>{displayLines.length}</b> item
+                  {displayLines.length > 1 ? "s" : ""} in this inventory check.
+                </span>
+                <span>
+                  Total pieces diff:{" "}
+                  <b>{formatDiff(totalsForCurrent.totalDiffPieces)}</b> ·
+                  Approx. total cost diff:{" "}
+                  <b>
+                    {formatMoney(totalsForCurrent.totalCostDiff)} RWF
+                  </b>
+                </span>
+              </div>
 
-                    return (
+              <div style={{ maxHeight: "65vh", overflow: "auto" }}>
+                <table
+                  style={{
+                    width: "100%",
+                    borderCollapse: "collapse",
+                    fontSize: "0.9rem",
+                    minWidth: "820px",
+                  }}
+                >
+                  <thead>
+                    <tr
+                      style={{
+                        borderBottom: "1px solid #e5e7eb",
+                        backgroundColor: "#f9fafb",
+                        color: "#6b7280",
+                      }}
+                    >
+                      <th
+                        style={{
+                          padding: "0.55rem 0.6rem",
+                          textAlign: "left",
+                          fontWeight: 600,
+                        }}
+                      >
+                        Item
+                      </th>
+                      <th
+                        style={{
+                          padding: "0.55rem 0.6rem",
+                          textAlign: "right",
+                          fontWeight: 600,
+                        }}
+                      >
+                        System pieces
+                      </th>
+                      <th
+                        style={{
+                          padding: "0.55rem 0.6rem",
+                          textAlign: "right",
+                          fontWeight: 600,
+                        }}
+                      >
+                        Price / piece
+                      </th>
+                      <th
+                        style={{
+                          padding: "0.55rem 0.6rem",
+                          textAlign: "right",
+                          fontWeight: 600,
+                        }}
+                      >
+                        Counted pieces
+                      </th>
+                      <th
+                        style={{
+                          padding: "0.55rem 0.6rem",
+                          textAlign: "right",
+                          fontWeight: 600,
+                        }}
+                      >
+                        Difference
+                      </th>
+                      <th
+                        style={{
+                          padding: "0.55rem 0.6rem",
+                          textAlign: "right",
+                          fontWeight: 600,
+                        }}
+                      >
+                        Cost diff (approx.)
+                      </th>
+                      <th
+                        style={{
+                          padding: "0.55rem 0.6rem",
+                          textAlign: "center",
+                          fontWeight: 600,
+                        }}
+                      >
+                        Actions
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {displayLines.map((row) => (
                       <tr
-                        key={itemId}
+                        key={row.item_id}
                         style={{ borderBottom: "1px solid #f3f4f6" }}
                       >
                         <td
@@ -741,18 +1062,7 @@ function InventoryCheckPage() {
                             color: "#111827",
                           }}
                         >
-                          <div>{row.item_name}</div>
-                          {row.item_sku && (
-                            <div
-                              style={{
-                                fontSize: "0.75rem",
-                                color: "#6b7280",
-                                marginTop: "2px",
-                              }}
-                            >
-                              SKU: {row.item_sku}
-                            </div>
-                          )}
+                          {row.item_name}
                         </td>
                         <td
                           style={{
@@ -760,7 +1070,7 @@ function InventoryCheckPage() {
                             textAlign: "right",
                           }}
                         >
-                          {formatPieces(systemPieces)}
+                          {formatPieces(row.systemPieces)}
                         </td>
                         <td
                           style={{
@@ -768,7 +1078,7 @@ function InventoryCheckPage() {
                             textAlign: "right",
                           }}
                         >
-                          {formatPieces(row.selling_price_per_piece)} RWF
+                          {formatMoney(row.pricePerPiece)} RWF
                         </td>
                         <td
                           style={{
@@ -780,9 +1090,9 @@ function InventoryCheckPage() {
                             type="number"
                             step="0.01"
                             min="0"
-                            value={counts[itemId] ?? ""}
+                            value={counts[row.item_id] ?? row.counted}
                             onChange={(e) =>
-                              handleCountChange(itemId, e.target.value)
+                              handleCountChange(row.item_id, e.target.value)
                             }
                             style={{
                               width: "110px",
@@ -800,21 +1110,56 @@ function InventoryCheckPage() {
                             textAlign: "right",
                             fontWeight: 600,
                             color:
-                              diff === 0
+                              row.diffPieces === 0
                                 ? "#6b7280"
-                                : diff > 0
+                                : row.diffPieces > 0
                                 ? "#16a34a"
                                 : "#b91c1c",
                           }}
                         >
-                          {formatDiff(diff)}
+                          {formatDiff(row.diffPieces)}
+                        </td>
+                        <td
+                          style={{
+                            padding: "0.5rem 0.6rem",
+                            textAlign: "right",
+                            fontWeight: 600,
+                            color:
+                              row.costDiff === 0
+                                ? "#6b7280"
+                                : row.costDiff > 0
+                                ? "#16a34a"
+                                : "#b91c1c",
+                          }}
+                        >
+                          {formatMoney(row.costDiff)} RWF
+                        </td>
+                        <td
+                          style={{
+                            padding: "0.5rem 0.6rem",
+                            textAlign: "center",
+                          }}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveLine(row.item_id)}
+                            style={{
+                              border: "none",
+                              background: "transparent",
+                              color: "#b91c1c",
+                              fontSize: "0.85rem",
+                              cursor: "pointer",
+                            }}
+                          >
+                            Remove
+                          </button>
                         </td>
                       </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </div>
       )}
@@ -1047,7 +1392,8 @@ function InventoryCheckPage() {
                   }}
                 >
                   <div>
-                    <b>Date:</b> {formatDate(selectedHistoryCheck.check_date)}
+                    <b>Date:</b>{" "}
+                    {formatDate(selectedHistoryCheck.check_date)}
                   </div>
                   <div>
                     <b>Status:</b> {selectedHistoryCheck.status}
@@ -1063,6 +1409,20 @@ function InventoryCheckPage() {
                       <b>Notes:</b> {selectedHistoryCheck.notes}
                     </div>
                   )}
+                  <div style={{ marginTop: "0.4rem" }}>
+                    <b>Total cost difference (approx.):</b>{" "}
+                    {formatMoney(historyCostView.totalCostDiff)} RWF
+                  </div>
+                  <div
+                    style={{
+                      fontSize: "0.75rem",
+                      color: "#9ca3af",
+                      marginTop: "0.1rem",
+                    }}
+                  >
+                    Based on current price/piece; historical cost may differ
+                    slightly.
+                  </div>
                 </div>
 
                 <div style={{ maxHeight: "55vh", overflow: "auto" }}>
@@ -1071,7 +1431,7 @@ function InventoryCheckPage() {
                       width: "100%",
                       borderCollapse: "collapse",
                       fontSize: "0.86rem",
-                      minWidth: "520px",
+                      minWidth: "620px",
                     }}
                   >
                     <thead>
@@ -1114,10 +1474,26 @@ function InventoryCheckPage() {
                         >
                           Diff
                         </th>
+                        <th
+                          style={{
+                            padding: "0.45rem 0.55rem",
+                            textAlign: "right",
+                          }}
+                        >
+                          Price / piece
+                        </th>
+                        <th
+                          style={{
+                            padding: "0.45rem 0.55rem",
+                            textAlign: "right",
+                          }}
+                        >
+                          Cost diff (approx.)
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
-                      {selectedHistoryCheck.lines.map((line) => (
+                      {historyCostView.lines.map((line) => (
                         <tr
                           key={line.id}
                           style={{ borderBottom: "1px solid #f3f4f6" }}
@@ -1161,6 +1537,29 @@ function InventoryCheckPage() {
                             }}
                           >
                             {formatDiff(line.diff_pieces)}
+                          </td>
+                          <td
+                            style={{
+                              padding: "0.45rem 0.55rem",
+                              textAlign: "right",
+                            }}
+                          >
+                            {formatMoney(line.pricePerPiece || 0)} RWF
+                          </td>
+                          <td
+                            style={{
+                              padding: "0.45rem 0.55rem",
+                              textAlign: "right",
+                              fontWeight: 600,
+                              color:
+                                Number(line.costDiff || 0) === 0
+                                  ? "#6b7280"
+                                  : Number(line.costDiff || 0) > 0
+                                  ? "#16a34a"
+                                  : "#b91c1c",
+                            }}
+                          >
+                            {formatMoney(line.costDiff || 0)} RWF
                           </td>
                         </tr>
                       ))}
