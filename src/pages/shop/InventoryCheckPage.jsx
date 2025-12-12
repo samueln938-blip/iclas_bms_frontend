@@ -6,8 +6,11 @@ import React, {
   useState,
 } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import api from "../../api/client";
 import { useAuth } from "../../context/AuthContext.jsx";
+
+// ✅ Same API base style as Purchases page
+import { API_BASE as CLIENT_API_BASE } from "../../api/client.jsx";
+const API_BASE = CLIENT_API_BASE;
 
 const STATUS_DRAFT = "DRAFT";
 const STATUS_POSTED = "POSTED";
@@ -54,7 +57,9 @@ function formatDate(iso) {
 }
 
 /**
- * ✅ Mobile-friendly searchable dropdown (same behaviour as Purchases)
+ * ✅ Mobile-friendly searchable dropdown
+ *    - Opens only when field is focused/typed
+ *    - Width is exactly the pad width (does not extend outside)
  */
 function ItemComboBox({ items, valueId, onChangeId }) {
   const wrapRef = useRef(null);
@@ -226,7 +231,20 @@ function ItemComboBox({ items, valueId, onChangeId }) {
 function InventoryCheckPage() {
   const { shopId: shopIdParam } = useParams();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, token } = useAuth();
+
+  // ✅ Same auth headers pattern as Purchases
+  const authHeaders = useMemo(() => {
+    const h = { "Content-Type": "application/json" };
+    if (token) h.Authorization = `Bearer ${token}`;
+    return h;
+  }, [token]);
+
+  const authHeadersNoJson = useMemo(() => {
+    const h = {};
+    if (token) h.Authorization = `Bearer ${token}`;
+    return h;
+  }, [token]);
 
   // Roles
   const role = String(user?.role || "").toLowerCase();
@@ -263,7 +281,7 @@ function InventoryCheckPage() {
   const padRef = useRef(null);
 
   // Lines in current draft (local view)
-  const [lines, setLines] = useState([]); // {id,itemId,itemName,systemPieces,countedPieces}
+  const [lines, setLines] = useState([]); // {id,itemId,itemName,systemPieces,countedPieces,diffPieces}
 
   // History tab
   const [activeTab, setActiveTab] = useState("enter"); // "enter" | "history"
@@ -373,7 +391,7 @@ function InventoryCheckPage() {
 
   const padButtonText = editingLineId ? "Update item" : "+ Add to list";
 
-  // --------- Load shop + stock ---------
+  // --------- Load shop + stock (using same fetch style as Purchases) ---------
 
   useEffect(() => {
     if (!canUseInventoryCheck) return;
@@ -385,22 +403,37 @@ function InventoryCheckPage() {
       setMessage("");
 
       try {
-        // ✅ Use SAME stock endpoint as Purchases so real names come through
-        const [shopRes, stockRes] = await Promise.all([
-          api.get(`/shops/${shopId}`),
-          api.get("/stock/", { params: { shop_id: shopId } }),
-        ]);
+        const shopRes = await fetch(
+          `${API_BASE}/shops/${shopId}`,
+          {
+            headers: authHeadersNoJson,
+          }
+        );
+        if (!shopRes.ok) {
+          throw new Error("Failed to load shop.");
+        }
+        const shopData = await shopRes.json();
 
-        const shopData = shopRes.data;
-        const stockData = stockRes.data || [];
+        const stockRes = await fetch(
+          `${API_BASE}/stock/?shop_id=${shopId}`,
+          {
+            headers: authHeadersNoJson,
+          }
+        );
+        if (!stockRes.ok) {
+          throw new Error("Failed to load stock.");
+        }
+        const stockData = await stockRes.json();
 
         setShop(shopData);
         setStockRows(Array.isArray(stockData) ? stockData : []);
       } catch (err) {
-        console.error("Error loading shop/stock for inventory check:", err);
+        console.error(
+          "Error loading shop/stock for inventory check:",
+          err
+        );
         setError(
-          err?.response?.data?.detail ||
-            err?.message ||
+          err?.message ||
             "Failed to load shop and stock for inventory check."
         );
       } finally {
@@ -409,9 +442,9 @@ function InventoryCheckPage() {
     };
 
     load();
-  }, [shopId, canUseInventoryCheck]);
+  }, [shopId, canUseInventoryCheck, authHeadersNoJson]);
 
-  // --------- History ---------
+  // --------- History (also using fetch) ---------
 
   const loadHistory = async () => {
     if (!canUseInventoryCheck) return;
@@ -421,19 +454,19 @@ function InventoryCheckPage() {
     setError("");
     setMessage("");
     try {
-      const res = await api.get("/inventory-checks/summary", {
-        params: {
-          shop_id: shopId,
-          skip: 0,
-          limit: 100,
-        },
+      const url = `${API_BASE}/inventory-checks/summary?shop_id=${shopId}&skip=0&limit=100`;
+      const res = await fetch(url, {
+        headers: authHeadersNoJson,
       });
-      setHistoryRows(res.data || []);
+      if (!res.ok) {
+        throw new Error("Failed to load inventory checks history.");
+      }
+      const data = await res.json();
+      setHistoryRows(Array.isArray(data) ? data : []);
     } catch (err) {
       console.error("Error loading inventory checks history:", err);
       setError(
-        err?.response?.data?.detail ||
-          "Failed to load inventory checks history."
+        err?.message || "Failed to load inventory checks history."
       );
     } finally {
       setHistoryLoading(false);
@@ -454,12 +487,21 @@ function InventoryCheckPage() {
     setMessage("");
 
     try {
-      const res = await api.get(`/inventory-checks/${row.id}`);
-      setSelectedHistoryCheck(res.data || null);
+      const res = await fetch(
+        `${API_BASE}/inventory-checks/${row.id}`,
+        {
+          headers: authHeadersNoJson,
+        }
+      );
+      if (!res.ok) {
+        throw new Error("Failed to load inventory check details.");
+      }
+      const data = await res.json();
+      setSelectedHistoryCheck(data || null);
     } catch (err) {
       console.error("Error loading inventory check details:", err);
       setError(
-        err?.response?.data?.detail ||
+        err?.message ||
           "Failed to load inventory check details."
       );
     } finally {
@@ -584,7 +626,7 @@ function InventoryCheckPage() {
 
   const hasAnyLine = lines.length > 0;
 
-  // --------- Save draft ---------
+  // --------- Save draft (fetch POST) ---------
 
   const handleSaveDraft = async () => {
     if (!shopId) {
@@ -614,8 +656,25 @@ function InventoryCheckPage() {
         })),
       };
 
-      const res = await api.post("/inventory-checks/draft", payload);
-      const data = res.data;
+      const res = await fetch(
+        `${API_BASE}/inventory-checks/draft`,
+        {
+          method: "POST",
+          headers: authHeaders,
+          body: JSON.stringify(payload),
+        }
+      );
+      if (!res.ok) {
+        let errText = "Failed to save inventory check draft.";
+        try {
+          const errData = await res.json();
+          if (errData?.detail) errText = errData.detail;
+        } catch {
+          /* ignore */
+        }
+        throw new Error(errText);
+      }
+      const data = await res.json();
 
       setCurrentCheckId(data.id);
       setCheckDate(formatDate(data.check_date));
@@ -641,9 +700,7 @@ function InventoryCheckPage() {
     } catch (err) {
       console.error("Error saving inventory check draft:", err);
       setError(
-        err?.response?.data?.detail ||
-          err?.message ||
-          "Failed to save inventory check draft."
+        err?.message || "Failed to save inventory check draft."
       );
     } finally {
       setSavingDraft(false);
@@ -675,15 +732,29 @@ function InventoryCheckPage() {
     setMessage("");
 
     try {
-      const res = await api.post(
-        `/inventory-checks/${currentCheckId}/post`
+      const res = await fetch(
+        `${API_BASE}/inventory-checks/${currentCheckId}/post`,
+        {
+          method: "POST",
+          headers: authHeaders,
+        }
       );
-      const data = res.data || null;
+      if (!res.ok) {
+        let errText = "Failed to post inventory check.";
+        try {
+          const errData = await res.json();
+          if (errData?.detail) errText = errData.detail;
+        } catch {
+          /* ignore */
+        }
+        throw new Error(errText);
+      }
+      const data = await res.json().catch(() => null);
 
       setMessage("Inventory check posted and stock updated.");
       setCurrentCheckId(data?.id || currentCheckId);
 
-      // After posting, reload history + stock
+      // After posting, reload history + stock (both via fetch)
       await Promise.all([
         (async () => {
           try {
@@ -694,22 +765,25 @@ function InventoryCheckPage() {
         })(),
         (async () => {
           try {
-            const stockRes = await api.get("/stock/", {
-              params: { shop_id: shopId },
-            });
-            const rows = stockRes.data || [];
+            const stockRes = await fetch(
+              `${API_BASE}/stock/?shop_id=${shopId}`,
+              { headers: authHeadersNoJson }
+            );
+            if (!stockRes.ok) return;
+            const rows = await stockRes.json();
             setStockRows(Array.isArray(rows) ? rows : []);
           } catch (e) {
-            console.error("Post succeeded but reload stock failed:", e);
+            console.error(
+              "Post succeeded but reload stock failed:",
+              e
+            );
           }
         })(),
       ]);
     } catch (err) {
       console.error("Error posting inventory check:", err);
       setError(
-        err?.response?.data?.detail ||
-          err?.message ||
-          "Failed to post inventory check."
+        err?.message || "Failed to post inventory check."
       );
     } finally {
       setPosting(false);
@@ -875,7 +949,7 @@ function InventoryCheckPage() {
           </div>
         </div>
 
-        {/* Date line – no notes at top */}
+        {/* Date line – no extra notes at top */}
         <div
           style={{
             display: "flex",
