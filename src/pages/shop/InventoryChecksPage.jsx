@@ -1,421 +1,247 @@
-// FILE: src/pages/shop/InventoryChecksPage.jsx
+// FILE: src/pages/shop/InventoryCheckPage.jsx
 import React, { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import api from "../../api/client";
 import { useAuth } from "../../context/AuthContext.jsx";
 
-function toNumberSafe(value) {
-  if (value === null || value === undefined || value === "") return 0;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : 0;
-}
+const STATUS_DRAFT = "DRAFT";
+const STATUS_POSTED = "POSTED";
 
 function formatPieces(value) {
-  const n = toNumberSafe(value);
-  return n.toLocaleString("en-RW", {
+  if (value === null || value === undefined) return "0";
+  const num = Number(value);
+  if (!Number.isFinite(num)) return "0";
+  return num.toLocaleString("en-RW", {
     minimumFractionDigits: 0,
     maximumFractionDigits: 2,
   });
 }
 
-function todayInputDate() {
-  return new Date().toISOString().slice(0, 10);
+function formatDiff(value) {
+  const num = Number(value || 0);
+  const formatted = formatPieces(num);
+  if (num > 0) return `+${formatted}`;
+  return formatted;
 }
 
-/**
- * Robustly extract an array from many possible backend shapes:
- * - []
- * - { items: [] }
- * - { results: [] }
- * - { data: [] }
- */
-function extractArray(payload) {
-  if (Array.isArray(payload)) return payload;
-  if (Array.isArray(payload?.items)) return payload.items;
-  if (Array.isArray(payload?.results)) return payload.results;
-  if (Array.isArray(payload?.data)) return payload.data;
-  return [];
+function formatDate(iso) {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return String(iso);
+    return d.toISOString().slice(0, 10);
+  } catch {
+    return String(iso);
+  }
 }
 
-/**
- * Normalize stock rows so dropdown never shows blank due to field name mismatch.
- * Supports multiple possible field names coming from backend/older versions.
- */
-function normalizeStockRow(row) {
-  const itemId = row?.item_id ?? row?.itemId ?? row?.item?.id ?? row?.id ?? null;
+function InventoryCheckPage() {
+  const { shopId: shopIdParam } = useParams();
+  const { user, API_BASE } = useAuth();
 
-  const itemName =
-    row?.item_name ??
-    row?.itemName ??
-    row?.name ??
-    row?.item?.name ??
-    row?.item?.item_name ??
-    "";
+  // -------------------------------
+  // Role guard
+  // -------------------------------
+  const role = String(user?.role || "").toLowerCase();
+  const isOwner = role === "owner" || role === "admin";
+  const isManager = role === "manager";
+  const canUseInventoryCheck = isOwner || isManager;
 
-  const remainingPieces =
-    row?.remaining_pieces ??
-    row?.remainingPieces ??
-    row?.remaining ??
-    row?.pieces ??
-    row?.current_pieces ??
-    0;
+  // -------------------------------
+  // Shop
+  // -------------------------------
+  const initialShopId = useMemo(() => {
+    if (shopIdParam) return Number(shopIdParam);
+    if (user?.shop_id) return Number(user.shop_id);
+    return null;
+  }, [shopIdParam, user]);
 
-  return {
-    ...row,
-    item_id: itemId,
-    item_name: itemName,
-    remaining_pieces: remainingPieces,
-  };
-}
+  const [shopId] = useState(initialShopId);
 
-function InventoryChecksPage() {
-  const { shopId } = useParams();
-  const navigate = useNavigate(); // (kept even if you add a Back button later)
-  const auth = useAuth();
-
-  const [shop, setShop] = useState(null);
-  const [loadingPage, setLoadingPage] = useState(true);
-  const [pageError, setPageError] = useState("");
-
-  const [activeTab, setActiveTab] = useState("entry"); // "entry" | "history"
-
-  // Stock items for this shop (used for system remaining_pieces + item name)
-  const [stockItems, setStockItems] = useState([]);
-  const [stockLoading, setStockLoading] = useState(false);
-  const [stockHint, setStockHint] = useState("");
-
-  // Summary list
-  const [summary, setSummary] = useState([]);
-  const [summaryLoading, setSummaryLoading] = useState(false);
-
-  // Current check details (from backend)
-  const [currentCheck, setCurrentCheck] = useState(null);
-
-  // Editable header fields
-  const [checkDate, setCheckDate] = useState(todayInputDate());
-  const [notes, setNotes] = useState("");
-
-  // Editable lines in the form
-  const [linesDraft, setLinesDraft] = useState([]);
-
-  // New line entry inputs
-  const [selectedItemId, setSelectedItemId] = useState("");
-  const [entryCountedPieces, setEntryCountedPieces] = useState("");
-
-  // Flags + alerts
+  // -------------------------------
+  // State
+  // -------------------------------
+  const [loading, setLoading] = useState(false);
   const [savingDraft, setSavingDraft] = useState(false);
   const [posting, setPosting] = useState(false);
+
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
-  const [isMobile, setIsMobile] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return window.innerWidth <= 760;
+  // System stock (ShopItem rows)
+  const [stockRows, setStockRows] = useState([]);
+
+  // Current draft in progress
+  const [currentCheckId, setCurrentCheckId] = useState(null);
+  const [checkDate, setCheckDate] = useState(() => {
+    return new Date().toISOString().slice(0, 10);
   });
+  const [notes, setNotes] = useState("");
 
-  useEffect(() => {
-    const onResize = () => setIsMobile(window.innerWidth <= 760);
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
+  // counted pieces keyed by item_id
+  const [counts, setCounts] = useState({}); // { [itemId]: "123.45" }
 
-  const isDraft = currentCheck?.status === "DRAFT";
-  const isPosted = currentCheck?.status === "POSTED";
+  // search box
+  const [searchQuery, setSearchQuery] = useState("");
 
-  // ------------------------------------------
-  // Auth headers (safe fallback)
-  // ------------------------------------------
-  const authHeaders = useMemo(() => {
-    const token =
-      auth?.token ||
-      auth?.accessToken ||
-      auth?.authToken ||
-      localStorage.getItem("token") ||
-      localStorage.getItem("access_token") ||
-      localStorage.getItem("accessToken") ||
-      "";
+  // History tab
+  const [activeTab, setActiveTab] = useState("enter"); // "enter" | "history"
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyRows, setHistoryRows] = useState([]);
+  const [selectedHistoryCheck, setSelectedHistoryCheck] = useState(null);
+  const [selectedHistoryLoading, setSelectedHistoryLoading] = useState(false);
 
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  }, [auth]);
+  // -------------------------------
+  // Derived: filtered items + diffs
+  // -------------------------------
+  const filteredStockRows = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return stockRows;
+    return stockRows.filter((row) => {
+      const name = String(row.item_name || "").toLowerCase();
+      const sku = String(row.item_sku || "").toLowerCase();
+      return name.includes(q) || sku.includes(q);
+    });
+  }, [stockRows, searchQuery]);
 
-  // ------------------------------------------
-  // Load Stock items (match Stock page endpoint)
-  // ------------------------------------------
-  const loadStockItemsForShop = async (shopIdToLoad) => {
-    setStockLoading(true);
-    setStockHint("");
+  const linesForPayload = useMemo(() => {
+    // Build only lines where user typed something
+    const result = [];
+    for (const row of stockRows) {
+      const itemId = row.item_id;
+      const inputRaw = counts[itemId];
+      if (inputRaw === undefined || inputRaw === null || inputRaw === "") continue;
 
-    try {
-      // ✅ Primary: SAME endpoint as ShopStockPage.jsx
-      const bust = Date.now();
-      let stockRes;
-      try {
-        stockRes = await api.get("/stock/", {
-          params: { shop_id: shopIdToLoad, _: bust },
-          headers: authHeaders,
-        });
-      } catch (primaryErr) {
-        // ✅ Fallback: older endpoint if it exists in some versions
-        stockRes = await api.get("/stock/summary", {
-          params: { shop_id: shopIdToLoad, _: bust },
-          headers: authHeaders,
-        });
-      }
+      const counted = Number(inputRaw);
+      if (!Number.isFinite(counted) || counted < 0) continue;
 
-      let items = extractArray(stockRes.data).map(normalizeStockRow);
-
-      // Keep only valid item_id rows (prevents blank dropdown)
-      items = items.filter(
-        (r) => r && Number.isFinite(Number(r.item_id)) && Number(r.item_id) > 0
-      );
-
-      // sort alphabetically by item name for nicer dropdown
-      items = [...items].sort((a, b) =>
-        String(a.item_name || "")
-          .toLowerCase()
-          .localeCompare(String(b.item_name || "").toLowerCase())
-      );
-
-      setStockItems(items);
-
-      if (items.length === 0) {
-        // Helpful diagnostics: show response keys if any
-        const raw = extractArray(stockRes.data);
-        const sample = raw?.[0] || null;
-        const keys = sample ? Object.keys(sample).slice(0, 12).join(", ") : "none";
-        setStockHint(
-          `No stock items returned for this shop. If Stock page shows items, the backend may be filtering differently.\n` +
-            `Sample keys from response: ${keys}`
-        );
-      }
-    } catch (err) {
-      console.error("Error loading stock items for inventory checks", err);
-      setStockItems([]);
-      setStockHint(
-        err?.response?.data?.detail ||
-          "Failed to load stock items for this shop. Check if /stock/ is reachable and your token is valid."
-      );
-    } finally {
-      setStockLoading(false);
+      result.push({
+        item_id: itemId,
+        counted_pieces: counted,
+      });
     }
-  };
+    return result;
+  }, [stockRows, counts]);
 
-  // ------------------------------------------
-  // Load shop + stock + summary
-  // ------------------------------------------
+  const hasAnyLine = linesForPayload.length > 0;
+
+  // -------------------------------
+  // Load stock for shop
+  // -------------------------------
   useEffect(() => {
-    let cancelled = false;
+    if (!canUseInventoryCheck) return;
+    if (!shopId) return;
 
-    const loadAll = async () => {
-      setLoadingPage(true);
-      setPageError("");
-      setMessage("");
+    const load = async () => {
+      setLoading(true);
       setError("");
-      setStockHint("");
-
+      setMessage("");
       try {
-        // 1) Load shop basic info
-        const shopRes = await api.get(`/shops/${shopId}`, {
-          headers: authHeaders,
-        });
-        if (cancelled) return;
-        setShop(shopRes.data);
+        const res = await api.get(`/shops/${shopId}/stock`);
+        const rows = res.data || [];
 
-        // 2) Load stock items (must match Stock page)
-        await loadStockItemsForShop(shopId);
-        if (cancelled) return;
+        // Enrich with item_name/item_sku if not present (defensive)
+        const normalized = rows.map((row) => ({
+          ...row,
+          item_name: row.item_name || row.item?.name || row.name || `Item #${row.item_id}`,
+          item_sku: row.item_sku || row.item?.sku || row.sku || "",
+        }));
 
-        // 3) Load summary and try to pick latest DRAFT
-        await loadSummaryAndMaybeDraft(shopId);
+        setStockRows(normalized);
       } catch (err) {
-        console.error("Error loading inventory check page", err);
-        if (cancelled) return;
-        setPageError(
-          err?.response?.data?.detail || "Failed to load inventory check page."
+        console.error("Error loading stock for inventory check:", err);
+        setError(
+          err?.response?.data?.detail ||
+            "Failed to load current stock for this shop."
         );
       } finally {
-        if (cancelled) return;
-        setLoadingPage(false);
+        setLoading(false);
       }
     };
 
-    if (shopId) loadAll();
+    load();
+  }, [shopId, canUseInventoryCheck]);
 
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shopId, authHeaders]);
+  // -------------------------------
+  // Load history summary
+  // -------------------------------
+  const loadHistory = async () => {
+    if (!canUseInventoryCheck) return;
+    if (!shopId) return;
 
-  const loadSummaryAndMaybeDraft = async (shopIdToLoad) => {
-    setSummaryLoading(true);
-    setSummary([]);
-    try {
-      const res = await api.get("/inventory-checks/summary", {
-        params: { shop_id: shopIdToLoad, skip: 0, limit: 100 },
-        headers: authHeaders,
-      });
-      const list = extractArray(res.data);
-      setSummary(list);
-
-      // Find latest DRAFT, if any
-      const draft = list.find((row) => row.status === "DRAFT");
-      if (draft) {
-        await loadCheckDetails(draft.id, { switchToEntry: true });
-      } else {
-        resetEntryFormToNew();
-      }
-    } catch (err) {
-      console.error("Error loading inventory checks summary", err);
-      setError(
-        err?.response?.data?.detail ||
-          "Failed to load inventory checks summary."
-      );
-    } finally {
-      setSummaryLoading(false);
-    }
-  };
-
-  const loadCheckDetails = async (checkId, opts = {}) => {
-    const { switchToEntry = false } = opts;
+    setHistoryLoading(true);
     setError("");
     setMessage("");
     try {
-      const res = await api.get(`/inventory-checks/${checkId}`, {
-        headers: authHeaders,
+      const res = await api.get("/inventory-checks/summary", {
+        params: {
+          shop_id: shopId,
+          skip: 0,
+          limit: 100,
+        },
       });
-      const check = res.data;
-      setCurrentCheck(check);
-
-      setCheckDate(check.check_date ? String(check.check_date) : todayInputDate());
-      setNotes(check.notes || "");
-
-      const newLines =
-        (check.lines || []).map((ln) => ({
-          id: ln.id,
-          item_id: ln.item_id,
-          item_name: ln.item_name,
-          system_pieces: toNumberSafe(ln.system_pieces),
-          counted_pieces: toNumberSafe(ln.counted_pieces),
-          diff_pieces: toNumberSafe(ln.diff_pieces),
-        })) || [];
-
-      setLinesDraft(newLines);
-
-      if (switchToEntry) setActiveTab("entry");
+      setHistoryRows(res.data || []);
     } catch (err) {
-      console.error("Error loading inventory check details", err);
+      console.error("Error loading inventory checks history:", err);
+      setError(
+        err?.response?.data?.detail ||
+          "Failed to load inventory checks history."
+      );
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === "history") {
+      loadHistory();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, shopId, canUseInventoryCheck]);
+
+  // -------------------------------
+  // Load single check for details
+  // -------------------------------
+  const handleHistoryRowClick = async (row) => {
+    setSelectedHistoryCheck(null);
+    setSelectedHistoryLoading(true);
+    setError("");
+    setMessage("");
+
+    try {
+      const res = await api.get(`/inventory-checks/${row.id}`);
+      setSelectedHistoryCheck(res.data || null);
+    } catch (err) {
+      console.error("Error loading inventory check details:", err);
       setError(
         err?.response?.data?.detail ||
           "Failed to load inventory check details."
       );
+    } finally {
+      setSelectedHistoryLoading(false);
     }
   };
 
-  const resetEntryFormToNew = () => {
-    setCurrentCheck(null);
-    setCheckDate(todayInputDate());
-    setNotes("");
-    setLinesDraft([]);
-    setSelectedItemId("");
-    setEntryCountedPieces("");
+  // -------------------------------
+  // Input handlers
+  // -------------------------------
+  const handleCountChange = (itemId, value) => {
+    setCounts((prev) => ({
+      ...prev,
+      [itemId]: value,
+    }));
   };
 
-  // ------------------------------------------
-  // Helpers for stock lookups
-  // ------------------------------------------
-  const shopName = shop?.name || `Shop ${shopId}`;
-
-  const stockByItemId = useMemo(() => {
-    const map = {};
-    (stockItems || []).forEach((row) => {
-      const id = Number(row?.item_id);
-      if (!Number.isFinite(id) || id <= 0) return;
-      map[id] = row;
-    });
-    return map;
-  }, [stockItems]);
-
-  // ------------------------------------------
-  // Entry tab: add/update lines
-  // ------------------------------------------
-  const handleAddOrUpdateLine = () => {
-    if (!selectedItemId) {
-      setError("Please select an item first.");
-      return;
-    }
-    const itemId = Number(selectedItemId);
-    if (!Number.isFinite(itemId) || itemId <= 0) {
-      setError("Invalid item selected.");
-      return;
-    }
-
-    const counted = toNumberSafe(entryCountedPieces);
-    if (counted < 0) {
-      setError("Counted pieces cannot be negative.");
-      return;
-    }
-
-    const stockRow = stockByItemId[itemId];
-    if (!stockRow) {
-      setError(
-        "No system stock found for this item in this shop. Please create stock via Purchases first."
-      );
-      return;
-    }
-
-    const systemPieces = toNumberSafe(stockRow.remaining_pieces);
-    const diffPieces = counted - systemPieces;
-    const itemName = stockRow.item_name || `Item #${itemId}`;
-
-    setLinesDraft((prev) => {
-      const existingIndex = prev.findIndex((ln) => ln.item_id === itemId);
-      const newLine = {
-        id: prev[existingIndex]?.id || null,
-        item_id: itemId,
-        item_name: itemName,
-        system_pieces: systemPieces,
-        counted_pieces: counted,
-        diff_pieces: diffPieces,
-      };
-
-      if (existingIndex >= 0) {
-        const copy = [...prev];
-        copy[existingIndex] = newLine;
-        return copy;
-      }
-      return [...prev, newLine];
-    });
-
-    setError("");
-    setMessage("");
-    setSelectedItemId("");
-    setEntryCountedPieces("");
-  };
-
-  const handleLineCountChange = (itemId, newCountedStr) => {
-    const counted = toNumberSafe(newCountedStr);
-    setLinesDraft((prev) =>
-      prev.map((ln) => {
-        if (ln.item_id !== itemId) return ln;
-        const systemPieces = toNumberSafe(ln.system_pieces);
-        const diffPieces = counted - systemPieces;
-        return { ...ln, counted_pieces: counted, diff_pieces: diffPieces };
-      })
-    );
-  };
-
-  const handleRemoveLine = (itemId) => {
-    setLinesDraft((prev) => prev.filter((ln) => ln.item_id !== itemId));
-  };
-
-  // ------------------------------------------
-  // Save draft
-  // ------------------------------------------
+  // -------------------------------
+  // Save Draft
+  // -------------------------------
   const handleSaveDraft = async () => {
-    if (!shopId) return;
-    if (linesDraft.length === 0) {
-      setError("Add at least one item to the inventory check.");
+    if (!shopId) {
+      setError("No shop selected.");
+      return;
+    }
+    if (!hasAnyLine) {
+      setError("Enter at least one counted quantity before saving.");
       return;
     }
 
@@ -425,50 +251,44 @@ function InventoryChecksPage() {
 
     try {
       const payload = {
-        id: isDraft ? currentCheck?.id : null,
-        shop_id: Number(shopId),
-        check_date: checkDate || todayInputDate(),
+        id: currentCheckId, // null = create; number = update
+        shop_id: shopId,
+        check_date: checkDate,
         notes: notes || null,
-        lines: linesDraft.map((ln) => ({
-          item_id: ln.item_id,
-          counted_pieces: ln.counted_pieces,
-        })),
+        lines: linesForPayload,
       };
 
-      const res = await api.post("/inventory-checks/draft", payload, {
-        headers: authHeaders,
-      });
-      const saved = res.data;
-      setCurrentCheck(saved);
+      const res = await api.post("/inventory-checks/draft", payload);
+      const data = res.data;
 
-      await loadCheckDetails(saved.id);
-      await loadSummaryAndMaybeDraft(shopId);
-
-      setMessage("Inventory check draft saved.");
+      setCurrentCheckId(data.id);
+      setMessage(
+        data.status === STATUS_POSTED
+          ? "Inventory check has already been posted."
+          : "Inventory check draft saved."
+      );
     } catch (err) {
-      console.error("Error saving inventory check draft", err);
+      console.error("Error saving inventory check draft:", err);
       setError(
-        err?.response?.data?.detail ||
-          "Failed to save inventory check draft."
+        err?.response?.data?.detail || "Failed to save inventory check draft."
       );
     } finally {
       setSavingDraft(false);
     }
   };
 
-  // ------------------------------------------
-  // Post (apply) inventory check
-  // ------------------------------------------
+  // -------------------------------
+  // Post (apply) check
+  // -------------------------------
   const handlePostCheck = async () => {
-    if (!currentCheck || !isDraft) return;
-    if (linesDraft.length === 0) {
-      setError("Cannot post an inventory check with no lines.");
+    if (!currentCheckId) {
+      setError("Save a draft first before posting.");
       return;
     }
 
     const confirmed = window.confirm(
       "Are you sure you want to POST this inventory check?\n\n" +
-        "This will adjust the stock (remaining pieces) for all listed items."
+        "This will adjust system stock to match your counted quantities."
     );
     if (!confirmed) return;
 
@@ -477,726 +297,882 @@ function InventoryChecksPage() {
     setMessage("");
 
     try {
-      const res = await api.post(
-        `/inventory-checks/${currentCheck.id}/post`,
-        null,
-        { headers: authHeaders }
-      );
-      const posted = res.data;
-      setCurrentCheck(posted);
-
-      await loadCheckDetails(posted.id);
-      await loadSummaryAndMaybeDraft(shopId);
-
-      // ✅ Also refresh dropdown stock after posting (so it reflects the new remaining_pieces)
-      await loadStockItemsForShop(shopId);
+      const res = await api.post(`/inventory-checks/${currentCheckId}/post`);
+      const data = res.data || null;
 
       setMessage("Inventory check posted and stock updated.");
+      setCurrentCheckId(data?.id || currentCheckId);
+
+      // After posting, reload history + stock
+      await Promise.all([loadHistory(), api.get(`/shops/${shopId}/stock`)])
+        .then(([historyRes, stockRes]) => {
+          setHistoryRows(historyRes.data || []);
+          const rows = stockRes.data || [];
+          const normalized = rows.map((row) => ({
+            ...row,
+            item_name: row.item_name || row.item?.name || row.name || `Item #${row.item_id}`,
+            item_sku: row.item_sku || row.item?.sku || row.sku || "",
+          }));
+          setStockRows(normalized);
+        })
+        .catch((err) => {
+          console.error("Post succeeded but reload failed:", err);
+        });
     } catch (err) {
-      console.error("Error posting inventory check", err);
-      setError(err?.response?.data?.detail || "Failed to post inventory check.");
+      console.error("Error posting inventory check:", err);
+      setError(
+        err?.response?.data?.detail || "Failed to post inventory check."
+      );
     } finally {
       setPosting(false);
     }
   };
 
-  const handleStartNewDraft = () => {
-    const ok = window.confirm(
-      "Start a new inventory check draft for this shop?\n\n" +
-        "This will not delete older checks, but you will work on a new one."
-    );
-    if (!ok) return;
-    resetEntryFormToNew();
-    setMessage("New inventory check draft started.");
-    setError("");
-  };
-
-  // ------------------------------------------
-  // Derived totals for current draft (entry tab)
-  // ------------------------------------------
-  const totalsDraft = useMemo(() => {
-    let totalSystem = 0;
-    let totalCounted = 0;
-    let totalDiff = 0;
-    (linesDraft || []).forEach((ln) => {
-      totalSystem += toNumberSafe(ln.system_pieces);
-      totalCounted += toNumberSafe(ln.counted_pieces);
-      totalDiff += toNumberSafe(ln.diff_pieces);
-    });
-    return { totalSystem, totalCounted, totalDiff };
-  }, [linesDraft]);
-
-  // ------------------------------------------
-  // Render
-  // ------------------------------------------
-  if (loadingPage) {
+  // -------------------------------
+  // Unauthorized view
+  // -------------------------------
+  if (!canUseInventoryCheck) {
     return (
-      <div style={{ padding: "24px" }}>
-        <p>Loading inventory check page...</p>
-      </div>
-    );
-  }
-
-  if (pageError && !shop) {
-    return (
-      <div style={{ padding: "24px", color: "red" }}>
-        <p>{pageError}</p>
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ padding: isMobile ? "18px 14px 22px" : "26px 32px 32px" }}>
-      <div
-        style={{
-          marginBottom: "18px",
-          display: "flex",
-          flexDirection: "column",
-          gap: "4px",
-        }}
-      >
+      <div style={{ padding: "2rem 3rem" }}>
         <h1
           style={{
-            fontSize: isMobile ? "24px" : "30px",
+            fontSize: "2rem",
             fontWeight: 800,
-            margin: 0,
+            marginBottom: "0.5rem",
+            color: "#111827",
           }}
         >
-          Inventory check – {shopName}
+          Inventory check
         </h1>
-        <p
-          style={{
-            margin: 0,
-            fontSize: isMobile ? "13px" : "14px",
-            color: "#4b5563",
-          }}
-        >
-          Compare system remaining pieces with physical counts, adjust, and post
-          to keep stock in sync.
+        <p style={{ color: "#b91c1c" }}>
+          Only OWNER and MANAGER can perform inventory checks.
         </p>
       </div>
+    );
+  }
 
-      {/* Tabs */}
-      <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1rem" }}>
-        <button
-          type="button"
-          onClick={() => setActiveTab("entry")}
+  if (!shopId) {
+    return (
+      <div style={{ padding: "2rem 3rem" }}>
+        <h1
           style={{
-            padding: "0.4rem 1.2rem",
-            borderRadius: "999px",
-            border:
-              activeTab === "entry" ? "none" : "1px solid rgba(209,213,219,1)",
-            backgroundColor:
-              activeTab === "entry" ? "#0f2580" : "rgba(249,250,251,1)",
-            color: activeTab === "entry" ? "#ffffff" : "#374151",
-            fontSize: "0.88rem",
-            fontWeight: 600,
-            cursor: "pointer",
-            boxShadow:
-              activeTab === "entry"
-                ? "0 10px 25px rgba(15,37,128,0.35)"
-                : "none",
+            fontSize: "2rem",
+            fontWeight: 800,
+            marginBottom: "0.5rem",
+            color: "#111827",
           }}
         >
-          Enter counts
-        </button>
+          Inventory check
+        </h1>
+        <p style={{ color: "#b91c1c" }}>
+          No shop selected. Open this page from a shop context (e.g. /shops/1/inventory-checks).
+        </p>
+      </div>
+    );
+  }
 
-        <button
-          type="button"
-          onClick={() => setActiveTab("history")}
+  // -------------------------------
+  // Render
+  // -------------------------------
+  return (
+    <div style={{ padding: "2.2rem 2.6rem" }}>
+      {/* Header */}
+      <h1
+        style={{
+          fontSize: "2.4rem",
+          fontWeight: 800,
+          marginBottom: "0.3rem",
+          color: "#111827",
+        }}
+      >
+        Inventory check
+      </h1>
+
+      <p style={{ color: "#6b7280", marginBottom: "0.8rem" }}>
+        Compare <b>system stock</b> vs <b>physical counts</b> for this shop and bring the system back in line.
+      </p>
+
+      <div
+        style={{
+          marginBottom: "1.2rem",
+          display: "flex",
+          flexWrap: "wrap",
+          gap: "0.75rem",
+          alignItems: "center",
+          fontSize: "0.9rem",
+        }}
+      >
+        <span
           style={{
-            padding: "0.4rem 1.2rem",
+            padding: "0.28rem 0.75rem",
             borderRadius: "999px",
-            border:
-              activeTab === "history"
-                ? "none"
-                : "1px solid rgba(209,213,219,1)",
-            backgroundColor:
-              activeTab === "history" ? "#0f2580" : "rgba(249,250,251,1)",
-            color: activeTab === "history" ? "#ffffff" : "#374151",
-            fontSize: "0.88rem",
+            backgroundColor: "#eff6ff",
+            border: "1px solid #bfdbfe",
+            color: "#1d4ed8",
             fontWeight: 600,
-            cursor: "pointer",
-            boxShadow:
-              activeTab === "history"
-                ? "0 10px 25px rgba(15,37,128,0.35)"
-                : "none",
           }}
         >
-          History
-        </button>
+          Shop ID: #{shopId}
+        </span>
+
+        {currentCheckId && (
+          <span
+            style={{
+              padding: "0.28rem 0.75rem",
+              borderRadius: "999px",
+              backgroundColor: "#ecfdf3",
+              border: "1px solid #bbf7d0",
+              color: "#166534",
+              fontWeight: 600,
+            }}
+          >
+            Draft ID: {currentCheckId}
+          </span>
+        )}
+
+        <div style={{ marginLeft: "auto", display: "flex", gap: "0.75rem" }}>
+          <button
+            type="button"
+            onClick={() => setActiveTab("enter")}
+            style={{
+              padding: "0.45rem 1.35rem",
+              borderRadius: "999px",
+              border:
+                activeTab === "enter"
+                  ? "none"
+                  : "1px solid rgba(209,213,219,1)",
+              backgroundColor:
+                activeTab === "enter" ? "#0f2580" : "rgba(249,250,251,1)",
+              color: activeTab === "enter" ? "#ffffff" : "#374151",
+              fontSize: "0.9rem",
+              fontWeight: 600,
+              cursor: "pointer",
+              boxShadow:
+                activeTab === "enter"
+                  ? "0 10px 25px rgba(15,37,128,0.35)"
+                  : "none",
+            }}
+          >
+            Enter counts
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab("history")}
+            style={{
+              padding: "0.45rem 1.35rem",
+              borderRadius: "999px",
+              border:
+                activeTab === "history"
+                  ? "none"
+                  : "1px solid rgba(209,213,219,1)",
+              backgroundColor:
+                activeTab === "history" ? "#0f2580" : "rgba(249,250,251,1)",
+              color: activeTab === "history" ? "#ffffff" : "#374151",
+              fontSize: "0.9rem",
+              fontWeight: 600,
+              cursor: "pointer",
+              boxShadow:
+                activeTab === "history"
+                  ? "0 10px 25px rgba(15,37,128,0.35)"
+                  : "none",
+            }}
+          >
+            History & differences
+          </button>
+        </div>
       </div>
 
       {(message || error) && (
         <div
           style={{
-            marginBottom: "1.1rem",
-            padding: "0.7rem 0.9rem",
+            marginBottom: "1rem",
+            padding: "0.75rem 1rem",
             borderRadius: "0.75rem",
             backgroundColor: error ? "#fef2f2" : "#ecfdf3",
             color: error ? "#b91c1c" : "#166534",
-            fontSize: "0.9rem",
+            fontSize: "0.95rem",
           }}
         >
           {error || message}
         </div>
       )}
 
-      {/* ENTRY TAB */}
-      {activeTab === "entry" && (
+      {/* TAB: Enter counts */}
+      {activeTab === "enter" && (
         <div
           style={{
             backgroundColor: "#ffffff",
-            borderRadius: "1.2rem",
-            padding: isMobile ? "14px 12px" : "18px 18px 20px",
-            boxShadow: "0 10px 30px rgba(15,23,42,0.06)",
-            marginBottom: "2rem",
+            borderRadius: "1.1rem",
+            padding: "1.4rem 1.6rem",
+            boxShadow: "0 10px 30px rgba(15,23,42,0.05)",
           }}
         >
-          {/* Header row */}
+          {/* Top controls: date + notes + search */}
           <div
             style={{
-              display: "flex",
-              flexDirection: isMobile ? "column" : "row",
-              justifyContent: "space-between",
-              gap: "0.75rem",
-              marginBottom: "1rem",
+              display: "grid",
+              gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+              gap: "1rem",
+              marginBottom: "1.1rem",
+              alignItems: "flex-end",
             }}
           >
-            <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
-              <div>
-                <div
-                  style={{
-                    fontSize: "0.8rem",
-                    fontWeight: 600,
-                    color: "#6b7280",
-                    marginBottom: "0.2rem",
-                  }}
-                >
-                  Check date
-                </div>
-                <input
-                  type="date"
-                  value={checkDate}
-                  onChange={(e) => setCheckDate(e.target.value)}
-                  disabled={isPosted}
-                  style={{
-                    padding: "0.4rem 0.6rem",
-                    borderRadius: "0.5rem",
-                    border: "1px solid #d1d5db",
-                    fontSize: "0.9rem",
-                  }}
-                />
-              </div>
-
-              <div>
-                <div
-                  style={{
-                    fontSize: "0.8rem",
-                    fontWeight: 600,
-                    color: "#6b7280",
-                    marginBottom: "0.2rem",
-                  }}
-                >
-                  Status
-                </div>
-                <span
-                  style={{
-                    display: "inline-block",
-                    padding: "0.25rem 0.7rem",
-                    borderRadius: "999px",
-                    fontSize: "0.78rem",
-                    fontWeight: 600,
-                    backgroundColor: isPosted ? "#dcfce7" : "#fef3c7",
-                    color: isPosted ? "#166534" : "#92400e",
-                  }}
-                >
-                  {currentCheck
-                    ? currentCheck.status === "POSTED"
-                      ? "POSTED"
-                      : "DRAFT"
-                    : "NEW DRAFT"}
-                </span>
-              </div>
-
-              <div>
-                <div
-                  style={{
-                    fontSize: "0.8rem",
-                    fontWeight: 600,
-                    color: "#6b7280",
-                    marginBottom: "0.2rem",
-                  }}
-                >
-                  Check ID
-                </div>
-                <span style={{ fontSize: "0.9rem", color: "#4b5563" }}>
-                  {currentCheck ? `#${currentCheck.id}` : "Not saved yet"}
-                </span>
-              </div>
-            </div>
-
-            <div
-              style={{
-                display: "flex",
-                gap: "0.5rem",
-                flexWrap: "wrap",
-                justifyContent: isMobile ? "flex-start" : "flex-end",
-              }}
-            >
-              <button
-                type="button"
-                onClick={handleStartNewDraft}
+            <div>
+              <label
                 style={{
-                  padding: "0.45rem 1.1rem",
-                  borderRadius: "999px",
-                  border: "1px solid #e5e7eb",
-                  backgroundColor: "#f9fafb",
-                  color: "#374151",
+                  display: "block",
                   fontSize: "0.85rem",
                   fontWeight: 600,
-                  cursor: "pointer",
+                  marginBottom: "0.3rem",
                 }}
               >
-                New draft
-              </button>
-
-              <button
-                type="button"
-                onClick={handleSaveDraft}
-                disabled={savingDraft || isPosted}
-                style={{
-                  padding: "0.45rem 1.4rem",
-                  borderRadius: "999px",
-                  border: "none",
-                  backgroundColor:
-                    savingDraft || isPosted ? "#4b6bfb99" : "#4b6bfb",
-                  color: "#ffffff",
-                  fontSize: "0.9rem",
-                  fontWeight: 600,
-                  cursor: savingDraft || isPosted ? "not-allowed" : "pointer",
-                }}
-              >
-                {savingDraft ? "Saving..." : "Save draft"}
-              </button>
-
-              <button
-                type="button"
-                onClick={handlePostCheck}
-                disabled={!isDraft || posting || linesDraft.length === 0}
-                style={{
-                  padding: "0.45rem 1.4rem",
-                  borderRadius: "999px",
-                  border: "none",
-                  backgroundColor:
-                    !isDraft || posting || linesDraft.length === 0
-                      ? "#05966966"
-                      : "#059669",
-                  color: "#ffffff",
-                  fontSize: "0.9rem",
-                  fontWeight: 600,
-                  cursor:
-                    !isDraft || posting || linesDraft.length === 0
-                      ? "not-allowed"
-                      : "pointer",
-                }}
-              >
-                {posting ? "Posting..." : "Post inventory check"}
-              </button>
-            </div>
-          </div>
-
-          {/* New line entry */}
-          <div
-            style={{
-              marginBottom: "0.9rem",
-              padding: "0.8rem 0.8rem",
-              borderRadius: "0.9rem",
-              backgroundColor: "#f9fafb",
-              border: "1px dashed #d1d5db",
-              display: "flex",
-              flexDirection: isMobile ? "column" : "row",
-              gap: "0.75rem",
-              alignItems: isMobile ? "flex-start" : "center",
-            }}
-          >
-            <div style={{ flex: 3, width: "100%" }}>
-              <div
-                style={{
-                  fontSize: "0.8rem",
-                  fontWeight: 600,
-                  color: "#4b5563",
-                  marginBottom: "0.2rem",
-                }}
-              >
-                Item
-              </div>
-              <select
-                value={selectedItemId}
-                onChange={(e) => setSelectedItemId(e.target.value)}
-                disabled={isPosted || stockLoading}
-                style={{
-                  width: "100%",
-                  padding: "0.45rem 0.6rem",
-                  borderRadius: "0.5rem",
-                  border: "1px solid #d1d5db",
-                  fontSize: "0.9rem",
-                }}
-              >
-                <option value="">Select item...</option>
-                {stockItems.map((row) => (
-                  <option key={row.item_id} value={String(row.item_id)}>
-                    {(row.item_name || `Item #${row.item_id}`) + " — system: "}
-                    {formatPieces(row.remaining_pieces)} pcs
-                  </option>
-                ))}
-              </select>
-
-              {stockLoading && (
-                <div style={{ marginTop: "0.2rem", fontSize: "0.75rem", color: "#6b7280" }}>
-                  Loading stock items...
-                </div>
-              )}
-
-              {!stockLoading && stockItems.length > 0 && (
-                <div style={{ marginTop: "0.2rem", fontSize: "0.75rem", color: "#6b7280" }}>
-                  Loaded {stockItems.length} stock items.
-                </div>
-              )}
-
-              {!stockLoading && stockItems.length === 0 && stockHint && (
-                <div
-                  style={{
-                    marginTop: "0.35rem",
-                    fontSize: "0.78rem",
-                    color: "#b45309",
-                    background: "#fffbeb",
-                    border: "1px solid #fde68a",
-                    padding: "0.45rem 0.6rem",
-                    borderRadius: "0.6rem",
-                    whiteSpace: "pre-line",
-                  }}
-                >
-                  {stockHint}
-                </div>
-              )}
-            </div>
-
-            <div style={{ flex: 1, width: "100%" }}>
-              <div
-                style={{
-                  fontSize: "0.8rem",
-                  fontWeight: 600,
-                  color: "#4b5563",
-                  marginBottom: "0.2rem",
-                }}
-              >
-                Physical pieces
-              </div>
+                Inventory check date
+              </label>
               <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={entryCountedPieces}
-                disabled={isPosted}
-                onChange={(e) => setEntryCountedPieces(e.target.value)}
+                type="date"
+                value={checkDate}
+                onChange={(e) => setCheckDate(e.target.value)}
                 style={{
                   width: "100%",
-                  padding: "0.45rem 0.6rem",
-                  borderRadius: "0.5rem",
+                  padding: "0.5rem 0.7rem",
+                  borderRadius: "0.6rem",
                   border: "1px solid #d1d5db",
                   fontSize: "0.9rem",
                 }}
-                placeholder="e.g. 5"
               />
             </div>
 
-            <div
-              style={{
-                flexShrink: 0,
-                display: "flex",
-                alignItems: "flex-end",
-                width: isMobile ? "100%" : "auto",
-              }}
-            >
-              <button
-                type="button"
-                onClick={handleAddOrUpdateLine}
-                disabled={isPosted}
+            <div>
+              <label
                 style={{
-                  width: isMobile ? "100%" : "auto",
-                  padding: "0.55rem 1.2rem",
-                  borderRadius: "999px",
-                  border: "none",
-                  backgroundColor: "#0f2580",
-                  color: "#ffffff",
-                  fontSize: "0.9rem",
+                  display: "block",
+                  fontSize: "0.85rem",
                   fontWeight: 600,
-                  cursor: isPosted ? "not-allowed" : "pointer",
+                  marginBottom: "0.3rem",
                 }}
               >
-                Add / update line
-              </button>
+                Notes (optional)
+              </label>
+              <input
+                type="text"
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="e.g. Full stock count at end of month"
+                style={{
+                  width: "100%",
+                  padding: "0.5rem 0.7rem",
+                  borderRadius: "0.6rem",
+                  border: "1px solid #d1d5db",
+                  fontSize: "0.9rem",
+                }}
+              />
+            </div>
+
+            <div>
+              <label
+                style={{
+                  display: "block",
+                  fontSize: "0.85rem",
+                  fontWeight: 600,
+                  marginBottom: "0.3rem",
+                }}
+              >
+                Search item
+              </label>
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search by item name or SKU..."
+                style={{
+                  width: "100%",
+                  padding: "0.5rem 0.7rem",
+                  borderRadius: "0.6rem",
+                  border: "1px solid #d1d5db",
+                  fontSize: "0.9rem",
+                }}
+              />
             </div>
           </div>
 
-          {/* Lines table */}
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
-              <thead>
-                <tr
-                  style={{
-                    textAlign: "left",
-                    borderBottom: "1px solid #e5e7eb",
-                    color: "#6b7280",
-                  }}
-                >
-                  <th style={{ padding: "0.4rem 0.55rem", minWidth: 200 }}>Item</th>
-                  <th style={{ padding: "0.4rem 0.55rem", minWidth: 110 }}>System pieces</th>
-                  <th style={{ padding: "0.4rem 0.55rem", minWidth: 110 }}>Physical pieces</th>
-                  <th style={{ padding: "0.4rem 0.55rem", minWidth: 110 }}>Difference</th>
-                  <th style={{ padding: "0.4rem 0.55rem", minWidth: 60 }}>&nbsp;</th>
-                </tr>
-              </thead>
-              <tbody>
-                {linesDraft.length === 0 ? (
-                  <tr>
-                    <td
-                      colSpan={5}
-                      style={{
-                        padding: "0.55rem 0.55rem",
-                        color: "#9ca3af",
-                        fontSize: "0.88rem",
-                      }}
-                    >
-                      No lines yet. Select an item above and add physical pieces.
-                    </td>
-                  </tr>
-                ) : (
-                  linesDraft.map((ln) => (
-                    <tr key={ln.item_id} style={{ borderBottom: "1px solid #f3f4f6" }}>
-                      <td style={{ padding: "0.5rem 0.55rem" }}>{ln.item_name}</td>
-                      <td style={{ padding: "0.5rem 0.55rem" }}>{formatPieces(ln.system_pieces)}</td>
-                      <td style={{ padding: "0.5rem 0.55rem" }}>
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          value={ln.counted_pieces === 0 ? "0" : String(ln.counted_pieces)}
-                          disabled={isPosted}
-                          onChange={(e) => handleLineCountChange(ln.item_id, e.target.value)}
-                          style={{
-                            width: "100%",
-                            padding: "0.35rem 0.5rem",
-                            borderRadius: "0.45rem",
-                            border: "1px solid #d1d5db",
-                            fontSize: "0.85rem",
-                          }}
-                        />
-                      </td>
-                      <td
-                        style={{
-                          padding: "0.5rem 0.55rem",
-                          color:
-                            ln.diff_pieces > 0
-                              ? "#059669"
-                              : ln.diff_pieces < 0
-                              ? "#b91c1c"
-                              : "#4b5563",
-                          fontWeight: 600,
-                        }}
-                      >
-                        {formatPieces(ln.diff_pieces)}
-                      </td>
-                      <td style={{ padding: "0.5rem 0.55rem" }}>
-                        {!isPosted && (
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveLine(ln.item_id)}
-                            style={{
-                              width: "1.9rem",
-                              height: "1.9rem",
-                              borderRadius: "999px",
-                              border: "1px solid #fee2e2",
-                              backgroundColor: "#fef2f2",
-                              color: "#b91c1c",
-                              fontSize: "1rem",
-                              cursor: "pointer",
-                            }}
-                            title="Remove line"
-                          >
-                            ×
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-              {linesDraft.length > 0 && (
-                <tfoot>
-                  <tr style={{ borderTop: "2px solid #e5e7eb", backgroundColor: "#f9fafb" }}>
-                    <td style={{ padding: "0.5rem 0.55rem", fontWeight: 600, fontSize: "0.9rem" }}>
-                      Totals ({linesDraft.length} items)
-                    </td>
-                    <td style={{ padding: "0.5rem 0.55rem", fontWeight: 600 }}>
-                      {formatPieces(totalsDraft.totalSystem)}
-                    </td>
-                    <td style={{ padding: "0.5rem 0.55rem", fontWeight: 600 }}>
-                      {formatPieces(totalsDraft.totalCounted)}
-                    </td>
-                    <td
-                      style={{
-                        padding: "0.5rem 0.55rem",
-                        fontWeight: 600,
-                        color:
-                          totalsDraft.totalDiff > 0
-                            ? "#059669"
-                            : totalsDraft.totalDiff < 0
-                            ? "#b91c1c"
-                            : "#111827",
-                      }}
-                    >
-                      {formatPieces(totalsDraft.totalDiff)}
-                    </td>
-                    <td />
-                  </tr>
-                </tfoot>
-              )}
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* HISTORY TAB */}
-      {activeTab === "history" && (
-        <div
-          style={{
-            backgroundColor: "#ffffff",
-            borderRadius: "1.2rem",
-            padding: isMobile ? "14px 12px" : "18px 18px 20px",
-            boxShadow: "0 10px 30px rgba(15,23,42,0.06)",
-          }}
-        >
+          {/* Buttons */}
           <div
             style={{
-              marginBottom: "0.75rem",
               display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              gap: "0.5rem",
+              justifyContent: "flex-end",
+              gap: "0.75rem",
+              marginBottom: "0.9rem",
             }}
           >
-            <h2 style={{ margin: 0, fontSize: "1.1rem", fontWeight: 700 }}>
-              Inventory checks history
-            </h2>
             <button
               type="button"
-              onClick={() => loadSummaryAndMaybeDraft(shopId)}
+              onClick={handleSaveDraft}
+              disabled={savingDraft || loading}
               style={{
-                padding: "0.3rem 0.9rem",
+                padding: "0.55rem 1.4rem",
                 borderRadius: "999px",
-                border: "1px solid #d1d5db",
-                backgroundColor: "#f9fafb",
-                fontSize: "0.8rem",
+                border: "none",
+                backgroundColor: savingDraft
+                  ? "#4b6bfb99"
+                  : "#4b6bfb",
+                color: "#ffffff",
+                fontSize: "0.9rem",
                 fontWeight: 600,
-                cursor: "pointer",
+                cursor: savingDraft || loading ? "not-allowed" : "pointer",
               }}
             >
-              Refresh
+              {savingDraft ? "Saving draft..." : "Save draft"}
+            </button>
+
+            <button
+              type="button"
+              onClick={handlePostCheck}
+              disabled={posting || !currentCheckId}
+              style={{
+                padding: "0.55rem 1.6rem",
+                borderRadius: "999px",
+                border: "none",
+                backgroundColor:
+                  posting || !currentCheckId ? "#6b7280" : "#16a34a",
+                color: "#ffffff",
+                fontSize: "0.9rem",
+                fontWeight: 700,
+                cursor:
+                  posting || !currentCheckId ? "not-allowed" : "pointer",
+              }}
+            >
+              {posting ? "Posting..." : "Post inventory check"}
             </button>
           </div>
 
-          {summaryLoading ? (
-            <p style={{ color: "#6b7280", fontSize: "0.9rem" }}>Loading checks...</p>
-          ) : summary.length === 0 ? (
-            <p style={{ color: "#6b7280", fontSize: "0.9rem" }}>
-              No inventory checks recorded yet for this shop.
+          {/* Table */}
+          {loading ? (
+            <p style={{ color: "#6b7280" }}>Loading current stock...</p>
+          ) : filteredStockRows.length === 0 ? (
+            <p style={{ color: "#6b7280" }}>
+              No stock items found for this shop.
             </p>
           ) : (
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
+            <div style={{ maxHeight: "65vh", overflow: "auto" }}>
+              <table
+                style={{
+                  width: "100%",
+                  borderCollapse: "collapse",
+                  fontSize: "0.9rem",
+                  minWidth: "720px",
+                }}
+              >
                 <thead>
                   <tr
                     style={{
-                      textAlign: "left",
                       borderBottom: "1px solid #e5e7eb",
+                      backgroundColor: "#f9fafb",
                       color: "#6b7280",
                     }}
                   >
-                    <th style={{ padding: "0.4rem 0.55rem" }}>Date</th>
-                    <th style={{ padding: "0.4rem 0.55rem" }}>Check ID</th>
-                    <th style={{ padding: "0.4rem 0.55rem" }}>Status</th>
-                    <th style={{ padding: "0.4rem 0.55rem" }}>Items</th>
-                    <th style={{ padding: "0.4rem 0.55rem" }}>System pieces</th>
-                    <th style={{ padding: "0.4rem 0.55rem" }}>Counted pieces</th>
-                    <th style={{ padding: "0.4rem 0.55rem" }}>Difference</th>
-                    <th style={{ padding: "0.4rem 0.55rem" }}>Created at</th>
+                    <th
+                      style={{
+                        padding: "0.55rem 0.6rem",
+                        textAlign: "left",
+                        fontWeight: 600,
+                      }}
+                    >
+                      Item
+                    </th>
+                    <th
+                      style={{
+                        padding: "0.55rem 0.6rem",
+                        textAlign: "right",
+                        fontWeight: 600,
+                      }}
+                    >
+                      System pieces
+                    </th>
+                    <th
+                      style={{
+                        padding: "0.55rem 0.6rem",
+                        textAlign: "right",
+                        fontWeight: 600,
+                      }}
+                    >
+                      Price / piece
+                    </th>
+                    <th
+                      style={{
+                        padding: "0.55rem 0.6rem",
+                        textAlign: "right",
+                        fontWeight: 600,
+                      }}
+                    >
+                      Counted pieces
+                    </th>
+                    <th
+                      style={{
+                        padding: "0.55rem 0.6rem",
+                        textAlign: "right",
+                        fontWeight: 600,
+                      }}
+                    >
+                      Difference
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {summary.map((row) => (
-                    <tr
-                      key={row.id}
-                      onClick={() => {
-                        loadCheckDetails(row.id, { switchToEntry: true });
-                        setActiveTab("entry");
-                      }}
-                      style={{ borderBottom: "1px solid #f3f4f6", cursor: "pointer" }}
-                    >
-                      <td style={{ padding: "0.45rem 0.55rem" }}>{row.check_date}</td>
-                      <td style={{ padding: "0.45rem 0.55rem" }}>#{row.id}</td>
-                      <td style={{ padding: "0.45rem 0.55rem" }}>
-                        <span
+                  {filteredStockRows.map((row) => {
+                    const itemId = row.item_id;
+                    const systemPieces = Number(row.remaining_pieces || 0);
+                    const countedRaw = counts[itemId];
+                    const countedVal = Number(countedRaw || 0);
+                    const diff = countedRaw === undefined
+                      ? 0
+                      : countedVal - systemPieces;
+
+                    return (
+                      <tr
+                        key={itemId}
+                        style={{ borderBottom: "1px solid #f3f4f6" }}
+                      >
+                        <td
                           style={{
-                            display: "inline-block",
-                            padding: "0.15rem 0.55rem",
-                            borderRadius: "999px",
-                            fontSize: "0.75rem",
-                            fontWeight: 600,
-                            backgroundColor: row.status === "POSTED" ? "#dcfce7" : "#fef3c7",
-                            color: row.status === "POSTED" ? "#166534" : "#92400e",
+                            padding: "0.5rem 0.6rem",
+                            fontWeight: 500,
+                            color: "#111827",
                           }}
                         >
-                          {row.status}
-                        </span>
-                      </td>
-                      <td style={{ padding: "0.45rem 0.55rem" }}>{row.total_items}</td>
-                      <td style={{ padding: "0.45rem 0.55rem" }}>
-                        {formatPieces(row.total_system_pieces)}
-                      </td>
-                      <td style={{ padding: "0.45rem 0.55rem" }}>
-                        {formatPieces(row.total_counted_pieces)}
-                      </td>
-                      <td
-                        style={{
-                          padding: "0.45rem 0.55rem",
-                          color:
-                            toNumberSafe(row.total_diff_pieces) > 0
-                              ? "#059669"
-                              : toNumberSafe(row.total_diff_pieces) < 0
-                              ? "#b91c1c"
-                              : "#111827",
-                          fontWeight: 600,
-                        }}
-                      >
-                        {formatPieces(row.total_diff_pieces)}
-                      </td>
-                      <td style={{ padding: "0.45rem 0.55rem" }}>
-                        {row.created_at
-                          ? String(row.created_at).replace("T", " ").slice(0, 16)
-                          : "—"}
-                      </td>
-                    </tr>
-                  ))}
+                          <div>{row.item_name}</div>
+                          {row.item_sku && (
+                            <div
+                              style={{
+                                fontSize: "0.75rem",
+                                color: "#6b7280",
+                                marginTop: "2px",
+                              }}
+                            >
+                              SKU: {row.item_sku}
+                            </div>
+                          )}
+                        </td>
+                        <td
+                          style={{
+                            padding: "0.5rem 0.6rem",
+                            textAlign: "right",
+                          }}
+                        >
+                          {formatPieces(systemPieces)}
+                        </td>
+                        <td
+                          style={{
+                            padding: "0.5rem 0.6rem",
+                            textAlign: "right",
+                          }}
+                        >
+                          {formatPieces(row.selling_price_per_piece)} RWF
+                        </td>
+                        <td
+                          style={{
+                            padding: "0.5rem 0.6rem",
+                            textAlign: "right",
+                          }}
+                        >
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={counts[itemId] ?? ""}
+                            onChange={(e) =>
+                              handleCountChange(itemId, e.target.value)
+                            }
+                            style={{
+                              width: "110px",
+                              padding: "0.32rem 0.45rem",
+                              borderRadius: "999px",
+                              border: "1px solid #d1d5db",
+                              fontSize: "0.85rem",
+                              textAlign: "right",
+                            }}
+                          />
+                        </td>
+                        <td
+                          style={{
+                            padding: "0.5rem 0.6rem",
+                            textAlign: "right",
+                            fontWeight: 600,
+                            color:
+                              diff === 0
+                                ? "#6b7280"
+                                : diff > 0
+                                ? "#16a34a"
+                                : "#b91c1c",
+                          }}
+                        >
+                          {formatDiff(diff)}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
           )}
         </div>
       )}
+
+      {/* TAB: History & differences */}
+      {activeTab === "history" && (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "minmax(0, 1.3fr) minmax(0, 1fr)",
+            gap: "1.1rem",
+            alignItems: "flex-start",
+          }}
+        >
+          {/* Left: list */}
+          <div
+            style={{
+              backgroundColor: "#ffffff",
+              borderRadius: "1.1rem",
+              padding: "1.3rem 1.4rem",
+              boxShadow: "0 10px 30px rgba(15,23,42,0.05)",
+            }}
+          >
+            <h2
+              style={{
+                fontSize: "1.2rem",
+                fontWeight: 700,
+                marginBottom: "0.8rem",
+              }}
+            >
+              Inventory check history
+            </h2>
+
+            {historyLoading ? (
+              <p style={{ color: "#6b7280" }}>Loading history...</p>
+            ) : historyRows.length === 0 ? (
+              <p style={{ color: "#6b7280" }}>
+                No inventory checks recorded yet for this shop.
+              </p>
+            ) : (
+              <div style={{ maxHeight: "65vh", overflow: "auto" }}>
+                <table
+                  style={{
+                    width: "100%",
+                    borderCollapse: "collapse",
+                    fontSize: "0.9rem",
+                    minWidth: "520px",
+                  }}
+                >
+                  <thead>
+                    <tr
+                      style={{
+                        borderBottom: "1px solid #e5e7eb",
+                        backgroundColor: "#f9fafb",
+                        color: "#6b7280",
+                      }}
+                    >
+                      <th
+                        style={{
+                          padding: "0.5rem 0.6rem",
+                          textAlign: "left",
+                        }}
+                      >
+                        Date
+                      </th>
+                      <th
+                        style={{
+                          padding: "0.5rem 0.6rem",
+                          textAlign: "left",
+                        }}
+                      >
+                        Status
+                      </th>
+                      <th
+                        style={{
+                          padding: "0.5rem 0.6rem",
+                          textAlign: "right",
+                        }}
+                      >
+                        Items
+                      </th>
+                      <th
+                        style={{
+                          padding: "0.5rem 0.6rem",
+                          textAlign: "right",
+                        }}
+                      >
+                        System pieces
+                      </th>
+                      <th
+                        style={{
+                          padding: "0.5rem 0.6rem",
+                          textAlign: "right",
+                        }}
+                      >
+                        Counted pieces
+                      </th>
+                      <th
+                        style={{
+                          padding: "0.5rem 0.6rem",
+                          textAlign: "right",
+                        }}
+                      >
+                        Diff (pieces)
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {historyRows.map((row) => (
+                      <tr
+                        key={row.id}
+                        onClick={() => handleHistoryRowClick(row)}
+                        style={{
+                          borderBottom: "1px solid #f3f4f6",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <td
+                          style={{
+                            padding: "0.5rem 0.6rem",
+                            fontWeight: 500,
+                          }}
+                        >
+                          {formatDate(row.check_date)}
+                        </td>
+                        <td
+                          style={{
+                            padding: "0.5rem 0.6rem",
+                          }}
+                        >
+                          <span
+                            style={{
+                              display: "inline-block",
+                              padding: "0.12rem 0.55rem",
+                              borderRadius: "999px",
+                              fontSize: "0.75rem",
+                              fontWeight: 600,
+                              backgroundColor:
+                                row.status === STATUS_POSTED
+                                  ? "#dcfce7"
+                                  : "#e0f2fe",
+                              color:
+                                row.status === STATUS_POSTED
+                                  ? "#166534"
+                                  : "#0369a1",
+                            }}
+                          >
+                            {row.status}
+                          </span>
+                        </td>
+                        <td
+                          style={{
+                            padding: "0.5rem 0.6rem",
+                            textAlign: "right",
+                          }}
+                        >
+                          {row.total_items}
+                        </td>
+                        <td
+                          style={{
+                            padding: "0.5rem 0.6rem",
+                            textAlign: "right",
+                          }}
+                        >
+                          {formatPieces(row.total_system_pieces)}
+                        </td>
+                        <td
+                          style={{
+                            padding: "0.5rem 0.6rem",
+                            textAlign: "right",
+                          }}
+                        >
+                          {formatPieces(row.total_counted_pieces)}
+                        </td>
+                        <td
+                          style={{
+                            padding: "0.5rem 0.6rem",
+                            textAlign: "right",
+                            fontWeight: 600,
+                            color:
+                              Number(row.total_diff_pieces || 0) === 0
+                                ? "#6b7280"
+                                : Number(row.total_diff_pieces || 0) > 0
+                                ? "#16a34a"
+                                : "#b91c1c",
+                          }}
+                        >
+                          {formatDiff(row.total_diff_pieces)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Right: details */}
+          <div
+            style={{
+              backgroundColor: "#ffffff",
+              borderRadius: "1.1rem",
+              padding: "1.3rem 1.4rem",
+              boxShadow: "0 10px 30px rgba(15,23,42,0.05)",
+            }}
+          >
+            <h2
+              style={{
+                fontSize: "1.2rem",
+                fontWeight: 700,
+                marginBottom: "0.6rem",
+              }}
+            >
+              Inventory check details
+            </h2>
+
+            {selectedHistoryLoading ? (
+              <p style={{ color: "#6b7280" }}>Loading details...</p>
+            ) : !selectedHistoryCheck ? (
+              <p style={{ color: "#6b7280" }}>
+                Click a row on the left to see full details.
+              </p>
+            ) : (
+              <>
+                <div
+                  style={{
+                    marginBottom: "0.9rem",
+                    fontSize: "0.9rem",
+                    color: "#4b5563",
+                  }}
+                >
+                  <div>
+                    <b>Date:</b> {formatDate(selectedHistoryCheck.check_date)}
+                  </div>
+                  <div>
+                    <b>Status:</b> {selectedHistoryCheck.status}
+                  </div>
+                  {selectedHistoryCheck.performed_by_username && (
+                    <div>
+                      <b>Performed by:</b>{" "}
+                      {selectedHistoryCheck.performed_by_username}
+                    </div>
+                  )}
+                  {selectedHistoryCheck.notes && (
+                    <div>
+                      <b>Notes:</b> {selectedHistoryCheck.notes}
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ maxHeight: "55vh", overflow: "auto" }}>
+                  <table
+                    style={{
+                      width: "100%",
+                      borderCollapse: "collapse",
+                      fontSize: "0.86rem",
+                      minWidth: "520px",
+                    }}
+                  >
+                    <thead>
+                      <tr
+                        style={{
+                          borderBottom: "1px solid #e5e7eb",
+                          backgroundColor: "#f9fafb",
+                          color: "#6b7280",
+                        }}
+                      >
+                        <th
+                          style={{
+                            padding: "0.45rem 0.55rem",
+                            textAlign: "left",
+                          }}
+                        >
+                          Item
+                        </th>
+                        <th
+                          style={{
+                            padding: "0.45rem 0.55rem",
+                            textAlign: "right",
+                          }}
+                        >
+                          System pieces
+                        </th>
+                        <th
+                          style={{
+                            padding: "0.45rem 0.55rem",
+                            textAlign: "right",
+                          }}
+                        >
+                          Counted pieces
+                        </th>
+                        <th
+                          style={{
+                            padding: "0.45rem 0.55rem",
+                            textAlign: "right",
+                          }}
+                        >
+                          Diff
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedHistoryCheck.lines.map((line) => (
+                        <tr
+                          key={line.id}
+                          style={{ borderBottom: "1px solid #f3f4f6" }}
+                        >
+                          <td
+                            style={{
+                              padding: "0.45rem 0.55rem",
+                              fontWeight: 500,
+                              color: "#111827",
+                            }}
+                          >
+                            {line.item_name}
+                          </td>
+                          <td
+                            style={{
+                              padding: "0.45rem 0.55rem",
+                              textAlign: "right",
+                            }}
+                          >
+                            {formatPieces(line.system_pieces)}
+                          </td>
+                          <td
+                            style={{
+                              padding: "0.45rem 0.55rem",
+                              textAlign: "right",
+                            }}
+                          >
+                            {formatPieces(line.counted_pieces)}
+                          </td>
+                          <td
+                            style={{
+                              padding: "0.45rem 0.55rem",
+                              textAlign: "right",
+                              fontWeight: 600,
+                              color:
+                                Number(line.diff_pieces || 0) === 0
+                                  ? "#6b7280"
+                                  : Number(line.diff_pieces || 0) > 0
+                                  ? "#16a34a"
+                                  : "#b91c1c",
+                            }}
+                          >
+                            {formatDiff(line.diff_pieces)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-export default InventoryChecksPage;
+export default InventoryCheckPage;
