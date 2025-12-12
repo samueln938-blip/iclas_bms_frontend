@@ -81,48 +81,55 @@ function ShopStockPage() {
 
   const forceReload = () => setReloadTick((n) => n + 1);
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
-    setError("");
+  // ✅ Proper abort handling: signal is created by the effect and passed in
+  const loadData = useCallback(
+    async (signal) => {
+      setLoading(true);
+      setError("");
 
-    const controller = new AbortController();
+      try {
+        // Cache busting so you always see the newest DB state
+        const bust = `&_=${Date.now()}`;
 
-    try {
-      // Cache busting so you always see the newest DB state
-      const bust = `&_=${Date.now()}`;
+        const shopRes = await fetch(`${API_BASE}/shops/${shopId}`, {
+          headers: authHeadersNoJson,
+          signal,
+          cache: "no-store",
+        });
+        if (!shopRes.ok) throw new Error("Failed to load shop.");
+        const shopData = await shopRes.json();
 
-      const shopRes = await fetch(`${API_BASE}/shops/${shopId}`, {
-        headers: authHeadersNoJson,
-        signal: controller.signal,
-        cache: "no-store",
-      });
-      if (!shopRes.ok) throw new Error("Failed to load shop.");
-      const shopData = await shopRes.json();
+        const stockRes = await fetch(
+          `${API_BASE}/stock/?shop_id=${shopId}${bust}`,
+          {
+            headers: authHeadersNoJson,
+            signal,
+            cache: "no-store",
+          }
+        );
+        if (!stockRes.ok) throw new Error("Failed to load stock.");
+        const stockData = await stockRes.json();
 
-      const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}${bust}`, {
-        headers: authHeadersNoJson,
-        signal: controller.signal,
-        cache: "no-store",
-      });
-      if (!stockRes.ok) throw new Error("Failed to load stock.");
-      const stockData = await stockRes.json();
-
-      setShop(shopData);
-      setStockRows(stockData || []);
-      setLastLoadedAt(new Date());
-    } catch (err) {
-      if (err?.name === "AbortError") return;
-      console.error(err);
-      setError(err?.message || "Failed to load stock for this shop.");
-    } finally {
-      setLoading(false);
-    }
-
-    return () => controller.abort();
-  }, [API_BASE, shopId, authHeadersNoJson]);
+        setShop(shopData);
+        setStockRows(stockData || []);
+        setLastLoadedAt(new Date());
+      } catch (err) {
+        if (err?.name === "AbortError") return;
+        console.error(err);
+        setError(err?.message || "Failed to load stock for this shop.");
+      } finally {
+        // If aborted, React will ignore state updates anyway, but we keep it clean
+        if (signal?.aborted) return;
+        setLoading(false);
+      }
+    },
+    [shopId, authHeadersNoJson]
+  );
 
   useEffect(() => {
-    loadData();
+    const controller = new AbortController();
+    loadData(controller.signal);
+    return () => controller.abort();
   }, [loadData, reloadTick]);
 
   // ✅ Auto-refresh when you come back to the browser tab/window
@@ -138,7 +145,8 @@ function ShopStockPage() {
   // Map raw stock records into the row shape used by the table
   const baseRows = useMemo(() => {
     return (stockRows || []).map((s) => {
-      const piecesPerUnit = s.item_pieces_per_unit != null ? Number(s.item_pieces_per_unit) : 1;
+      const piecesPerUnit =
+        s.item_pieces_per_unit != null ? Number(s.item_pieces_per_unit) : 1;
 
       const totalUnits = Number(s.total_quantity || 0); // ✅ may be decimal
       const soldPieces = Number(s.total_pieces_sold || 0); // ✅ may be decimal
@@ -225,7 +233,8 @@ function ShopStockPage() {
       const remaining = Number(r.remainingPieces || 0);
       if (remaining <= 0) return false;
 
-      const ppu = Number(r.piecesPerUnit || 1) > 0 ? Number(r.piecesPerUnit || 1) : 1;
+      const ppu =
+        Number(r.piecesPerUnit || 1) > 0 ? Number(r.piecesPerUnit || 1) : 1;
 
       const thresholdPieces = lowStockMode === "UNITS" ? th * ppu : th;
 
@@ -273,7 +282,9 @@ function ShopStockPage() {
       } else {
         const s1 = String(v1).toLowerCase();
         const s2 = String(v2).toLowerCase();
-        return sortConfig.direction === "asc" ? s1.localeCompare(s2) : s2.localeCompare(s1);
+        return sortConfig.direction === "asc"
+          ? s1.localeCompare(s2)
+          : s2.localeCompare(s1);
       }
     });
 
@@ -423,7 +434,13 @@ function ShopStockPage() {
           }}
         >
           {/* Title */}
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "flex-start",
+            }}
+          >
             <button
               onClick={() => navigate(`/shops/${shopId}`)}
               style={{
@@ -439,15 +456,36 @@ function ShopStockPage() {
               ← Back to shop workspace
             </button>
 
-            <h1 style={{ fontSize: "30px", fontWeight: 800, letterSpacing: "0.03em", margin: 0 }}>
+            <h1
+              style={{
+                fontSize: "30px",
+                fontWeight: 800,
+                letterSpacing: "0.03em",
+                margin: 0,
+              }}
+            >
               Stock
             </h1>
 
-            <div style={{ marginTop: "2px", fontSize: "13px", fontWeight: 600, color: "#2563eb" }}>
+            <div
+              style={{
+                marginTop: "2px",
+                fontSize: "13px",
+                fontWeight: 600,
+                color: "#2563eb",
+              }}
+            >
               {shopName}
             </div>
 
-            <div style={{ marginTop: "6px", display: "flex", alignItems: "center", gap: "10px" }}>
+            <div
+              style={{
+                marginTop: "6px",
+                display: "flex",
+                alignItems: "center",
+                gap: "10px",
+              }}
+            >
               <button
                 type="button"
                 onClick={forceReload}
@@ -469,7 +507,10 @@ function ShopStockPage() {
               {lastLoadedAt ? (
                 <span style={{ fontSize: "12px", color: "#6b7280" }}>
                   Updated:{" "}
-                  {lastLoadedAt.toLocaleTimeString("en-RW", { hour: "2-digit", minute: "2-digit" })}
+                  {lastLoadedAt.toLocaleTimeString("en-RW", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
                 </span>
               ) : null}
             </div>
@@ -489,7 +530,9 @@ function ShopStockPage() {
               fontSize: "12px",
             }}
           >
-            <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>Stock Summary</div>
+            <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>
+              Stock Summary
+            </div>
             <div
               style={{
                 fontSize: "10px",
@@ -552,7 +595,14 @@ function ShopStockPage() {
         </div>
 
         {/* Tabs + low-stock controls + search */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "12px",
+          }}
+        >
           <div style={tabWrapStyle}>
             <button type="button" onClick={() => setActiveTab("ALL")} style={tabButtonStyle(activeTab === "ALL")}>
               All <span style={tinyBadge(activeTab === "ALL")}>{baseRows.length}</span>
