@@ -63,6 +63,17 @@ function formatDiff(value) {
   return s;
 }
 
+function formatMoney(value) {
+  if (value === null || value === undefined || value === "") return "0";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value);
+  // money: no decimals for RWF
+  return n.toLocaleString("en-RW", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  });
+}
+
 // ---------- Searchable dropdown (same behaviour as Purchases pad) ----------
 
 function ItemComboBox({ items, valueId, onChangeId, disabled }) {
@@ -83,9 +94,7 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
     const s = q.trim().toLowerCase();
     if (!s) return items.slice(0, 800);
     return items
-      .filter((it) =>
-        String(it.label || "").toLowerCase().includes(s)
-      )
+      .filter((it) => String(it.label || "").toLowerCase().includes(s))
       .slice(0, 800);
   }, [items, q]);
 
@@ -268,8 +277,9 @@ export default function InventoryCheckPage() {
     countedPieces: "",
   });
 
-  // lines for current date (mirror of backend draft / posted)
-  const [lines, setLines] = useState([]); // {id?, itemId, itemName, systemPieces, countedPieces, diffPieces}
+  // lines for current date
+  // {id?, itemId, itemName, systemPieces, countedPieces, diffPieces, costPerPiece}
+  const [lines, setLines] = useState([]);
 
   // history list for "History & differences"
   const [historyChecks, setHistoryChecks] = useState([]);
@@ -300,18 +310,27 @@ export default function InventoryCheckPage() {
       );
   }, [stockRows]);
 
-  const padStock = pad.itemId
-    ? stockByItemId[Number(pad.itemId)]
-    : null;
+  const getCostPerPiece = (itemId) => {
+    const row = stockByItemId[Number(itemId)];
+    if (!row) return 0;
+    const raw =
+      row.cost_per_piece ??
+      row.cost_price_per_piece ??
+      row.unit_cost ??
+      row.average_cost_per_piece ??
+      row.latest_cost_per_piece;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const padStock = pad.itemId ? stockByItemId[Number(pad.itemId)] : null;
   const padSystemPieces = padStock
     ? Number(padStock.remaining_pieces || 0)
     : 0;
   const padCountedPieces =
     pad.countedPieces === "" ? null : Number(pad.countedPieces || 0);
   const padDiff =
-    padCountedPieces === null
-      ? null
-      : padCountedPieces - padSystemPieces;
+    padCountedPieces === null ? null : padCountedPieces - padSystemPieces;
 
   const totalDiffPieces = useMemo(
     () =>
@@ -321,6 +340,33 @@ export default function InventoryCheckPage() {
       ),
     [lines]
   );
+
+  const totalSystemValueBefore = useMemo(
+    () =>
+      lines.reduce(
+        (sum, ln) =>
+          sum +
+          (Number(ln.costPerPiece || 0) *
+            Number(ln.systemPieces || 0)),
+        0
+      ),
+    [lines]
+  );
+
+  const totalSystemValueAfter = useMemo(
+    () =>
+      lines.reduce(
+        (sum, ln) =>
+          sum +
+          (Number(ln.costPerPiece || 0) *
+            Number(ln.countedPieces || 0)),
+        0
+      ),
+    [lines]
+  );
+
+  const totalSystemValueDiff =
+    totalSystemValueAfter - totalSystemValueBefore;
 
   // ---------- Data loading ----------
 
@@ -381,12 +427,13 @@ export default function InventoryCheckPage() {
         );
       }
       const data = await res.json().catch(() => []);
-      setHistoryChecks(Array.isArray(data) ? data : []);
+      const list = Array.isArray(data) ? data : [];
+      setHistoryChecks(list);
+      return list;
     } catch (err) {
       console.error(err);
-      setError(
-        err?.message || "Failed to fetch inventory checks."
-      );
+      setError(err?.message || "Failed to fetch inventory checks.");
+      return [];
     }
   };
 
@@ -396,20 +443,28 @@ export default function InventoryCheckPage() {
     setMessage("");
 
     try {
-      // ensure we have up-to-date history list
-      await loadHistory();
-
       const dateISO = toISODate(isoDate);
-      const match =
-        historyChecks.find(
-          (c) => toISODate(c.check_date) === dateISO
-        ) || null;
+      const list = await loadHistory();
 
-      if (!match) {
+      const sameDateChecks = list.filter(
+        (c) => toISODate(c.check_date) === dateISO
+      );
+
+      if (!sameDateChecks.length) {
         // no check yet for this date
         setCurrentCheckId(null);
         setLines([]);
         return;
+      }
+
+      // Prefer POSTED, otherwise most recent by position
+      let match = null;
+      if (sameDateChecks.length === 1) {
+        match = sameDateChecks[0];
+      } else {
+        match =
+          sameDateChecks.find((c) => c.status === "POSTED") ||
+          sameDateChecks[sameDateChecks.length - 1];
       }
 
       const detailRes = await fetch(
@@ -435,6 +490,7 @@ export default function InventoryCheckPage() {
         systemPieces: Number(ln.system_pieces || 0),
         countedPieces: Number(ln.counted_pieces || 0),
         diffPieces: Number(ln.diff_pieces || 0),
+        costPerPiece: getCostPerPiece(ln.item_id),
       }));
       setLines(mapped);
     } catch (err) {
@@ -503,6 +559,7 @@ export default function InventoryCheckPage() {
 
     const system = Number(s.remaining_pieces || 0);
     const diff = counted - system;
+    const costPerPiece = getCostPerPiece(itemId);
 
     setError("");
     setMessage("");
@@ -512,12 +569,15 @@ export default function InventoryCheckPage() {
         (ln) => Number(ln.itemId) === itemId
       );
       const base = {
-        id: prev[existingIndex]?.id ?? `local-${Date.now()}-${Math.random()}`,
+        id:
+          prev[existingIndex]?.id ??
+          `local-${Date.now()}-${Math.random()}`,
         itemId,
         itemName: s.item_name || `Item ${itemId}`,
         systemPieces: system,
         countedPieces: counted,
         diffPieces: diff,
+        costPerPiece,
       };
 
       if (existingIndex === -1) {
@@ -580,14 +640,11 @@ export default function InventoryCheckPage() {
         })),
       };
 
-      const res = await fetch(
-        `${API_BASE}/inventory-checks/draft`,
-        {
-          method: "POST",
-          headers: authHeaders,
-          body: JSON.stringify(payload),
-        }
-      );
+      const res = await fetch(`${API_BASE}/inventory-checks/draft`, {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify(payload),
+      });
 
       if (!res.ok) {
         const errData = await res.json().catch(() => null);
@@ -607,6 +664,7 @@ export default function InventoryCheckPage() {
         systemPieces: Number(ln.system_pieces || 0),
         countedPieces: Number(ln.counted_pieces || 0),
         diffPieces: Number(ln.diff_pieces || 0),
+        costPerPiece: getCostPerPiece(ln.item_id),
       }));
       setLines(syncedLines);
 
@@ -617,9 +675,7 @@ export default function InventoryCheckPage() {
       );
     } catch (err) {
       console.error(err);
-      setError(
-        err?.message || "Failed to save inventory draft."
-      );
+      setError(err?.message || "Failed to save inventory draft.");
       setMessage("");
     } finally {
       setSavingDraft(false);
@@ -664,6 +720,7 @@ export default function InventoryCheckPage() {
         systemPieces: Number(ln.system_pieces || 0),
         countedPieces: Number(ln.counted_pieces || 0),
         diffPieces: Number(ln.diff_pieces || 0),
+        costPerPiece: getCostPerPiece(ln.item_id),
       }));
       setLines(syncedLines);
 
@@ -674,9 +731,7 @@ export default function InventoryCheckPage() {
       );
     } catch (err) {
       console.error(err);
-      setError(
-        err?.message || "Failed to post inventory check."
-      );
+      setError(err?.message || "Failed to post inventory check.");
       setMessage("");
     } finally {
       setPosting(false);
@@ -685,8 +740,39 @@ export default function InventoryCheckPage() {
 
   // ---------- History tab helpers ----------
 
-  const openHistoryCheck = async (check) => {
-    const iso = toISODate(check.check_date);
+  const groupedHistory = useMemo(() => {
+    const map = new Map();
+    for (const c of historyChecks || []) {
+      const dateISO = toISODate(c.check_date);
+      if (!dateISO) continue;
+      let g = map.get(dateISO);
+      if (!g) {
+        g = {
+          date: dateISO,
+          total_items: 0,
+          total_system_pieces: 0,
+          total_counted_pieces: 0,
+          total_diff_pieces: 0,
+          status: c.status || "DRAFT",
+          checkIds: [],
+        };
+        map.set(dateISO, g);
+      }
+      g.total_items += Number(c.total_items || 0);
+      g.total_system_pieces += Number(c.total_system_pieces || 0);
+      g.total_counted_pieces += Number(c.total_counted_pieces || 0);
+      g.total_diff_pieces += Number(c.total_diff_pieces || 0);
+      if (c.status === "POSTED") g.status = "POSTED";
+      g.checkIds.push(c.id);
+    }
+    const arr = Array.from(map.values());
+    // newest date first
+    arr.sort((a, b) => b.date.localeCompare(a.date));
+    return arr;
+  }, [historyChecks]);
+
+  const openHistoryCheck = async (dateISO) => {
+    const iso = toISODate(dateISO);
     setInventoryDate(iso);
     setActiveTab("enter");
     await loadCheckForDate(iso);
@@ -707,9 +793,7 @@ export default function InventoryCheckPage() {
   const tabBtn = (active) => ({
     padding: "8px 12px",
     borderRadius: "999px",
-    border: active
-      ? "1px solid #2563eb"
-      : "1px solid #d1d5db",
+    border: active ? "1px solid #2563eb" : "1px solid #d1d5db",
     background: active ? "#eff6ff" : "#ffffff",
     color: active ? "#1d4ed8" : "#111827",
     fontWeight: 800,
@@ -847,7 +931,7 @@ export default function InventoryCheckPage() {
               boxShadow: "0 6px 18px rgba(15,37,128,0.06)",
               display: "grid",
               gridTemplateColumns: "1fr",
-              rowGap: "2px",
+              rowGap: "6px",
               fontSize: "12px",
             }}
           >
@@ -871,6 +955,7 @@ export default function InventoryCheckPage() {
             >
               Date: {toISODate(inventoryDate)}
             </div>
+
             <div>
               <div
                 style={{
@@ -895,6 +980,97 @@ export default function InventoryCheckPage() {
                 }}
               >
                 {formatDiff(totalDiffPieces)}
+              </div>
+            </div>
+
+            <div
+              style={{
+                marginTop: "6px",
+                paddingTop: "6px",
+                borderTop: "1px dashed #e5e7eb",
+                display: "grid",
+                gridTemplateColumns: "1fr",
+                rowGap: "4px",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "10px",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.1em",
+                  color: "#6b7280",
+                }}
+              >
+                System stock value (RWF)
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: "8px",
+                }}
+              >
+                <div style={{ fontSize: "11px", color: "#6b7280" }}>
+                  Before
+                </div>
+                <div
+                  style={{
+                    fontWeight: 700,
+                    fontSize: "13px",
+                    color: "#111827",
+                  }}
+                >
+                  {formatMoney(totalSystemValueBefore)}
+                </div>
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: "8px",
+                }}
+              >
+                <div style={{ fontSize: "11px", color: "#6b7280" }}>
+                  After (counted)
+                </div>
+                <div
+                  style={{
+                    fontWeight: 700,
+                    fontSize: "13px",
+                    color: "#111827",
+                  }}
+                >
+                  {formatMoney(totalSystemValueAfter)}
+                </div>
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: "8px",
+                }}
+              >
+                <div style={{ fontSize: "11px", color: "#6b7280" }}>
+                  Difference
+                </div>
+                <div
+                  style={{
+                    fontWeight: 700,
+                    fontSize: "13px",
+                    color:
+                      totalSystemValueDiff === 0
+                        ? "#111827"
+                        : totalSystemValueDiff > 0
+                        ? "#16a34a"
+                        : "#b91c1c",
+                  }}
+                >
+                  {totalSystemValueDiff === 0
+                    ? "0"
+                    : `${totalSystemValueDiff > 0 ? "+" : ""}${formatMoney(
+                        totalSystemValueDiff
+                      )}`}
+                </div>
               </div>
             </div>
           </div>
@@ -989,8 +1165,7 @@ export default function InventoryCheckPage() {
               }}
             >
               <span>
-                Pad: select item, enter counted pieces, then add to
-                list
+                Pad: select item, enter counted pieces, then add to list
               </span>
 
               <button
@@ -1015,12 +1190,8 @@ export default function InventoryCheckPage() {
               <label style={labelStyle}>Item</label>
               <ItemComboBox
                 items={pickerItems}
-                valueId={
-                  pad.itemId === "" ? "" : String(pad.itemId)
-                }
-                onChangeId={(idStr) =>
-                  handlePadChange("itemId", idStr)
-                }
+                valueId={pad.itemId === "" ? "" : String(pad.itemId)}
+                onChangeId={(idStr) => handlePadChange("itemId", idStr)}
                 disabled={false}
               />
 
@@ -1064,9 +1235,7 @@ export default function InventoryCheckPage() {
                           : "#111827",
                     }}
                   >
-                    {padDiff === null
-                      ? "—"
-                      : formatDiff(padDiff)}
+                    {padDiff === null ? "—" : formatDiff(padDiff)}
                   </strong>
                 </div>
               </div>
@@ -1088,9 +1257,7 @@ export default function InventoryCheckPage() {
                   type="text"
                   readOnly
                   value={
-                    pad.itemId
-                      ? formatQty(padSystemPieces)
-                      : ""
+                    pad.itemId ? formatQty(padSystemPieces) : ""
                   }
                   style={{
                     ...inputBase,
@@ -1110,10 +1277,7 @@ export default function InventoryCheckPage() {
                   step="0.01"
                   value={pad.countedPieces}
                   onChange={(e) =>
-                    handlePadChange(
-                      "countedPieces",
-                      e.target.value
-                    )
+                    handlePadChange("countedPieces", e.target.value)
                   }
                   style={inputBase}
                 />
@@ -1124,9 +1288,7 @@ export default function InventoryCheckPage() {
                 <input
                   type="text"
                   readOnly
-                  value={
-                    padDiff === null ? "" : formatDiff(padDiff)
-                  }
+                  value={padDiff === null ? "" : formatDiff(padDiff)}
                   style={{
                     ...inputBase,
                     backgroundColor: "#f3f4f6",
@@ -1159,8 +1321,7 @@ export default function InventoryCheckPage() {
                 }}
               >
                 {lines.length} item
-                {lines.length === 1 ? "" : "s"} in this inventory
-                check.
+                {lines.length === 1 ? "" : "s"} in this inventory check.
               </div>
 
               <div
@@ -1169,8 +1330,7 @@ export default function InventoryCheckPage() {
                   border: "1px solid #e5e7eb",
                   backgroundColor: "#ffffff",
                   overflow: "hidden",
-                  boxShadow:
-                    "0 6px 18px rgba(15, 23, 42, 0.05)",
+                  boxShadow: "0 6px 18px rgba(15, 23, 42, 0.05)",
                 }}
               >
                 <div
@@ -1186,8 +1346,8 @@ export default function InventoryCheckPage() {
                     style={{
                       display: "grid",
                       gridTemplateColumns:
-                        "minmax(220px, 2.5fr) 1fr 1fr 1fr 60px",
-                      minWidth: "820px",
+                        "minmax(220px, 2.5fr) 1fr 1fr 1fr 1fr 60px",
+                      minWidth: "980px",
                       alignItems: "center",
                       padding: "8px 10px",
                       borderBottom: "1px solid #e5e7eb",
@@ -1204,6 +1364,9 @@ export default function InventoryCheckPage() {
                       System pieces
                     </div>
                     <div style={{ textAlign: "right" }}>
+                      Cost / piece
+                    </div>
+                    <div style={{ textAlign: "right" }}>
                       Counted pieces
                     </div>
                     <div style={{ textAlign: "right" }}>
@@ -1218,12 +1381,11 @@ export default function InventoryCheckPage() {
                       style={{
                         display: "grid",
                         gridTemplateColumns:
-                          "minmax(220px, 2.5fr) 1fr 1fr 1fr 60px",
-                        minWidth: "820px",
+                          "minmax(220px, 2.5fr) 1fr 1fr 1fr 1fr 60px",
+                        minWidth: "980px",
                         alignItems: "center",
                         padding: "9px 10px",
-                        borderBottom:
-                          "1px solid #f3f4f6",
+                        borderBottom: "1px solid #f3f4f6",
                         fontSize: "13px",
                       }}
                     >
@@ -1251,6 +1413,9 @@ export default function InventoryCheckPage() {
                         {formatQty(ln.systemPieces)}
                       </div>
                       <div style={{ textAlign: "right" }}>
+                        {formatMoney(ln.costPerPiece)}
+                      </div>
+                      <div style={{ textAlign: "right" }}>
                         {formatQty(ln.countedPieces)}
                       </div>
                       <div
@@ -1275,8 +1440,7 @@ export default function InventoryCheckPage() {
                             width: "26px",
                             height: "26px",
                             borderRadius: "9999px",
-                            border:
-                              "1px solid #fee2e2",
+                            border: "1px solid #fee2e2",
                             backgroundColor: "#fef2f2",
                             color: "#b91c1c",
                             fontSize: "14px",
@@ -1315,9 +1479,7 @@ export default function InventoryCheckPage() {
                 color: "#111827",
                 fontWeight: 600,
                 fontSize: "0.95rem",
-                cursor: savingDraft
-                  ? "not-allowed"
-                  : "pointer",
+                cursor: savingDraft ? "not-allowed" : "pointer",
                 opacity: savingDraft ? 0.8 : 1,
               }}
             >
@@ -1332,15 +1494,11 @@ export default function InventoryCheckPage() {
                 padding: "0.6rem 1.8rem",
                 borderRadius: "999px",
                 border: "none",
-                backgroundColor: posting
-                  ? "#9ca3af"
-                  : "#2563eb",
+                backgroundColor: posting ? "#9ca3af" : "#2563eb",
                 color: "white",
                 fontWeight: 700,
                 fontSize: "0.95rem",
-                cursor: posting
-                  ? "not-allowed"
-                  : "pointer",
+                cursor: posting ? "not-allowed" : "pointer",
                 opacity: posting ? 0.85 : 1,
               }}
             >
@@ -1372,10 +1530,10 @@ export default function InventoryCheckPage() {
               marginTop: 4,
             }}
           >
-            Click a date to see its details and differences.
+            One row per date. Click a date to open its full item list.
           </div>
 
-          {historyChecks.length === 0 ? (
+          {groupedHistory.length === 0 ? (
             <div
               style={{
                 marginTop: 10,
@@ -1418,9 +1576,7 @@ export default function InventoryCheckPage() {
                   }}
                 >
                   <div>Date</div>
-                  <div style={{ textAlign: "right" }}>
-                    Items
-                  </div>
+                  <div style={{ textAlign: "right" }}>Items</div>
                   <div style={{ textAlign: "right" }}>
                     System pieces
                   </div>
@@ -1432,9 +1588,9 @@ export default function InventoryCheckPage() {
                   </div>
                 </div>
 
-                {historyChecks.map((c) => (
+                {groupedHistory.map((g) => (
                   <div
-                    key={c.id}
+                    key={g.date}
                     style={{
                       display: "grid",
                       gridTemplateColumns:
@@ -1442,15 +1598,14 @@ export default function InventoryCheckPage() {
                       minWidth: "720px",
                       alignItems: "center",
                       padding: "9px 10px",
-                      borderBottom:
-                        "1px solid #f3f4f6",
+                      borderBottom: "1px solid #f3f4f6",
                       fontSize: "13px",
                     }}
                   >
                     <div>
                       <button
                         type="button"
-                        onClick={() => openHistoryCheck(c)}
+                        onClick={() => openHistoryCheck(g.date)}
                         style={{
                           padding: 0,
                           margin: 0,
@@ -1461,7 +1616,7 @@ export default function InventoryCheckPage() {
                           cursor: "pointer",
                         }}
                       >
-                        {toISODate(c.check_date)}
+                        {g.date}
                       </button>
                       <div
                         style={{
@@ -1470,35 +1625,31 @@ export default function InventoryCheckPage() {
                           marginTop: 2,
                         }}
                       >
-                        {c.status === "POSTED"
-                          ? "Posted"
-                          : "Draft"}
+                        {g.status === "POSTED" ? "Posted" : "Draft"}
                       </div>
                     </div>
                     <div style={{ textAlign: "right" }}>
-                      {c.total_items}
+                      {g.total_items}
                     </div>
                     <div style={{ textAlign: "right" }}>
-                      {formatQty(c.total_system_pieces)}
+                      {formatQty(g.total_system_pieces)}
                     </div>
                     <div style={{ textAlign: "right" }}>
-                      {formatQty(c.total_counted_pieces)}
+                      {formatQty(g.total_counted_pieces)}
                     </div>
                     <div
                       style={{
                         textAlign: "right",
                         color:
-                          Number(c.total_diff_pieces || 0) > 0
+                          Number(g.total_diff_pieces || 0) > 0
                             ? "#16a34a"
-                            : Number(
-                                c.total_diff_pieces || 0
-                              ) < 0
+                            : Number(g.total_diff_pieces || 0) < 0
                             ? "#b91c1c"
                             : "#111827",
                         fontWeight: 600,
                       }}
                     >
-                      {formatDiff(c.total_diff_pieces)}
+                      {formatDiff(g.total_diff_pieces)}
                     </div>
                   </div>
                 ))}
