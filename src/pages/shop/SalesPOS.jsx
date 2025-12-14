@@ -1,4 +1,3 @@
-// FILE: src/pages/shop/SalesPOS.jsx
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext.jsx";
@@ -550,6 +549,52 @@ export default function SalesPOS() {
 
   return (
     <div style={{ padding: "18px 18px 28px" }}>
+      {/* ✅ Responsive tab wrapping (2 per row on mobile/tablet) */}
+      <style>{`
+        .posTabsWrap {
+          display: inline-flex;
+          align-items: center;
+          gap: 2px;
+          background-color: #e5e7eb;
+          border-radius: 999px;
+          padding: 2px;
+          max-width: 100%;
+        }
+        .posTabBtn {
+          border: none;
+          cursor: pointer;
+          padding: 8px 12px;
+          border-radius: 999px;
+          font-size: 12px;
+          font-weight: 800;
+          background-color: transparent;
+          color: #4b5563;
+          box-shadow: none;
+          white-space: nowrap;
+        }
+        .posTabBtn.active {
+          background-color: #ffffff;
+          color: #111827;
+          box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+        }
+
+        /* ✅ 2 rows on tablet/mobile: 2 tabs per row */
+        @media (max-width: 900px) {
+          .posTabsWrap {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            padding: 6px;
+            border-radius: 18px;
+          }
+          .posTabBtn {
+            flex: 1 1 calc(50% - 6px);
+            text-align: center;
+            white-space: normal;
+          }
+        }
+      `}</style>
+
       <div
         style={{
           display: "flex",
@@ -592,19 +637,8 @@ export default function SalesPOS() {
           </div>
         </div>
 
-        {/* ✅ Mobile friendly tabs: horizontal scroll instead of wrapping */}
-        <div
-          style={{
-            display: "inline-flex",
-            backgroundColor: "#e5e7eb",
-            borderRadius: "999px",
-            padding: "2px",
-            maxWidth: "100%",
-            overflowX: "auto",
-            WebkitOverflowScrolling: "touch",
-            gap: "2px",
-          }}
-        >
+        {/* ✅ Tabs: 1 row on desktop, 2 rows on tablet/mobile */}
+        <div className="posTabsWrap">
           {allowedTabs.map((t) => {
             const isActive = activeTab === t.key;
             return (
@@ -612,19 +646,7 @@ export default function SalesPOS() {
                 key={t.key}
                 type="button"
                 onClick={() => setTabAndUrl(t.key)}
-                style={{
-                  border: "none",
-                  cursor: "pointer",
-                  padding: "8px 12px",
-                  borderRadius: "999px",
-                  fontSize: "12px",
-                  fontWeight: 800,
-                  backgroundColor: isActive ? "#ffffff" : "transparent",
-                  color: isActive ? "#111827" : "#4b5563",
-                  boxShadow: isActive ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
-                  whiteSpace: "nowrap",
-                  flex: "0 0 auto",
-                }}
+                className={`posTabBtn ${isActive ? "active" : ""}`}
               >
                 {t.label}
               </button>
@@ -752,7 +774,7 @@ export default function SalesPOS() {
           isCashier={isCashier}
           isManager={isManager}
           isOwner={isOwner}
-          isAdmin={isAdmin}  // ✅ NEW: pass admin flag to closure tab
+          isAdmin={isAdmin} // ✅ NEW: pass admin flag to closure tab
         />
       ) : null}
 
