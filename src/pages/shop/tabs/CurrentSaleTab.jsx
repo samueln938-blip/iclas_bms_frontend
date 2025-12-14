@@ -47,12 +47,25 @@ function CustomerModal({ open, onClose, onSave }) {
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div style={{ fontSize: "14px", fontWeight: 800 }}>Add customer</div>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
+          <div style={{ fontSize: "14px", fontWeight: 800 }}>
+            Add customer
+          </div>
           <button
             type="button"
             onClick={onClose}
-            style={{ border: "none", background: "transparent", fontSize: "16px", cursor: "pointer" }}
+            style={{
+              border: "none",
+              background: "transparent",
+              fontSize: "16px",
+              cursor: "pointer",
+            }}
           >
             ✕
           </button>
@@ -60,7 +73,15 @@ function CustomerModal({ open, onClose, onSave }) {
 
         <div style={{ marginTop: "10px", display: "grid", gap: "10px" }}>
           <div>
-            <div style={{ fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>Customer name</div>
+            <div
+              style={{
+                fontSize: "12px",
+                fontWeight: 700,
+                marginBottom: "4px",
+              }}
+            >
+              Customer name
+            </div>
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -76,7 +97,15 @@ function CustomerModal({ open, onClose, onSave }) {
           </div>
 
           <div>
-            <div style={{ fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>Phone (optional)</div>
+            <div
+              style={{
+                fontSize: "12px",
+                fontWeight: 700,
+                marginBottom: "4px",
+              }}
+            >
+              Phone (optional)
+            </div>
             <input
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
@@ -139,11 +168,18 @@ export default function CurrentSaleTab({
 
   const formatQty = (v) => {
     const n = num(v);
-    return n.toLocaleString("en-RW", { minimumFractionDigits: 0, maximumFractionDigits: 3 });
+    return n.toLocaleString("en-RW", {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 3,
+    });
   };
 
   // Pad + cart
-  const [pad, setPad] = useState({ itemId: "", qtyPieces: "", agreedPricePerPiece: "" });
+  const [pad, setPad] = useState({
+    itemId: "",
+    qtyPieces: "",
+    agreedPricePerPiece: "",
+  });
   const [saleLines, setSaleLines] = useState([]);
   const [editingLineId, setEditingLineId] = useState(null);
 
@@ -152,7 +188,7 @@ export default function CurrentSaleTab({
   const [itemListOpen, setItemListOpen] = useState(false);
   const [itemHi, setItemHi] = useState(0);
   const itemWrapRef = useRef(null);
-  const itemInputRef = useRef(null); // ✅ to refocus after add
+  const itemInputRef = useRef(null);
   const qtyInputRef = useRef(null);
 
   // Customers
@@ -196,7 +232,9 @@ export default function CurrentSaleTab({
     flashTimerRef.current = window.setTimeout(() => setFlash(null), 2500);
 
     try {
-      window.dispatchEvent(new CustomEvent("iclas:flash", { detail: { message: text } }));
+      window.dispatchEvent(
+        new CustomEvent("iclas:flash", { detail: { message: text } })
+      );
     } catch {
       // ignore
     }
@@ -236,13 +274,16 @@ export default function CurrentSaleTab({
   };
 
   // ✅ reset only the PAD after a successful add (prevents accidental double-add)
+  // ✅ IMPORTANT: DO NOT auto-focus the item input after add (prevents dropdown covering cart)
   const resetPadAfterAdd = () => {
     setPad({ itemId: "", qtyPieces: "", agreedPricePerPiece: "" });
     setItemQuery("");
     setItemListOpen(false);
     setItemHi(0);
+
+    // stop cursor & dropdown from popping up automatically
     try {
-      itemInputRef.current?.focus?.();
+      itemInputRef.current?.blur?.();
     } catch {}
   };
 
@@ -259,8 +300,10 @@ export default function CurrentSaleTab({
   const normalizeCustomer = (c) => {
     if (!c || typeof c !== "object") return null;
     const id = c.id ?? c.customer_id ?? null;
-    const name = c.name ?? c.customer_name ?? c.full_name ?? c.title ?? "";
-    const phone = c.phone ?? c.customer_phone ?? c.tel ?? c.mobile ?? "";
+    const name =
+      c.name ?? c.customer_name ?? c.full_name ?? c.title ?? "";
+    const phone =
+      c.phone ?? c.customer_phone ?? c.tel ?? c.mobile ?? "";
     const shop_id = c.shop_id ?? c.shopId ?? null;
     return { ...c, id, name, phone, shop_id };
   };
@@ -289,8 +332,13 @@ export default function CurrentSaleTab({
         }
       }
 
-      const list = (data || []).map(normalizeCustomer).filter(Boolean);
-      const filtered = list.filter((c) => !c.shop_id || Number(c.shop_id) === Number(shopId));
+      const list = (data || [])
+        .map(normalizeCustomer)
+        .filter(Boolean);
+      const filtered = list.filter(
+        (c) =>
+          !c.shop_id || Number(c.shop_id) === Number(shopId)
+      );
       setCustomers(filtered);
     } catch {
       setCustomers([]);
@@ -317,7 +365,10 @@ export default function CurrentSaleTab({
           try {
             const errData = await res.json();
             if (errData?.detail) {
-              detail = typeof errData.detail === "string" ? errData.detail : JSON.stringify(errData.detail);
+              detail =
+                typeof errData.detail === "string"
+                  ? errData.detail
+                  : JSON.stringify(errData.detail);
             }
           } catch {}
           lastErr = new Error(detail);
@@ -343,7 +394,10 @@ export default function CurrentSaleTab({
   const selectedCustomer = useMemo(() => {
     const id = selectedCustomerId ? Number(selectedCustomerId) : null;
     if (!id) return null;
-    return (customers || []).find((c) => Number(c.id) === id) || null;
+    return (
+      (customers || []).find((c) => Number(c.id) === id) ||
+      null
+    );
   }, [selectedCustomerId, customers]);
 
   useEffect(() => {
@@ -373,22 +427,40 @@ export default function CurrentSaleTab({
           path?.requestBody?.content?.["application/json"]?.schema ||
           path?.requestBody?.content?.["application/*+json"]?.schema;
 
-        const resolved = resolveSchema(schema0, openapi?.components) || schema0;
+        const resolved =
+          resolveSchema(schema0, openapi?.components) || schema0;
         const props = resolved?.properties || {};
 
-        const candidates = ["due_date", "credit_due_date", "customer_due_date"];
-        const found = candidates.find((k) => Object.prototype.hasOwnProperty.call(props, k)) || null;
+        const candidates = [
+          "due_date",
+          "credit_due_date",
+          "customer_due_date",
+        ];
+        const found =
+          candidates.find((k) =>
+            Object.prototype.hasOwnProperty.call(props, k)
+          ) || null;
 
         let paymentEnum = null;
         try {
-          const paymentSchema = resolveSchema(props?.payment_type, openapi?.components) || props?.payment_type;
-          if (Array.isArray(paymentSchema?.enum)) paymentEnum = paymentSchema.enum;
+          const paymentSchema =
+            resolveSchema(
+              props?.payment_type,
+              openapi?.components
+            ) || props?.payment_type;
+          if (Array.isArray(paymentSchema?.enum))
+            paymentEnum = paymentSchema.enum;
         } catch {}
 
         const paymentMap = buildPaymentMap(paymentEnum);
 
         if (!cancelled) {
-          setSalesCaps((prev) => ({ ...prev, dueDateKey: found, paymentEnum, paymentMap }));
+          setSalesCaps((prev) => ({
+            ...prev,
+            dueDateKey: found,
+            paymentEnum,
+            paymentMap,
+          }));
         }
       } catch {}
     }
@@ -405,11 +477,20 @@ export default function CurrentSaleTab({
       if (field === "itemId") {
         const itemId = rawValue === "" ? "" : Number(rawValue);
         const row = itemId ? stockByItemId[itemId] : null;
-        const autoPrice = row?.selling_price_per_piece != null ? String(row.selling_price_per_piece) : "";
-        return { ...prev, itemId, qtyPieces: prev.qtyPieces || "1", agreedPricePerPiece: autoPrice };
+        const autoPrice =
+          row?.selling_price_per_piece != null
+            ? String(row.selling_price_per_piece)
+            : "";
+        return {
+          ...prev,
+          itemId,
+          qtyPieces: prev.qtyPieces || "1",
+          agreedPricePerPiece: autoPrice,
+        };
       }
       if (field === "qtyPieces") return { ...prev, qtyPieces: rawValue };
-      if (field === "agreedPricePerPiece") return { ...prev, agreedPricePerPiece: rawValue };
+      if (field === "agreedPricePerPiece")
+        return { ...prev, agreedPricePerPiece: rawValue };
       return prev;
     });
   };
@@ -420,7 +501,11 @@ export default function CurrentSaleTab({
     return rows
       .filter((r) => num(r?.remaining_pieces) > 0)
       .slice()
-      .sort((a, b) => String(a?.item_name || "").localeCompare(String(b?.item_name || "")));
+      .sort((a, b) =>
+        String(a?.item_name || "").localeCompare(
+          String(b?.item_name || "")
+        )
+      );
   }, [stockRows]);
 
   // ✅ filter by typing initials / name / sku
@@ -438,15 +523,25 @@ export default function CurrentSaleTab({
   const selectedStockForPad = pad.itemId ? stockByItemId[pad.itemId] : null;
 
   const padPiecesPerUnit =
-    selectedStockForPad?.item_pieces_per_unit != null ? selectedStockForPad.item_pieces_per_unit : 1;
+    selectedStockForPad?.item_pieces_per_unit != null
+      ? selectedStockForPad.item_pieces_per_unit
+      : 1;
   const padRemainingPieces =
-    selectedStockForPad?.remaining_pieces != null ? num(selectedStockForPad.remaining_pieces) : 0;
+    selectedStockForPad?.remaining_pieces != null
+      ? num(selectedStockForPad.remaining_pieces)
+      : 0;
   const padPurchaseCostPerPiece =
-    selectedStockForPad?.purchase_cost_per_piece != null ? num(selectedStockForPad.purchase_cost_per_piece) : 0;
+    selectedStockForPad?.purchase_cost_per_piece != null
+      ? num(selectedStockForPad.purchase_cost_per_piece)
+      : 0;
   const padWholesalePerPiece =
-    selectedStockForPad?.wholesale_price_per_piece != null ? num(selectedStockForPad.wholesale_price_per_piece) : 0;
+    selectedStockForPad?.wholesale_price_per_piece != null
+      ? num(selectedStockForPad.wholesale_price_per_piece)
+      : 0;
   const padSellingPerPiece =
-    selectedStockForPad?.selling_price_per_piece != null ? num(selectedStockForPad.selling_price_per_piece) : 0;
+    selectedStockForPad?.selling_price_per_piece != null
+      ? num(selectedStockForPad.selling_price_per_piece)
+      : 0;
 
   const agreedPricePlaceholder = padSellingPerPiece
     ? `Ex: ${formatPlainNumber(padSellingPerPiece)}`
@@ -455,7 +550,12 @@ export default function CurrentSaleTab({
   const piecesAlreadyInSaleForPadItem = useMemo(() => {
     const itemId = pad.itemId ? Number(pad.itemId) : null;
     if (!itemId) return 0;
-    return saleLines.reduce((sum, l) => sum + (Number(l.itemId) === itemId ? num(l.qtyPieces || 0) : 0), 0);
+    return saleLines.reduce(
+      (sum, l) =>
+        sum +
+        (Number(l.itemId) === itemId ? num(l.qtyPieces || 0) : 0),
+      0
+    );
   }, [pad.itemId, saleLines]);
 
   const padAvailablePieces = useMemo(() => {
@@ -502,7 +602,12 @@ export default function CurrentSaleTab({
     setItemQuery("");
     setItemListOpen(false);
     setItemHi(0);
-    setPad((prev) => ({ ...prev, itemId: "", qtyPieces: "", agreedPricePerPiece: "" }));
+    setPad((prev) => ({
+      ...prev,
+      itemId: "",
+      qtyPieces: "",
+      agreedPricePerPiece: "",
+    }));
     try {
       itemInputRef.current?.focus?.();
     } catch {}
@@ -512,16 +617,23 @@ export default function CurrentSaleTab({
   const handleAddItemToSale = () => {
     clearAlerts?.();
 
-    if (!pad.itemId) return setError?.("Select an item before adding to the sale.");
+    if (!pad.itemId)
+      return setError?.("Select an item before adding to the sale.");
 
     const qtyPieces = num(pad.qtyPieces || 0);
-    if (qtyPieces <= 0) return setError?.("Quantity (pieces) must be greater than zero.");
+    if (qtyPieces <= 0)
+      return setError?.("Quantity (pieces) must be greater than zero.");
 
     const agreedPricePerPiece = num(pad.agreedPricePerPiece || 0);
-    if (agreedPricePerPiece <= 0) return setError?.("Enter the agreed price per piece (e.g. 6500).");
+    if (agreedPricePerPiece <= 0)
+      return setError?.("Enter the agreed price per piece (e.g. 6500).");
 
     if (qtyPieces > padAvailablePieces) {
-      return setError?.(`Not enough stock for this sale. Available pieces: ${formatQty(padAvailablePieces)}.`);
+      return setError?.(
+        `Not enough stock for this sale. Available pieces: ${formatQty(
+          padAvailablePieces
+        )}.`
+      );
     }
 
     const purchaseCostPerPiece = padPurchaseCostPerPiece || 0;
@@ -542,6 +654,7 @@ export default function CurrentSaleTab({
     ]);
 
     // ✅ clear the whole pad immediately after adding (prevents double-add)
+    // ✅ and STOP cursor/dropdown from auto popping up
     resetPadAfterAdd();
   };
 
@@ -563,7 +676,9 @@ export default function CurrentSaleTab({
 
         next.total = qty * price;
 
-        const purchaseCost = num(stockByItemId[next.itemId]?.purchase_cost_per_piece || 0);
+        const purchaseCost = num(
+          stockByItemId[next.itemId]?.purchase_cost_per_piece || 0
+        );
         next.profit = (price - purchaseCost) * qty;
 
         return next;
@@ -590,11 +705,19 @@ export default function CurrentSaleTab({
   }, [saleLines, stockByItemId]);
 
   const saleTotal = useMemo(
-    () => saleLinesWithMeta.reduce((sum, line) => sum + (line.computed.total || 0), 0),
+    () =>
+      saleLinesWithMeta.reduce(
+        (sum, line) => sum + (line.computed.total || 0),
+        0
+      ),
     [saleLinesWithMeta]
   );
   const saleTotalProfit = useMemo(
-    () => saleLinesWithMeta.reduce((sum, line) => sum + (line.computed.profit || 0), 0),
+    () =>
+      saleLinesWithMeta.reduce(
+        (sum, line) => sum + (line.computed.profit || 0),
+        0
+      ),
     [saleLinesWithMeta]
   );
 
@@ -803,7 +926,11 @@ export default function CurrentSaleTab({
 
     if (saleIdNum && Number(saleIdNum) !== Number(editingSaleId)) {
       loadSaleForEdit(saleIdNum, lineIdNum);
-    } else if (saleIdNum && Number(saleIdNum) === Number(editingSaleId) && lineIdNum != null) {
+    } else if (
+      saleIdNum &&
+      Number(saleIdNum) === Number(editingSaleId) &&
+      lineIdNum != null
+    ) {
       focusLineIfSameSale(lineIdNum);
       clearEditHandoffStorage();
     }
@@ -816,7 +943,8 @@ export default function CurrentSaleTab({
     clearAlerts?.();
 
     if (!saleLines.length) return setError?.("No items in the current sale.");
-    if (!isCreditSale && !paymentMode) return setError?.("Please select a payment mode (Cash / POS / MoMo).");
+    if (!isCreditSale && !paymentMode)
+      return setError?.("Please select a payment mode (Cash / POS / MoMo).");
 
     if (isCreditSale && (!customerName || !String(customerName).trim())) {
       return setError?.("For credit sale, select or enter a customer.");
@@ -836,7 +964,9 @@ export default function CurrentSaleTab({
 
     try {
       const saleDate =
-        isEditingExistingSale && editSourceSale?.sale_date ? editSourceSale.sale_date : new Date().toISOString();
+        isEditingExistingSale && editSourceSale?.sale_date
+          ? editSourceSale.sale_date
+          : new Date().toISOString();
 
       const shouldSendCustomer = isCreditSale || attachCustomer;
 
@@ -861,10 +991,14 @@ export default function CurrentSaleTab({
         }),
       };
 
-      if (!isCreditSale) payload.payment_type = salesCaps.paymentMap?.[paymentMode] || paymentMode;
-      if (isCreditSale && customerDueDate && salesCaps.dueDateKey) payload[salesCaps.dueDateKey] = customerDueDate;
+      if (!isCreditSale)
+        payload.payment_type = salesCaps.paymentMap?.[paymentMode] || paymentMode;
+      if (isCreditSale && customerDueDate && salesCaps.dueDateKey)
+        payload[salesCaps.dueDateKey] = customerDueDate;
 
-      const url = isEditingExistingSale ? `${API_BASE}/sales/${editingSaleId}` : `${API_BASE}/sales/`;
+      const url = isEditingExistingSale
+        ? `${API_BASE}/sales/${editingSaleId}`
+        : `${API_BASE}/sales/`;
       const method = isEditingExistingSale ? "PUT" : "POST";
 
       const res = await fetch(url, {
@@ -882,7 +1016,8 @@ export default function CurrentSaleTab({
           if (errData?.detail) {
             if (Array.isArray(errData.detail))
               detailMessage = errData.detail.map((d) => d.msg || JSON.stringify(d)).join(" | ");
-            else if (typeof errData.detail === "string") detailMessage = errData.detail;
+            else if (typeof errData.detail === "string")
+              detailMessage = errData.detail;
             else detailMessage = JSON.stringify(errData.detail);
           }
         } catch {}
@@ -923,8 +1058,13 @@ export default function CurrentSaleTab({
     }
   };
 
-  const canCompleteSale = saleLines.length > 0 && (isCreditSale || !!paymentMode) && !saving;
-  const primaryButtonLabel = saving ? "Saving..." : isEditingExistingSale ? "Save changes" : "Complete sale";
+  const canCompleteSale =
+    saleLines.length > 0 && (isCreditSale || !!paymentMode) && !saving;
+  const primaryButtonLabel = saving
+    ? "Saving..."
+    : isEditingExistingSale
+    ? "Save changes"
+    : "Complete sale";
 
   useEffect(() => {
     if (!pad.itemId) return;
@@ -969,7 +1109,14 @@ export default function CurrentSaleTab({
           }}
           onClick={(e) => e.stopPropagation()}
         >
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
+            }}
+          >
             <div style={{ fontWeight: 900, fontSize: 14 }}>
               Customer view
               <div style={{ fontWeight: 700, fontSize: 11, color: "#6b7280" }}>
@@ -1008,13 +1155,29 @@ export default function CurrentSaleTab({
               gap: 10,
             }}
           >
-            <div style={{ fontSize: 12, color: "#6b7280", letterSpacing: "0.08em", textTransform: "uppercase" }}>
+            <div
+              style={{
+                fontSize: 12,
+                color: "#6b7280",
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+              }}
+            >
               Amount to pay
             </div>
-            <div style={{ fontSize: 26, fontWeight: 950, color: "#111827" }}>{formatMoney(amountToPay)}</div>
+            <div style={{ fontSize: 26, fontWeight: 950, color: "#111827" }}>
+              {formatMoney(amountToPay)}
+            </div>
           </div>
 
-          <div style={{ marginTop: 12, maxHeight: "55vh", overflowY: "auto", paddingRight: 4 }}>
+          <div
+            style={{
+              marginTop: 12,
+              maxHeight: "55vh",
+              overflowY: "auto",
+              paddingRight: 4,
+            }}
+          >
             {(saleLinesWithMeta || []).length ? (
               (saleLinesWithMeta || []).map((line) => (
                 <div
@@ -1027,8 +1190,18 @@ export default function CurrentSaleTab({
                     background: "#fff",
                   }}
                 >
-                  <div style={{ fontWeight: 900, fontSize: 13, color: "#111827" }}>{line.meta.itemName}</div>
-                  <div style={{ marginTop: 6, display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12 }}>
+                  <div style={{ fontWeight: 900, fontSize: 13, color: "#111827" }}>
+                    {line.meta.itemName}
+                  </div>
+                  <div
+                    style={{
+                      marginTop: 6,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 10,
+                      fontSize: 12,
+                    }}
+                  >
                     <div style={{ color: "#6b7280" }}>
                       {formatQty(line.qtyPieces)} × {formatMoney(line.unitPrice)}
                     </div>
@@ -1037,7 +1210,9 @@ export default function CurrentSaleTab({
                 </div>
               ))
             ) : (
-              <div style={{ padding: "10px 0", fontSize: 13, color: "#6b7280" }}>No items yet.</div>
+              <div style={{ padding: "10px 0", fontSize: 13, color: "#6b7280" }}>
+                No items yet.
+              </div>
             )}
           </div>
 
@@ -1075,6 +1250,20 @@ export default function CurrentSaleTab({
     >
       {/* responsive styles */}
       <style>{`
+        .iclas-paycust-wrap{
+          display:flex;
+          gap:14px;
+          align-items:flex-start;
+        }
+        .iclas-custbox{
+          flex: 1 1 auto;
+          min-width: 0;
+        }
+        .iclas-paybox{
+          width: 320px;
+          flex: 0 0 auto;
+        }
+
         @media (max-width: 640px) {
           .iclas-pad-grid { grid-template-columns: 1fr !important; }
           .iclas-pad-btn { width: 100% !important; }
@@ -1093,10 +1282,20 @@ export default function CurrentSaleTab({
             box-shadow: 0 -10px 30px rgba(0,0,0,0.06);
             margin-top: 12px;
           }
+
+          /* ✅ Mobile layout: Payment right after pad/cart, Customer last */
+          .iclas-paycust-wrap{ flex-direction: column !important; }
+          .iclas-paybox{ width: 100% !important; order: 1 !important; }
+          .iclas-custbox{ width: 100% !important; order: 2 !important; }
         }
 
         @media (min-width: 641px) {
           .iclas-mobile-cards { display: none !important; }
+
+          /* Desktop/tablet layout: Customer left, Payment right */
+          .iclas-paycust-wrap{ flex-direction: row !important; }
+          .iclas-paybox{ order: 0 !important; }
+          .iclas-custbox{ order: 0 !important; }
         }
       `}</style>
 
@@ -1173,16 +1372,32 @@ export default function CurrentSaleTab({
         </div>
 
         <div style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
-          <div style={{ fontSize: 12, color: "#6b7280", letterSpacing: "0.10em", textTransform: "uppercase" }}>
+          <div
+            style={{
+              fontSize: 12,
+              color: "#6b7280",
+              letterSpacing: "0.10em",
+              textTransform: "uppercase",
+            }}
+          >
             Amount to pay
           </div>
-          <div style={{ fontSize: 26, fontWeight: 950, color: "#111827" }}>{formatMoney(amountToPay)}</div>
+          <div style={{ fontSize: 26, fontWeight: 950, color: "#111827" }}>
+            {formatMoney(amountToPay)}
+          </div>
         </div>
       </div>
 
       {/* ✅ Minimal edit indicator (no long sentence) */}
       {isEditingExistingSale && (
-        <div style={{ marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div
+          style={{
+            marginBottom: 10,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
           <div
             style={{
               display: "inline-flex",
@@ -1250,11 +1465,18 @@ export default function CurrentSaleTab({
                 setItemListOpen(true);
                 setItemHi(0);
                 if (!String(e.target.value || "").trim()) {
-                  setPad((prev) => ({ ...prev, itemId: "", qtyPieces: "", agreedPricePerPiece: "" }));
+                  setPad((prev) => ({
+                    ...prev,
+                    itemId: "",
+                    qtyPieces: "",
+                    agreedPricePerPiece: "",
+                  }));
                 }
               }}
               onFocus={() => setItemListOpen(true)}
-              placeholder={inStockOptions.length ? "Type item name (e.g. suga)..." : "No stock available"}
+              placeholder={
+                inStockOptions.length ? "Type item name (e.g. suga)..." : "No stock available"
+              }
               disabled={!inStockOptions.length}
               inputMode="search"
               style={{
@@ -1335,14 +1557,20 @@ export default function CurrentSaleTab({
                       >
                         <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>
                           {row.item_name}
-                          <span style={{ fontSize: 11, color: "#9ca3af", marginLeft: 8 }}>(ID: {row.item_id})</span>
+                          <span style={{ fontSize: 11, color: "#9ca3af", marginLeft: 8 }}>
+                            (ID: {row.item_id})
+                          </span>
                         </div>
-                        <div style={{ fontSize: 12, fontWeight: 800, color: "#2563eb" }}>{formatQty(remaining)} pcs</div>
+                        <div style={{ fontSize: 12, fontWeight: 800, color: "#2563eb" }}>
+                          {formatQty(remaining)} pcs
+                        </div>
                       </button>
                     );
                   })
                 ) : (
-                  <div style={{ padding: "10px 10px", fontSize: 13, color: "#6b7280" }}>No matching items.</div>
+                  <div style={{ padding: "10px 10px", fontSize: 13, color: "#6b7280" }}>
+                    No matching items.
+                  </div>
                 )}
               </div>
             ) : null}
@@ -1387,7 +1615,9 @@ export default function CurrentSaleTab({
             <button
               type="button"
               onClick={() =>
-                openCalculator(pad.agreedPricePerPiece, (amt) => updatePad("agreedPricePerPiece", String(amt)))
+                openCalculator(pad.agreedPricePerPiece, (amt) =>
+                  updatePad("agreedPricePerPiece", String(amt))
+                )
               }
               title="Open calculator"
               style={{
@@ -1576,7 +1806,9 @@ export default function CurrentSaleTab({
                     </td>
 
                     {!hideProfit && (
-                      <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(line.computed.profit)}</td>
+                      <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                        {formatMoney(line.computed.profit)}
+                      </td>
                     )}
 
                     <td style={{ padding: "8px 4px", textAlign: "center" }} onClick={(e) => e.stopPropagation()}>
@@ -1606,7 +1838,9 @@ export default function CurrentSaleTab({
                 <td style={{ padding: "8px 4px", fontWeight: 700 }}>Total</td>
                 <td></td>
                 <td></td>
-                <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 800 }}>{formatMoney(saleTotal)}</td>
+                <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 800 }}>
+                  {formatMoney(saleTotal)}
+                </td>
                 {!hideProfit && (
                   <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600, color: "#16a34a" }}>
                     {formatMoney(saleTotalProfit)}
@@ -1637,7 +1871,14 @@ export default function CurrentSaleTab({
 
                   <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                     <div>
-                      <div style={{ fontSize: 11, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color: "#6b7280",
+                          textTransform: "uppercase",
+                          letterSpacing: "0.08em",
+                        }}
+                      >
                         Qty
                       </div>
                       {isEditingLine ? (
@@ -1663,7 +1904,14 @@ export default function CurrentSaleTab({
                     </div>
 
                     <div>
-                      <div style={{ fontSize: 11, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color: "#6b7280",
+                          textTransform: "uppercase",
+                          letterSpacing: "0.08em",
+                        }}
+                      >
                         Unit price
                       </div>
                       {isEditingLine ? (
@@ -1694,7 +1942,14 @@ export default function CurrentSaleTab({
                   </div>
 
                   {!hideProfit && (
-                    <div style={{ marginTop: 6, display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                    <div
+                      style={{
+                        marginTop: 6,
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "baseline",
+                      }}
+                    >
                       <div style={{ fontSize: 12, color: "#6b7280" }}>Profit</div>
                       <div style={{ fontWeight: 900, color: "#16a34a" }}>{formatMoney(line.computed.profit)}</div>
                     </div>
@@ -1781,11 +2036,19 @@ export default function CurrentSaleTab({
         </>
       )}
 
-      {/* CUSTOMER + PAYMENT (UNCHANGED) */}
+      {/* ✅ CUSTOMER + PAYMENT: Separate boxes + responsive order */}
       <div style={{ borderTop: "1px solid #e5e7eb", marginTop: "10px", paddingTop: "10px" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 320px", gap: "14px", alignItems: "start" }}>
-          {/* Left side: customer */}
-          <div>
+        <div className="iclas-paycust-wrap">
+          {/* Customer box */}
+          <div
+            className="iclas-custbox"
+            style={{
+              padding: "12px 12px",
+              borderRadius: "16px",
+              border: "1px solid #e5e7eb",
+              backgroundColor: "#fff",
+            }}
+          >
             <div
               style={{
                 fontSize: "12px",
@@ -1800,7 +2063,16 @@ export default function CurrentSaleTab({
             </div>
 
             {!isCreditSale && (
-              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px", fontSize: "13px" }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  marginBottom: "10px",
+                  fontSize: "13px",
+                  flexWrap: "wrap",
+                }}
+              >
                 <input
                   id="attachCustomer"
                   type="checkbox"
@@ -1819,9 +2091,16 @@ export default function CurrentSaleTab({
               </div>
             )}
 
-            {(isCreditSale || attachCustomer) && (
+            {(isCreditSale || attachCustomer) ? (
               <>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 44px", gap: "10px", marginBottom: "10px" }}>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 44px",
+                    gap: "10px",
+                    marginBottom: "10px",
+                  }}
+                >
                   <select
                     value={selectedCustomerId}
                     onChange={(e) => setSelectedCustomerId(e.target.value)}
@@ -1835,7 +2114,9 @@ export default function CurrentSaleTab({
                     }}
                     title="👥 Customers"
                   >
-                    <option value="">{customers.length ? "👥 Select customer…" : "No customers yet"}</option>
+                    <option value="">
+                      {customers.length ? "👥 Select customer…" : "No customers yet"}
+                    </option>
                     {(customers || []).map((c) => (
                       <option key={c.id} value={c.id}>
                         {c.name || "Unnamed"}
@@ -1862,7 +2143,14 @@ export default function CurrentSaleTab({
                   </button>
                 </div>
 
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginBottom: "10px" }}>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: "10px",
+                    marginBottom: "10px",
+                  }}
+                >
                   <input
                     type="text"
                     placeholder="Customer name"
@@ -1892,8 +2180,18 @@ export default function CurrentSaleTab({
                 </div>
 
                 {isCreditSale && (
-                  <div style={{ marginBottom: "10px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-                    <div style={{ fontSize: "12px", color: "#6b7280", minWidth: "120px" }}>Due date (optional)</div>
+                  <div
+                    style={{
+                      marginBottom: "10px",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "10px",
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <div style={{ fontSize: "12px", color: "#6b7280", minWidth: "120px" }}>
+                      Due date (optional)
+                    </div>
                     <input
                       type="date"
                       value={customerDueDate}
@@ -1907,16 +2205,30 @@ export default function CurrentSaleTab({
                       }}
                     />
                     <div style={{ fontSize: "11px", color: "#9ca3af" }}>
-                      {salesCaps.dueDateKey ? `Will be sent as: ${salesCaps.dueDateKey}` : "Backend due-date field not detected (won't be sent)."}
+                      {salesCaps.dueDateKey
+                        ? `Will be sent as: ${salesCaps.dueDateKey}`
+                        : "Backend due-date field not detected (won't be sent)."}
                     </div>
                   </div>
                 )}
               </>
+            ) : (
+              <div style={{ fontSize: "13px", color: "#6b7280", padding: "6px 0" }}>
+                No customer attached.
+              </div>
             )}
           </div>
 
-          {/* Right side: payment */}
-          <div style={{ padding: "12px 12px", borderRadius: "16px", border: "1px solid #e5e7eb", backgroundColor: "#fff" }}>
+          {/* Payment box */}
+          <div
+            className="iclas-paybox"
+            style={{
+              padding: "12px 12px",
+              borderRadius: "16px",
+              border: "1px solid #e5e7eb",
+              backgroundColor: "#fff",
+            }}
+          >
             <div
               style={{
                 fontSize: "12px",
@@ -1962,7 +2274,15 @@ export default function CurrentSaleTab({
               })}
             </div>
 
-            <div style={{ fontSize: "13px", display: "flex", alignItems: "center", gap: "6px", marginBottom: "10px" }}>
+            <div
+              style={{
+                fontSize: "13px",
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                marginBottom: "10px",
+              }}
+            >
               <input
                 id="credit-sale-checkbox"
                 type="checkbox"
@@ -1973,8 +2293,23 @@ export default function CurrentSaleTab({
             </div>
 
             {isCreditSale && (
-              <div style={{ padding: "10px 10px", borderRadius: "14px", backgroundColor: "#f9fafb", border: "1px solid #e5e7eb", marginBottom: "10px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "6px" }}>
+              <div
+                style={{
+                  padding: "10px 10px",
+                  borderRadius: "14px",
+                  backgroundColor: "#f9fafb",
+                  border: "1px solid #e5e7eb",
+                  marginBottom: "10px",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "baseline",
+                    marginBottom: "6px",
+                  }}
+                >
                   <div style={{ fontSize: "12px", fontWeight: 800 }}>Credit details</div>
                   <div style={{ fontSize: "12px", color: "#6b7280" }}>
                     Total: <strong>{formatMoney(saleTotal)}</strong>
@@ -1987,13 +2322,27 @@ export default function CurrentSaleTab({
                     value={amountCollectedNow}
                     onChange={(e) => setAmountCollectedNow(e.target.value)}
                     placeholder="Amount collected now (optional)"
-                    style={{ width: "100%", padding: "10px 12px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px" }}
+                    style={{
+                      width: "100%",
+                      padding: "10px 12px",
+                      borderRadius: "999px",
+                      border: "1px solid #d1d5db",
+                      fontSize: "13px",
+                    }}
                   />
                   <button
                     type="button"
                     onClick={() => openCalculator(amountCollectedNow, (amt) => setAmountCollectedNow(String(amt)))}
                     title="Calculator"
-                    style={{ width: "44px", height: "44px", borderRadius: "14px", border: "1px solid #e5e7eb", backgroundColor: "#fff", cursor: "pointer", fontSize: "16px" }}
+                    style={{
+                      width: "44px",
+                      height: "44px",
+                      borderRadius: "14px",
+                      border: "1px solid #e5e7eb",
+                      backgroundColor: "#fff",
+                      cursor: "pointer",
+                      fontSize: "16px",
+                    }}
                   >
                     🧮
                   </button>
@@ -2003,32 +2352,64 @@ export default function CurrentSaleTab({
                   <button
                     type="button"
                     onClick={() => setAmountCollectedNow("0")}
-                    style={{ padding: "6px 10px", borderRadius: "999px", border: "1px solid #e5e7eb", backgroundColor: "#fff", cursor: "pointer", fontSize: "12px" }}
+                    style={{
+                      padding: "6px 10px",
+                      borderRadius: "999px",
+                      border: "1px solid #e5e7eb",
+                      backgroundColor: "#fff",
+                      cursor: "pointer",
+                      fontSize: "12px",
+                    }}
                   >
                     Collect 0
                   </button>
                   <button
                     type="button"
                     onClick={() => setAmountCollectedNow(String(Math.round(saleTotal / 2)))}
-                    style={{ padding: "6px 10px", borderRadius: "999px", border: "1px solid #e5e7eb", backgroundColor: "#fff", cursor: "pointer", fontSize: "12px" }}
+                    style={{
+                      padding: "6px 10px",
+                      borderRadius: "999px",
+                      border: "1px solid #e5e7eb",
+                      backgroundColor: "#fff",
+                      cursor: "pointer",
+                      fontSize: "12px",
+                    }}
                   >
                     Half
                   </button>
                   <button
                     type="button"
                     onClick={() => setAmountCollectedNow(String(Math.round(saleTotal)))}
-                    style={{ padding: "6px 10px", borderRadius: "999px", border: "1px solid #dcfce7", backgroundColor: "#ecfdf3", cursor: "pointer", fontSize: "12px", fontWeight: 700, color: "#166534" }}
+                    style={{
+                      padding: "6px 10px",
+                      borderRadius: "999px",
+                      border: "1px solid #dcfce7",
+                      backgroundColor: "#ecfdf3",
+                      cursor: "pointer",
+                      fontSize: "12px",
+                      fontWeight: 700,
+                      color: "#166534",
+                    }}
                   >
                     Collect All
                   </button>
                 </div>
 
-                <div style={{ marginTop: "10px", fontSize: "12px", color: "#4b5563", display: "flex", justifyContent: "space-between" }}>
+                <div
+                  style={{
+                    marginTop: "10px",
+                    fontSize: "12px",
+                    color: "#4b5563",
+                    display: "flex",
+                    justifyContent: "space-between",
+                  }}
+                >
                   <div>
                     Collected now: <strong>{formatMoney(computedCollectedNow)}</strong>
                   </div>
                   <div>
-                    Balance: <strong style={{ color: "#b91c1c" }}>{formatMoney(computedCreditBalance)}</strong>
+                    Balance:{" "}
+                    <strong style={{ color: "#b91c1c" }}>{formatMoney(computedCreditBalance)}</strong>
                   </div>
                 </div>
               </div>
