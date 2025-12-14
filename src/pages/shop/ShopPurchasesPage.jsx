@@ -492,8 +492,6 @@ function ShopPurchasesPage() {
       if (id == null) continue;
       set.add(Number(id));
     }
-    // If we truly have no items assigned in catalog, keep empty set (meaning: show none)
-    // BUT we only apply this set when itemsCatalog exists (length > 0).
     return set;
   }, [itemsCatalog]);
 
@@ -1316,9 +1314,9 @@ function ShopPurchasesPage() {
     marginBottom: "6px",
   };
 
+  // ✅ Responsive via CSS classes (so media queries can work)
   const helperGridStyle = {
     display: "grid",
-    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
     columnGap: "14px",
     rowGap: "6px",
     marginTop: "8px",
@@ -1355,6 +1353,7 @@ function ShopPurchasesPage() {
 
   return (
     <div
+      className="purchasePageRoot"
       style={{
         width: "100%",
         maxWidth: "1500px",
@@ -1362,6 +1361,59 @@ function ShopPurchasesPage() {
         boxSizing: "border-box",
       }}
     >
+      {/* ✅ Mobile/tablet responsiveness (pad wraps 2 cols mobile, 3 cols tablet) */}
+      <style>{`
+        .purchasePageRoot { padding: 0 12px 24px; }
+        @media (min-width: 768px) { .purchasePageRoot { padding: 0 16px 24px; } }
+
+        /* Top inputs: date / supplier / invoice */
+        .purchaseTopInputsGrid {
+          display: grid;
+          grid-template-columns: 160px minmax(0, 1fr) 220px;
+          gap: 12px;
+          margin-bottom: 8px;
+        }
+        @media (max-width: 1024px) {
+          .purchaseTopInputsGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+        @media (max-width: 640px) {
+          .purchaseTopInputsGrid { grid-template-columns: 1fr; }
+        }
+
+        /* Helper row under item picker */
+        .padHelperGrid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+        @media (max-width: 1024px) {
+          .padHelperGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 10px; }
+        }
+        @media (max-width: 640px) {
+          .padHelperGrid { grid-template-columns: 1fr; row-gap: 10px; }
+        }
+
+        /* ✅ Purchase pad fields grid:
+           Desktop: your wide layout
+           Tablet: 3 columns (→ ~2 rows for 5 fields)
+           Mobile: 2 columns (→ ~3 rows for 5 fields)
+        */
+        .padFieldsGrid {
+          display: grid;
+          grid-template-columns:
+            140px
+            minmax(180px, 1fr)
+            minmax(180px, 1fr)
+            minmax(180px, 1fr)
+            minmax(180px, 1fr)
+            minmax(180px, 1fr);
+          gap: 12px;
+          align-items: end;
+        }
+        @media (max-width: 1024px) {
+          .padFieldsGrid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        }
+        @media (max-width: 640px) {
+          .padFieldsGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+      `}</style>
+
       {/* Header */}
       <div
         ref={headerRef}
@@ -1517,14 +1569,7 @@ function ShopPurchasesPage() {
         </div>
 
         {/* Top inputs */}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "160px minmax(0, 1fr) 220px",
-            gap: "12px",
-            marginBottom: "8px",
-          }}
-        >
+        <div className="purchaseTopInputsGrid">
           <input
             type="date"
             value={toISODate(purchaseDate)}
@@ -1535,6 +1580,8 @@ function ShopPurchasesPage() {
               border: "1px solid #d1d5db",
               fontSize: "13px",
               backgroundColor: "#ffffff",
+              width: "100%",
+              boxSizing: "border-box",
             }}
           />
           <input
@@ -1549,6 +1596,7 @@ function ShopPurchasesPage() {
               border: "1px solid #d1d5db",
               fontSize: "13px",
               backgroundColor: "#ffffff",
+              boxSizing: "border-box",
             }}
           />
           <input
@@ -1563,6 +1611,7 @@ function ShopPurchasesPage() {
               border: "1px solid #d1d5db",
               fontSize: "13px",
               backgroundColor: "#ffffff",
+              boxSizing: "border-box",
             }}
           />
         </div>
@@ -1696,7 +1745,7 @@ function ShopPurchasesPage() {
                 disabled={isEditingSaved}
               />
 
-              <div style={helperGridStyle}>
+              <div className="padHelperGrid" style={helperGridStyle}>
                 <div>
                   Pieces / unit:{" "}
                   <strong style={{ color: padText }}>
@@ -1724,16 +1773,8 @@ function ShopPurchasesPage() {
               </div>
             </div>
 
-            <div
-              style={{
-                marginTop: "12px",
-                display: "grid",
-                gridTemplateColumns:
-                  "140px minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr)",
-                gap: "12px",
-                alignItems: "end",
-              }}
-            >
+            {/* ✅ Responsive grid (mobile 2 cols → ~3 rows, tablet 3 cols → ~2 rows) */}
+            <div style={{ marginTop: "12px" }} className="padFieldsGrid">
               <div>
                 <label style={labelStyle}>Qty units</label>
                 <input
@@ -2076,6 +2117,9 @@ function ShopPurchasesPage() {
             padding: "16px 18px 14px",
           }}
         >
+          {/* (unchanged) */}
+          {/* ... your Tab 2 code remains exactly the same ... */}
+          {/* NOTE: Kept unchanged for safety */}
           <div
             style={{
               display: "flex",
