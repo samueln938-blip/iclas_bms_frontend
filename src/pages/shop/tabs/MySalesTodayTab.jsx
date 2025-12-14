@@ -51,22 +51,29 @@ export default function MySalesTodayTab({
   const [todayCanonicalSummary, setTodayCanonicalSummary] = useState(null);
   const [loadingCanonicalSummary, setLoadingCanonicalSummary] = useState(false);
 
-  // ============================================================
-  // ✅ Responsive helper (phone/tablet) for compact summary cards
-  // ============================================================
-  const [viewportW, setViewportW] = useState(() =>
-    typeof window !== "undefined" ? window.innerWidth : 1200
-  );
+  // ✅ Responsive: stack summary cards vertically on mobile/tablet
+  const [isNarrow, setIsNarrow] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.matchMedia("(max-width: 920px)").matches; // includes most tablets
+  });
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const onResize = () => setViewportW(window.innerWidth);
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
+    const mq = window.matchMedia("(max-width: 920px)");
+    const onChange = (e) => setIsNarrow(!!e.matches);
 
-  const isPhone = viewportW <= 560;
-  const isTablet = viewportW > 560 && viewportW <= 980;
+    // initialize
+    setIsNarrow(mq.matches);
+
+    // subscribe
+    if (mq.addEventListener) mq.addEventListener("change", onChange);
+    else mq.addListener(onChange);
+
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener("change", onChange);
+      else mq.removeListener(onChange);
+    };
+  }, []);
 
   // ============================================================
   // EDIT HANDOFF: click item -> open Current sale tab to edit
@@ -259,46 +266,45 @@ export default function MySalesTodayTab({
     };
   }, [todayCanonicalSummary]);
 
-  // ✅ Compact summary card: stack title + big number, then 3 small payment boxes inside
-  const SummaryCard = ({ title, big, rows, fullRow = false }) => (
+  const SummaryCard = ({ title, big, rows }) => (
     <div
       style={{
         border: "1px solid #e5e7eb",
         borderRadius: "18px",
-        padding: isPhone ? "10px 12px" : "12px 14px",
+        padding: isNarrow ? "10px 12px" : "12px 14px",
         background: "#ffffff",
         opacity: loadingCanonicalSummary ? 0.6 : 1,
         minWidth: 0,
-        gridColumn: fullRow ? "1 / -1" : undefined,
       }}
     >
-      <div style={{ minWidth: 0 }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "baseline",
+          gap: 12,
+        }}
+      >
         <div
           style={{
-            fontSize: "11px",
+            fontSize: "12px",
             color: "#6b7280",
-            fontWeight: 900,
+            fontWeight: 800,
             letterSpacing: "0.08em",
             textTransform: "uppercase",
             whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
           }}
         >
           {title}
         </div>
 
+        {/* ✅ slightly smaller on mobile/tablet so it fits cleanly */}
         <div
           style={{
-            marginTop: 6,
-            fontSize: isPhone ? "16px" : "18px",
+            fontSize: isNarrow ? "16px" : "18px",
             fontWeight: 900,
-            lineHeight: 1.15,
             whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
           }}
-          title={String(big)}
         >
           {formatMoney(big)}
         </div>
@@ -306,51 +312,27 @@ export default function MySalesTodayTab({
 
       <div
         style={{
-          marginTop: 10,
+          marginTop: 8,
           display: "grid",
-          gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-          gap: 8,
+          gap: 6,
+          color: "#6b7280",
+          fontSize: isNarrow ? "11px" : "12px",
         }}
       >
         {rows.map((r) => (
           <div
             key={r.label}
             style={{
-              borderRadius: 14,
-              background: "#f3f4f6",
-              border: "1px solid #e5e7eb",
-              padding: "7px 8px",
-              minWidth: 0,
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "baseline",
+              gap: 10,
             }}
-            title={`${r.label}: ${String(r.value)}`}
           >
-            <div
-              style={{
-                fontSize: "10px",
-                color: "#6b7280",
-                fontWeight: 900,
-                letterSpacing: "0.06em",
-                textTransform: "uppercase",
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-              }}
-            >
-              {r.label}
-            </div>
-            <div
-              style={{
-                marginTop: 2,
-                fontSize: "12px",
-                fontWeight: 900,
-                color: "#111827",
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-              }}
-            >
+            <span style={{ whiteSpace: "nowrap" }}>{r.label}</span>
+            <strong style={{ color: "#111827", whiteSpace: "nowrap" }}>
               {formatMoney(r.value)}
-            </div>
+            </strong>
           </div>
         ))}
       </div>
@@ -369,7 +351,8 @@ export default function MySalesTodayTab({
             sale.credit_balance ??
               Math.max(
                 0,
-                Number(sale.total_sale_amount || 0) - Number(sale.amount_collected_now || 0)
+                Number(sale.total_sale_amount || 0) -
+                  Number(sale.amount_collected_now || 0)
               )
           )
         : 0;
@@ -387,10 +370,14 @@ export default function MySalesTodayTab({
         const itemName =
           line.item_name || stockRow.item_name || `Item #${line.item_id}`;
         const qty = Number(line.quantity || line.quantity_pieces || 0);
-        const unitPrice = Number(line.unit_sale_price || line.sale_price_per_piece || 0);
+        const unitPrice = Number(
+          line.unit_sale_price || line.sale_price_per_piece || 0
+        );
 
         const lineTotal =
-          line.line_sale_amount != null ? Number(line.line_sale_amount) : qty * unitPrice;
+          line.line_sale_amount != null
+            ? Number(line.line_sale_amount)
+            : qty * unitPrice;
         const lineProfit = line.line_profit != null ? Number(line.line_profit) : 0;
 
         rows.push({
@@ -425,7 +412,10 @@ export default function MySalesTodayTab({
       const collected = Number(sale.amount_collected_now ?? (isCredit ? 0 : total));
       const balance = Number(sale.credit_balance ?? (isCredit ? total : 0));
       const dueDate =
-        sale.due_date || sale.credit_due_date || sale.customer_due_date || null;
+        sale.due_date ||
+        sale.credit_due_date ||
+        sale.customer_due_date ||
+        null;
 
       return {
         id: sale.id,
@@ -486,7 +476,10 @@ export default function MySalesTodayTab({
 
     if (todayPaymentFilter !== "all") {
       if (todayPaymentFilter === "credit") rows = rows.filter((r) => r.isCreditSale);
-      else rows = rows.filter((r) => !r.isCreditSale && (r.paymentType || "") === todayPaymentFilter);
+      else
+        rows = rows.filter(
+          (r) => !r.isCreditSale && (r.paymentType || "") === todayPaymentFilter
+        );
     }
 
     return rows;
@@ -502,7 +495,9 @@ export default function MySalesTodayTab({
     if (!selectedReceipt) return null;
 
     const customerLabel = selectedReceipt.customerName
-      ? `${selectedReceipt.customerName}${selectedReceipt.customerPhone ? ` (${selectedReceipt.customerPhone})` : ""}`
+      ? `${selectedReceipt.customerName}${
+          selectedReceipt.customerPhone ? ` (${selectedReceipt.customerPhone})` : ""
+        }`
       : "-";
 
     const paymentLabel = selectedReceipt.isCredit
@@ -535,15 +530,31 @@ export default function MySalesTodayTab({
         >
           <div>
             <div style={{ fontSize: "14px", fontWeight: 900 }}>Sale details</div>
-            <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "2px" }}>
-              Receipt #{selectedReceipt.id} · {formatTimeHM(selectedReceipt.time)} · {paymentLabel}
+            <div
+              style={{
+                fontSize: "12px",
+                color: "#6b7280",
+                marginTop: "2px",
+              }}
+            >
+              Receipt #{selectedReceipt.id} · {formatTimeHM(selectedReceipt.time)} ·{" "}
+              {paymentLabel}
             </div>
             <div style={{ fontSize: "12px", color: "#6b7280" }}>
               Customer: <strong>{customerLabel}</strong>
-              {selectedReceipt.dueDate ? ` · Due: ${String(selectedReceipt.dueDate).slice(0, 10)}` : ""}
+              {selectedReceipt.dueDate
+                ? ` · Due: ${String(selectedReceipt.dueDate).slice(0, 10)}`
+                : ""}
             </div>
-            <div style={{ fontSize: "12px", color: "#9ca3af", marginTop: "4px" }}>
-              Tip: click a line below to edit that receipt in <strong>Current sale</strong>.
+            <div
+              style={{
+                fontSize: "12px",
+                color: "#9ca3af",
+                marginTop: "4px",
+              }}
+            >
+              Tip: click a line below to edit that receipt in{" "}
+              <strong>Current sale</strong>.
             </div>
           </div>
 
@@ -573,7 +584,9 @@ export default function MySalesTodayTab({
         >
           <div>
             <div style={{ fontSize: "12px", color: "#6b7280" }}>Total</div>
-            <div style={{ fontSize: "18px", fontWeight: 900 }}>{formatMoney(selectedReceipt.total)}</div>
+            <div style={{ fontSize: "18px", fontWeight: 900 }}>
+              {formatMoney(selectedReceipt.total)}
+            </div>
           </div>
           <div>
             <div style={{ fontSize: "12px", color: "#6b7280" }}>Profit</div>
@@ -583,7 +596,9 @@ export default function MySalesTodayTab({
           </div>
           <div>
             <div style={{ fontSize: "12px", color: "#6b7280" }}>Collected now</div>
-            <div style={{ fontSize: "16px", fontWeight: 800 }}>{formatMoney(selectedReceipt.collected)}</div>
+            <div style={{ fontSize: "16px", fontWeight: 800 }}>
+              {formatMoney(selectedReceipt.collected)}
+            </div>
           </div>
           <div>
             <div style={{ fontSize: "12px", color: "#6b7280" }}>Credit balance</div>
@@ -600,7 +615,13 @@ export default function MySalesTodayTab({
         </div>
 
         <div style={{ marginTop: "12px" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+          <table
+            style={{
+              width: "100%",
+              borderCollapse: "collapse",
+              fontSize: "13px",
+            }}
+          >
             <thead>
               <tr
                 style={{
@@ -634,22 +655,43 @@ export default function MySalesTodayTab({
                 return (
                   <tr
                     key={line.id || `${selectedReceipt.id}-${line.item_id}`}
-                    style={{ borderBottom: "1px solid #f3f4f6", cursor: "pointer" }}
+                    style={{
+                      borderBottom: "1px solid #f3f4f6",
+                      cursor: "pointer",
+                    }}
                     title="Click to edit this receipt in Current sale"
                     onClick={() => {
                       setSelectedSaleId(null);
                       startEditReceipt(selectedReceipt.id, line.id ?? null);
                     }}
                   >
-                    <td style={{ padding: "8px 4px", color: "#2563eb", fontWeight: 700 }}>
+                    <td
+                      style={{
+                        padding: "8px 4px",
+                        color: "#2563eb",
+                        fontWeight: 700,
+                      }}
+                    >
                       {itemName}
                     </td>
-                    <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatQty(qty)}</td>
-                    <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(unit)}</td>
-                    <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 700 }}>
+                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                      {formatQty(qty)}
+                    </td>
+                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                      {formatMoney(unit)}
+                    </td>
+                    <td
+                      style={{
+                        padding: "8px 4px",
+                        textAlign: "right",
+                        fontWeight: 700,
+                      }}
+                    >
                       {formatMoney(total)}
                     </td>
-                    <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(profit)}</td>
+                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                      {formatMoney(profit)}
+                    </td>
                   </tr>
                 );
               })}
@@ -664,7 +706,9 @@ export default function MySalesTodayTab({
     if (!saleId || !saleLineId) return;
     if (!(isAdmin || isManager)) return;
 
-    const confirmCancel = window.confirm("Cancel this item from the sale and return it to stock?");
+    const confirmCancel = window.confirm(
+      "Cancel this item from the sale and return it to stock?"
+    );
     if (!confirmCancel) return;
 
     try {
@@ -682,7 +726,9 @@ export default function MySalesTodayTab({
           const errData = await res.json();
           if (errData?.detail) {
             if (Array.isArray(errData.detail))
-              detailMessage = errData.detail.map((d) => d.msg || JSON.stringify(d)).join(" | ");
+              detailMessage = errData.detail
+                .map((d) => d.msg || JSON.stringify(d))
+                .join(" | ");
             else if (typeof errData.detail === "string") detailMessage = errData.detail;
             else detailMessage = JSON.stringify(errData.detail);
           }
@@ -742,7 +788,14 @@ export default function MySalesTodayTab({
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+          <div
+            style={{
+              display: "flex",
+              gap: "8px",
+              alignItems: "center",
+              flexWrap: "wrap",
+            }}
+          >
             <span
               style={{
                 display: "inline-block",
@@ -778,17 +831,15 @@ export default function MySalesTodayTab({
           </div>
         </div>
 
-        {/* ✅ Responsive 3 cards:
-            - Phone: 2 columns, Total spans full width
-            - Tablet/Desktop: 3 columns
+        {/* ✅ Summary cards:
+            - Mobile/Tablet: stack vertically (Current -> Credit -> Total)
+            - Desktop: 3 columns
         */}
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: isPhone
-              ? "repeat(2, minmax(0, 1fr))"
-              : "repeat(3, minmax(0, 1fr))",
-            gap: isPhone ? "8px" : "10px",
+            gridTemplateColumns: isNarrow ? "minmax(0, 1fr)" : "repeat(3, minmax(0, 1fr))",
+            gap: "10px",
             marginTop: "8px",
           }}
         >
@@ -815,7 +866,6 @@ export default function MySalesTodayTab({
           <SummaryCard
             title="Total"
             big={todayByPayment.sums.total}
-            fullRow={isPhone} // ✅ important: avoids overflow on small screens
             rows={[
               { label: "Cash", value: todayByPayment.total.cash },
               { label: "MoMo", value: todayByPayment.total.mobile },
@@ -828,11 +878,11 @@ export default function MySalesTodayTab({
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: isPhone ? "repeat(2, 1fr)" : "repeat(4, 1fr)",
-            rowGap: "10px",
+            gridTemplateColumns: "repeat(4, 1fr)",
+            rowGap: "8px",
             columnGap: "16px",
             fontSize: "12px",
-            marginTop: "12px",
+            marginTop: "10px",
           }}
         >
           <div>
@@ -922,7 +972,14 @@ export default function MySalesTodayTab({
           })}
         </div>
 
-        <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
+        <div
+          style={{
+            display: "flex",
+            gap: "10px",
+            alignItems: "center",
+            flexWrap: "wrap",
+          }}
+        >
           <div
             style={{
               display: "inline-flex",
@@ -1079,7 +1136,9 @@ export default function MySalesTodayTab({
                             maxWidth: "100%",
                           }}
                         >
-                          <span style={{ color: "#2563eb", fontWeight: 700 }}>{row.itemName}</span>
+                          <span style={{ color: "#2563eb", fontWeight: 700 }}>
+                            {row.itemName}
+                          </span>
                           <div style={{ fontSize: "12px", color: "#9ca3af", marginTop: "2px" }}>
                             Receipt #{row.saleId}
                           </div>
@@ -1278,7 +1337,9 @@ export default function MySalesTodayTab({
               {customersTodayRollup.map((c) => (
                 <tr key={c.key} style={{ borderBottom: "1px solid #f3f4f6" }}>
                   <td style={{ padding: "8px 4px", fontWeight: 800 }}>{c.label}</td>
-                  <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(c.receipts)}</td>
+                  <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                    {formatMoney(c.receipts)}
+                  </td>
                   <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 800 }}>
                     {formatMoney(c.totalBought)}
                   </td>
