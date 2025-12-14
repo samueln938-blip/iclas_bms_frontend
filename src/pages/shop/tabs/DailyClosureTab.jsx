@@ -188,7 +188,9 @@ export default function DailyClosureTab({
 
         if (!res.ok) {
           const txt = await res.text();
-          throw new Error(`Failed to load system totals (HTTP ${res.status}): ${txt}`);
+          throw new Error(
+            `Failed to load system totals (HTTP ${res.status}): ${txt}`
+          );
         }
 
         const data = await res.json();
@@ -242,7 +244,9 @@ export default function DailyClosureTab({
         if (err?.name === "AbortError") return;
         // ignore
       } finally {
-        // no-op
+        if (!silent) {
+          // no-op
+        }
       }
     },
     [API_BASE, shopId, dateStr, authHeadersNoJson]
@@ -301,7 +305,11 @@ export default function DailyClosureTab({
       if (!shopId || !dateStr) return;
       if (shouldThrottle(throttleMs)) return;
 
-      await Promise.all([loadSystemTotals({ silent }), loadExpenseSummary({ silent: true }), loadLastClosure()]);
+      await Promise.all([
+        loadSystemTotals({ silent }),
+        loadExpenseSummary({ silent: true }),
+        loadLastClosure(),
+      ]);
     },
     [shopId, dateStr, loadSystemTotals, loadExpenseSummary, loadLastClosure]
   );
@@ -355,7 +363,10 @@ export default function DailyClosureTab({
 
     window.addEventListener("iclas:sales-history-synced", onSalesHistorySynced);
     return () => {
-      window.removeEventListener("iclas:sales-history-synced", onSalesHistorySynced);
+      window.removeEventListener(
+        "iclas:sales-history-synced",
+        onSalesHistorySynced
+      );
     };
   }, [shopId, refreshAll]);
 
@@ -383,7 +394,9 @@ export default function DailyClosureTab({
   // Expected AFTER expenses:
   const expectedAfterExpenses = useMemo(() => {
     const backendAfter = Number(system?.expected_after_expenses_total ?? NaN);
-    const backendLooksOk = Number.isFinite(backendAfter) && Math.abs(expensesTotalSystem - expensesTotal) < 1;
+    const backendLooksOk =
+      Number.isFinite(backendAfter) &&
+      Math.abs(expensesTotalSystem - expensesTotal) < 1;
 
     if (backendLooksOk) return backendAfter;
 
@@ -393,21 +406,29 @@ export default function DailyClosureTab({
 
   // Profit tracking (system)
   const totalSoldAmount = Number(system?.total_sold_amount || 0);
-  const totalProfitRealized = Number(system?.total_profit_realized_today || 0);
+  const totalProfitRealized = Number(
+    system?.total_profit_realized_today || 0
+  );
   const creditGivenToday = Number(system?.credit_created_today || 0);
   const creditPaidToday = Number(system?.credit_paid_today || 0);
   const creditPayersCount = Number(system?.credit_payers_count_today || 0);
 
   // Expected by method AFTER expenses (prefer backend; fallback compute)
-  const expectedCashAfter = Number.isFinite(Number(system?.expected_cash_after_expenses))
+  const expectedCashAfter = Number.isFinite(
+    Number(system?.expected_cash_after_expenses)
+  )
     ? Number(system?.expected_cash_after_expenses || 0)
     : expectedCashSystem - expSumCash;
 
-  const expectedMomoAfter = Number.isFinite(Number(system?.expected_mobile_after_expenses))
+  const expectedMomoAfter = Number.isFinite(
+    Number(system?.expected_mobile_after_expenses)
+  )
     ? Number(system?.expected_mobile_after_expenses || 0)
     : expectedMomoSystem - expSumMomo;
 
-  const expectedPosAfter = Number.isFinite(Number(system?.expected_card_after_expenses))
+  const expectedPosAfter = Number.isFinite(
+    Number(system?.expected_card_after_expenses)
+  )
     ? Number(system?.expected_card_after_expenses || 0)
     : expectedPosSystem - expSumCard;
 
@@ -428,7 +449,8 @@ export default function DailyClosureTab({
   const totalInterest = totalProfitRealized;
   const remainingInterest = totalInterest - expensesTotal;
 
-  const systemNotIncludingExpensesWarning = expSumTotal > 0 && expensesTotalSystem === 0;
+  const systemNotIncludingExpensesWarning =
+    expSumTotal > 0 && expensesTotalSystem === 0;
 
   // ------------------------------------------------------------
   // Save closure (POST /daily-closures/)
@@ -460,7 +482,9 @@ export default function DailyClosureTab({
 
       if (!res.ok) {
         const txt = await res.text();
-        throw new Error(`Failed to save daily closure (HTTP ${res.status}): ${txt}`);
+        throw new Error(
+          `Failed to save daily closure (HTTP ${res.status}): ${txt}`
+        );
       }
 
       const data = await res.json();
@@ -501,17 +525,6 @@ export default function DailyClosureTab({
         padding: "16px 18px 18px",
       }}
     >
-      {/* Responsive: desktop shows CASH/MOMO/POS in one row with vertical separators; mobile stays stacked */}
-      <style>{`
-        .iclas-cashier-mobile { display: block; }
-        .iclas-cashier-desktop { display: none; }
-
-        @media (min-width: 900px) {
-          .iclas-cashier-mobile { display: none; }
-          .iclas-cashier-desktop { display: block; }
-        }
-      `}</style>
-
       {/* Header row */}
       <div
         style={{
@@ -536,13 +549,20 @@ export default function DailyClosureTab({
             Daily Closure
           </div>
           <div style={{ fontSize: 13, marginTop: 2, color: "#4b5563" }}>
-            Shop #{shopId} · Date: <span style={{ fontWeight: 700 }}>{dateStr}</span>{" "}
-            {!isToday && <span style={{ fontSize: 11, color: "#9ca3af" }}>(past day)</span>}
+            Shop #{shopId} · Date:{" "}
+            <span style={{ fontWeight: 700 }}>{dateStr}</span>{" "}
+            {!isToday && (
+              <span style={{ fontSize: 11, color: "#9ca3af" }}>
+                (past day)
+              </span>
+            )}
           </div>
 
           {lastClosure && (
             <div style={{ marginTop: 4, fontSize: 11, color: "#059669" }}>
-              Last saved closure: <strong>{toISO(lastClosure?.closure_date)}</strong> · ID #{lastClosure?.id}
+              Last saved closure:{" "}
+              <strong>{toISO(lastClosure?.closure_date)}</strong> · ID #
+              {lastClosure?.id}
             </div>
           )}
 
@@ -561,8 +581,16 @@ export default function DailyClosureTab({
           )}
 
           {isLockedReadOnly && (
-            <div style={{ marginTop: 4, fontSize: 11, color: "#b91c1c", fontWeight: 600 }}>
-              Read-only: only Owner/Manager/Admin can save closures for past days.
+            <div
+              style={{
+                marginTop: 4,
+                fontSize: 11,
+                color: "#b91c1c",
+                fontWeight: 600,
+              }}
+            >
+              Read-only: only Owner/Manager/Admin can save closures for past
+              days.
             </div>
           )}
         </div>
@@ -588,31 +616,20 @@ export default function DailyClosureTab({
             {loading ? "Refreshing..." : "Refresh totals"}
           </button>
 
-          <button
-            type="button"
-            onClick={handleSaveClosure}
-            disabled={saveDisabled}
-            style={{
-              border: "none",
-              borderRadius: 999,
-              padding: "8px 16px",
-              fontSize: 12,
-              fontWeight: 700,
-              cursor: saveDisabled ? "not-allowed" : "pointer",
-              backgroundColor: saveDisabled ? "#9ca3af" : "#2563eb",
-              color: "#ffffff",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-            }}
-          >
-            {saving ? "Saving..." : "Save closure"}
-          </button>
+          {/* ✅ CHANGE #1: removed Save closure from the header (moved to bottom box) */}
         </div>
       </div>
 
       {/* Top summary chips */}
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 6, marginBottom: 10 }}>
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 10,
+          marginTop: 6,
+          marginBottom: 10,
+        }}
+      >
         <div
           style={{
             padding: "6px 10px",
@@ -635,7 +652,9 @@ export default function DailyClosureTab({
           }}
         >
           Profit realized:{" "}
-          <strong style={{ color: "#166534" }}>{formatMoney(totalProfitRealized)} RWF</strong>
+          <strong style={{ color: "#166534" }}>
+            {formatMoney(totalProfitRealized)} RWF
+          </strong>
         </div>
 
         <div
@@ -647,7 +666,8 @@ export default function DailyClosureTab({
             fontSize: 12,
           }}
         >
-          Credit given that day: <strong>{formatMoney(creditGivenToday)} RWF</strong>
+          Credit given that day:{" "}
+          <strong>{formatMoney(creditGivenToday)} RWF</strong>
         </div>
 
         <div
@@ -659,285 +679,348 @@ export default function DailyClosureTab({
             fontSize: 12,
           }}
         >
-          Credit paid that day: <strong>{formatMoney(creditPaidToday)} RWF</strong>
+          Credit paid that day:{" "}
+          <strong>{formatMoney(creditPaidToday)} RWF</strong>
         </div>
       </div>
 
-      {/* 1) SYSTEM SUMMARY (full width, first) */}
+      {/* Main two columns: System vs Cashier pad */}
       <div
         style={{
-          borderRadius: 16,
-          border: "1px solid #e5e7eb",
-          padding: "12px 12px",
-          backgroundColor: "#f9fafb",
+          display: "grid",
+          gridTemplateColumns: "minmax(0, 1.3fr) minmax(0, 1fr)",
+          gap: 16,
+          alignItems: "flex-start",
         }}
       >
+        {/* LEFT: System totals */}
         <div
           style={{
-            fontSize: 12,
-            fontWeight: 800,
-            textTransform: "uppercase",
-            letterSpacing: "0.10em",
-            color: "#6b7280",
-            marginBottom: 6,
+            borderRadius: 16,
+            border: "1px solid #e5e7eb",
+            padding: "10px 12px",
+            backgroundColor: "#f9fafb",
           }}
         >
-          System Summary
-        </div>
-
-        {systemNotIncludingExpensesWarning && (
           <div
             style={{
-              marginBottom: 8,
-              padding: "8px 10px",
-              borderRadius: 12,
-              backgroundColor: "#fff7ed",
-              border: "1px solid #fed7aa",
-              color: "#9a3412",
               fontSize: 12,
               fontWeight: 600,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+              color: "#6b7280",
+              marginBottom: 6,
             }}
           >
-            Note: Expenses exist in DB but system totals returned 0. This tab will still show correct expenses using
-            /expenses/summary.
+            System summary (Sales + Credit payments)
           </div>
-        )}
 
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-          <thead>
-            <tr
+          {systemNotIncludingExpensesWarning && (
+            <div
               style={{
-                borderBottom: "1px solid #e5e7eb",
-                color: "#6b7280",
-                textTransform: "uppercase",
-                letterSpacing: "0.08em",
+                marginBottom: 8,
+                padding: "8px 10px",
+                borderRadius: 12,
+                backgroundColor: "#fff7ed",
+                border: "1px solid #fed7aa",
+                color: "#9a3412",
+                fontSize: 12,
+                fontWeight: 600,
               }}
             >
-              <th style={{ padding: "6px 4px", textAlign: "left" }}></th>
-              <th style={{ padding: "6px 4px", textAlign: "right" }}>Cash</th>
-              <th style={{ padding: "6px 4px", textAlign: "right" }}>MoMo</th>
-              <th style={{ padding: "6px 4px", textAlign: "right" }}>POS</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr style={{ borderBottom: "1px solid #f3f4f6" }}>
-              <td style={{ padding: "6px 4px" }}>Expected totals (system)</td>
-              <td style={{ padding: "6px 4px", textAlign: "right", fontWeight: 700 }}>{formatMoney(expectedCashSystem)}</td>
-              <td style={{ padding: "6px 4px", textAlign: "right", fontWeight: 700 }}>{formatMoney(expectedMomoSystem)}</td>
-              <td style={{ padding: "6px 4px", textAlign: "right", fontWeight: 700 }}>{formatMoney(expectedPosSystem)}</td>
-            </tr>
+              Note: Expenses exist in DB but system totals returned 0. This tab
+              will still show correct expenses using /expenses/summary.
+            </div>
+          )}
 
-            <tr>
-              <td style={{ padding: "6px 4px", fontWeight: 700 }}>Expected money (all methods)</td>
-              <td colSpan={3} style={{ padding: "6px 4px", textAlign: "right", fontWeight: 800, color: "#111827" }}>
-                {formatMoney(expectedMoney)} RWF
-              </td>
-            </tr>
-
-            <tr>
-              <td style={{ padding: "6px 4px" }}>Expenses (DB)</td>
-              <td colSpan={3} style={{ padding: "6px 4px", textAlign: "right", color: "#b91c1c", fontWeight: 600 }}>
-                − {formatMoney(expensesTotal)} RWF
-              </td>
-            </tr>
-
-            <tr>
-              <td style={{ padding: "6px 4px", fontWeight: 800 }}>Net expected after expenses</td>
-              <td
-                colSpan={3}
+          <table
+            style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}
+          >
+            <thead>
+              <tr
                 style={{
-                  padding: "6px 4px",
-                  textAlign: "right",
-                  fontWeight: 800,
-                  color: expectedAfterExpenses >= 0 ? "#166534" : "#b91c1c",
+                  borderBottom: "1px solid #e5e7eb",
+                  color: "#6b7280",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.08em",
                 }}
               >
-                {formatMoney(expectedAfterExpenses)} RWF
-              </td>
-            </tr>
-          </tbody>
-        </table>
+                <th style={{ padding: "6px 4px", textAlign: "left" }}></th>
+                <th style={{ padding: "6px 4px", textAlign: "right" }}>Cash</th>
+                <th style={{ padding: "6px 4px", textAlign: "right" }}>MoMo</th>
+                <th style={{ padding: "6px 4px", textAlign: "right" }}>POS</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style={{ borderBottom: "1px solid #f3f4f6" }}>
+                <td style={{ padding: "6px 4px" }}>Expected totals (system)</td>
+                <td
+                  style={{
+                    padding: "6px 4px",
+                    textAlign: "right",
+                    fontWeight: 700,
+                  }}
+                >
+                  {formatMoney(expectedCashSystem)}
+                </td>
+                <td
+                  style={{
+                    padding: "6px 4px",
+                    textAlign: "right",
+                    fontWeight: 700,
+                  }}
+                >
+                  {formatMoney(expectedMomoSystem)}
+                </td>
+                <td
+                  style={{
+                    padding: "6px 4px",
+                    textAlign: "right",
+                    fontWeight: 700,
+                  }}
+                >
+                  {formatMoney(expectedPosSystem)}
+                </td>
+              </tr>
 
-        <div style={{ marginTop: 8, fontSize: 11, color: "#6b7280" }}>
-          <div>
-            Credit payments count: <strong>{creditPayersCount}</strong>
-          </div>
-          <div>
-            Total credit paid that day: <strong>{formatMoney(creditPaidToday)} RWF</strong>
+              <tr>
+                <td style={{ padding: "6px 4px", fontWeight: 700 }}>
+                  Expected money (all methods)
+                </td>
+                <td
+                  colSpan={3}
+                  style={{
+                    padding: "6px 4px",
+                    textAlign: "right",
+                    fontWeight: 800,
+                    color: "#111827",
+                  }}
+                >
+                  {formatMoney(expectedMoney)} RWF
+                </td>
+              </tr>
+
+              <tr>
+                <td style={{ padding: "6px 4px" }}>Expenses (DB)</td>
+                <td
+                  colSpan={3}
+                  style={{
+                    padding: "6px 4px",
+                    textAlign: "right",
+                    color: "#b91c1c",
+                    fontWeight: 600,
+                  }}
+                >
+                  − {formatMoney(expensesTotal)} RWF
+                </td>
+              </tr>
+
+              <tr>
+                <td style={{ padding: "6px 4px", fontWeight: 800 }}>
+                  Net expected after expenses
+                </td>
+                <td
+                  colSpan={3}
+                  style={{
+                    padding: "6px 4px",
+                    textAlign: "right",
+                    fontWeight: 800,
+                    color: expectedAfterExpenses >= 0 ? "#166534" : "#b91c1c",
+                  }}
+                >
+                  {formatMoney(expectedAfterExpenses)} RWF
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div style={{ marginTop: 8, fontSize: 11, color: "#6b7280" }}>
+            <div>
+              Credit payments count: <strong>{creditPayersCount}</strong>
+            </div>
+            <div>
+              Total credit paid that day:{" "}
+              <strong>{formatMoney(creditPaidToday)} RWF</strong>
+            </div>
           </div>
         </div>
-      </div>
 
-      {/* 2) CASHIER CLOSURE (second) */}
-      <div
-        style={{
-          marginTop: 14,
-          borderRadius: 18,
-          border: "1px solid #e5e7eb",
-          backgroundColor: "#ffffff",
-          padding: "14px 14px 12px",
-        }}
-      >
+        {/* RIGHT: Expected money + Cashier pad */}
         <div
           style={{
-            textAlign: "center",
-            fontSize: 13,
-            fontWeight: 900,
-            letterSpacing: "0.10em",
-            textTransform: "uppercase",
-            color: "#6b7280",
-            marginBottom: 10,
+            borderRadius: 16,
+            border: "1px solid #e5e7eb",
+            padding: "10px 12px",
+            backgroundColor: "#ffffff",
           }}
         >
-          Cashier Closure
-        </div>
-
-        {/* Top metrics row */}
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            gap: 14,
-            flexWrap: "wrap",
-            alignItems: "flex-start",
-            marginBottom: 10,
-          }}
-        >
-          <div style={{ minWidth: 240 }}>
-            <div style={{ fontSize: 12, color: "#6b7280" }}>Expected money (after expenses)</div>
-            <div style={{ fontSize: 28, fontWeight: 950, color: "#111827", marginTop: 4 }}>
-              {formatMoney(expectedAfterExpenses)} RWF
-            </div>
+          <div
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+              color: "#6b7280",
+              marginBottom: 4,
+            }}
+          >
+            Expected money (all methods)
           </div>
 
-          <div style={{ minWidth: 220, textAlign: "right" }}>
-            <div style={{ fontSize: 12, color: "#6b7280" }}>Counted total (all methods)</div>
-            <div style={{ fontSize: 18, fontWeight: 950, color: "#111827", marginTop: 6 }}>
-              {formatMoney(countedTotal)} RWF
-            </div>
-            <div style={{ marginTop: 6, fontSize: 14, fontWeight: 900, color: diffColor(diffTotalAfterExpenses) }}>
-              Diff: {formatMoney(diffTotalAfterExpenses)} RWF
-            </div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: "#111827" }}>
+            {formatMoney(expectedAfterExpenses)} RWF
           </div>
-        </div>
+          <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 8 }}>
+            After expenses
+          </div>
 
-        <div style={{ textAlign: "center", fontSize: 12, color: "#6b7280", marginBottom: 10 }}>
-          Type what you actually counted (mobile: vertical · desktop: Cash | MoMo | POS).
-        </div>
+          <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 6 }}>
+            Cashier pad · type what you actually counted.
+          </div>
 
-        {/* MOBILE: keep vertical stack (unchanged feeling) */}
-        <div className="iclas-cashier-mobile">
           {/* CASH */}
           <div style={{ marginBottom: 10 }}>
-            <div style={{ textAlign: "center", fontWeight: 900, color: "#111827", marginBottom: 6 }}>CASH</div>
-            <MoneyInput value={cashDrawer} onChange={setCashDrawer} placeholder="Type cash total" onTouched={markTouched} />
-            <div style={{ marginTop: 6, fontSize: 11, display: "flex", justifyContent: "space-between" }}>
-              <span style={{ color: "#6b7280" }}>Expected: {formatMoney(expectedCashAfter)} RWF</span>
-              <span style={{ color: diffColor(diffCash) }}>Diff: {formatMoney(diffCash)}</span>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                fontSize: 12,
+                marginBottom: 4,
+              }}
+            >
+              <span>CASH</span>
+            </div>
+            <MoneyInput
+              value={cashDrawer}
+              onChange={setCashDrawer}
+              placeholder="Type cash total"
+              onTouched={markTouched}
+            />
+            <div
+              style={{
+                marginTop: 3,
+                fontSize: 11,
+                display: "flex",
+                justifyContent: "space-between",
+              }}
+            >
+              <span style={{ color: "#6b7280" }}>
+                Expected: {formatMoney(expectedCashAfter)} RWF
+              </span>
+              <span style={{ color: diffColor(diffCash) }}>
+                Diff: {formatMoney(diffCash)}
+              </span>
             </div>
           </div>
 
           {/* MOMO */}
           <div style={{ marginBottom: 10 }}>
-            <div style={{ textAlign: "center", fontWeight: 900, color: "#111827", marginBottom: 6 }}>MOMO</div>
-            <MoneyInput value={momoDrawer} onChange={setMomoDrawer} placeholder="Type MoMo total" onTouched={markTouched} />
-            <div style={{ marginTop: 6, fontSize: 11, display: "flex", justifyContent: "space-between" }}>
-              <span style={{ color: "#6b7280" }}>Expected: {formatMoney(expectedMomoAfter)} RWF</span>
-              <span style={{ color: diffColor(diffMomo) }}>Diff: {formatMoney(diffMomo)}</span>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                fontSize: 12,
+                marginBottom: 4,
+              }}
+            >
+              <span>MOMO</span>
+            </div>
+            <MoneyInput
+              value={momoDrawer}
+              onChange={setMomoDrawer}
+              placeholder="Type MoMo total"
+              onTouched={markTouched}
+            />
+            <div
+              style={{
+                marginTop: 3,
+                fontSize: 11,
+                display: "flex",
+                justifyContent: "space-between",
+              }}
+            >
+              <span style={{ color: "#6b7280" }}>
+                Expected: {formatMoney(expectedMomoAfter)} RWF
+              </span>
+              <span style={{ color: diffColor(diffMomo) }}>
+                Diff: {formatMoney(diffMomo)}
+              </span>
             </div>
           </div>
 
           {/* POS */}
-          <div style={{ marginBottom: 6 }}>
-            <div style={{ textAlign: "center", fontWeight: 900, color: "#111827", marginBottom: 6 }}>POS</div>
-            <MoneyInput value={posDrawer} onChange={setPosDrawer} placeholder="Type POS total" onTouched={markTouched} />
-            <div style={{ marginTop: 6, fontSize: 11, display: "flex", justifyContent: "space-between" }}>
-              <span style={{ color: "#6b7280" }}>Expected: {formatMoney(expectedPosAfter)} RWF</span>
-              <span style={{ color: diffColor(diffPos) }}>Diff: {formatMoney(diffPos)}</span>
+          <div style={{ marginBottom: 10 }}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                fontSize: 12,
+                marginBottom: 4,
+              }}
+            >
+              <span>POS</span>
             </div>
-          </div>
-        </div>
-
-        {/* DESKTOP: one row with vertical separators */}
-        <div className="iclas-cashier-desktop">
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-              gap: 0,
-              border: "1px solid #e5e7eb",
-              borderRadius: 18,
-              overflow: "hidden",
-              background: "#fff",
-            }}
-          >
-            {/* CASH */}
-            <div style={{ padding: "12px 14px" }}>
-              <div style={{ textAlign: "center", fontWeight: 950, color: "#111827", marginBottom: 10 }}>CASH</div>
-              <MoneyInput value={cashDrawer} onChange={setCashDrawer} placeholder="Type cash total" onTouched={markTouched} />
-              <div style={{ marginTop: 8, fontSize: 11, display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "#6b7280" }}>Expected: {formatMoney(expectedCashAfter)} RWF</span>
-                <span style={{ color: diffColor(diffCash), fontWeight: 800 }}>Diff: {formatMoney(diffCash)}</span>
-              </div>
-            </div>
-
-            {/* MOMO */}
-            <div style={{ padding: "12px 14px", borderLeft: "1px solid #e5e7eb" }}>
-              <div style={{ textAlign: "center", fontWeight: 950, color: "#111827", marginBottom: 10 }}>MOMO</div>
-              <MoneyInput value={momoDrawer} onChange={setMomoDrawer} placeholder="Type MoMo total" onTouched={markTouched} />
-              <div style={{ marginTop: 8, fontSize: 11, display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "#6b7280" }}>Expected: {formatMoney(expectedMomoAfter)} RWF</span>
-                <span style={{ color: diffColor(diffMomo), fontWeight: 800 }}>Diff: {formatMoney(diffMomo)}</span>
-              </div>
-            </div>
-
-            {/* POS */}
-            <div style={{ padding: "12px 14px", borderLeft: "1px solid #e5e7eb" }}>
-              <div style={{ textAlign: "center", fontWeight: 950, color: "#111827", marginBottom: 10 }}>POS</div>
-              <MoneyInput value={posDrawer} onChange={setPosDrawer} placeholder="Type POS total" onTouched={markTouched} />
-              <div style={{ marginTop: 8, fontSize: 11, display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "#6b7280" }}>Expected: {formatMoney(expectedPosAfter)} RWF</span>
-                <span style={{ color: diffColor(diffPos), fontWeight: 800 }}>Diff: {formatMoney(diffPos)}</span>
-              </div>
+            <MoneyInput
+              value={posDrawer}
+              onChange={setPosDrawer}
+              placeholder="Type POS total"
+              onTouched={markTouched}
+            />
+            <div
+              style={{
+                marginTop: 3,
+                fontSize: 11,
+                display: "flex",
+                justifyContent: "space-between",
+              }}
+            >
+              <span style={{ color: "#6b7280" }}>
+                Expected: {formatMoney(expectedPosAfter)} RWF
+              </span>
+              <span style={{ color: diffColor(diffPos) }}>
+                Diff: {formatMoney(diffPos)}
+              </span>
             </div>
           </div>
 
+          {/* Totals inside right card */}
           <div
             style={{
-              marginTop: 10,
+              borderTop: "1px solid #e5e7eb",
+              paddingTop: 8,
+              marginTop: 2,
               fontSize: 12,
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "baseline",
-              gap: 12,
             }}
           >
-            <div style={{ color: "#6b7280" }}>Counted total (all methods)</div>
-            <div style={{ fontWeight: 950 }}>{formatMoney(countedTotal)} RWF</div>
-          </div>
-        </div>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                marginBottom: 4,
+              }}
+            >
+              <span>Counted total (all methods)</span>
+              <span>
+                <strong>{formatMoney(countedTotal)} RWF</strong>
+              </span>
+            </div>
 
-        {/* Keep this line (difference vs system) SAME concept as before */}
-        <div
-          style={{
-            marginTop: 10,
-            borderTop: "1px solid #e5e7eb",
-            paddingTop: 10,
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "baseline",
-            gap: 12,
-            fontSize: 12,
-          }}
-        >
-          <div style={{ color: "#111827" }}>Difference vs system expected (after expenses)</div>
-          <div style={{ fontWeight: 950, color: diffColor(diffTotalAfterExpenses) }}>
-            {formatMoney(diffTotalAfterExpenses)} RWF
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span>Difference vs system expected (after expenses)</span>
+              <span
+                style={{
+                  fontWeight: 800,
+                  color: diffColor(diffTotalAfterExpenses),
+                }}
+              >
+                {formatMoney(diffTotalAfterExpenses)} RWF
+              </span>
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Bottom summary (kept) */}
+      {/* Bottom summary */}
       <div
         style={{
           marginTop: 18,
@@ -957,35 +1040,97 @@ export default function DailyClosureTab({
           }}
         >
           <div>
-            <div style={{ color: "#6b7280", marginBottom: 4 }}>Counted totals</div>
-            <div style={{ fontWeight: 700 }}>{formatMoney(countedTotal)} RWF</div>
+            <div style={{ color: "#6b7280", marginBottom: 4 }}>
+              Counted totals
+            </div>
+            <div style={{ fontWeight: 700 }}>
+              {formatMoney(countedTotal)} RWF
+            </div>
           </div>
 
           <div>
-            <div style={{ color: "#6b7280", marginBottom: 4 }}>Total interest</div>
-            <div style={{ fontWeight: 700 }}>{formatMoney(totalInterest)} RWF</div>
+            <div style={{ color: "#6b7280", marginBottom: 4 }}>
+              Total interest
+            </div>
+            <div style={{ fontWeight: 700 }}>
+              {formatMoney(totalInterest)} RWF
+            </div>
           </div>
 
           <div>
-            <div style={{ color: "#6b7280", marginBottom: 4 }}>Expenses</div>
-            <div style={{ fontWeight: 700, color: "#b91c1c" }}>{formatMoney(expensesTotal)} RWF</div>
+            <div style={{ color: "#6b7280", marginBottom: 4 }}>
+              Expenses
+            </div>
+            <div style={{ fontWeight: 700, color: "#b91c1c" }}>
+              {formatMoney(expensesTotal)} RWF
+            </div>
           </div>
 
           <div>
-            <div style={{ color: "#6b7280", marginBottom: 4 }}>Remaining interest</div>
-            <div style={{ fontWeight: 700, color: remainingInterest >= 0 ? "#15803d" : "#b91c1c" }}>
+            <div style={{ color: "#6b7280", marginBottom: 4 }}>
+              Remaining interest
+            </div>
+            <div
+              style={{
+                fontWeight: 700,
+                color: remainingInterest >= 0 ? "#15803d" : "#b91c1c",
+              }}
+            >
               {formatMoney(remainingInterest)} RWF
             </div>
           </div>
         </div>
 
-        <div style={{ marginTop: 10, textAlign: "center", fontSize: 11, color: "#6b7280" }}>
-          <div style={{ fontWeight: 700, marginBottom: 3 }}>DIFFERENCE COUNTED VS SYSTEM EXPECTED</div>
-          <div style={{ fontSize: 18, fontWeight: 800, color: diffColor(diffTotalAfterExpenses) }}>
+        <div
+          style={{
+            marginTop: 10,
+            textAlign: "center",
+            fontSize: 11,
+            color: "#6b7280",
+          }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 3 }}>
+            DIFFERENCE COUNTED VS SYSTEM EXPECTED
+          </div>
+          <div
+            style={{
+              fontSize: 18,
+              fontWeight: 800,
+              color: diffColor(diffTotalAfterExpenses),
+            }}
+          >
             {formatMoney(diffTotalAfterExpenses)} RWF
           </div>
-          <div style={{ marginTop: 3 }}>
-            Auto-refreshes totals (expenses + credit paid) every 15 seconds and on focus.
+
+          {/* ✅ CHANGE #2: Save closure button moved here (most visible) */}
+          <div style={{ marginTop: 10, display: "flex", justifyContent: "center" }}>
+            <button
+              type="button"
+              onClick={handleSaveClosure}
+              disabled={saveDisabled}
+              style={{
+                border: "none",
+                borderRadius: 999,
+                padding: "10px 16px",
+                fontSize: 12,
+                fontWeight: 800,
+                cursor: saveDisabled ? "not-allowed" : "pointer",
+                backgroundColor: saveDisabled ? "#9ca3af" : "#2563eb",
+                color: "#ffffff",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                minWidth: 220,
+              }}
+              title={isLockedReadOnly ? "Read-only for past day" : "Save daily closure"}
+            >
+              {saving ? "Saving..." : "Save closure"}
+            </button>
+          </div>
+
+          <div style={{ marginTop: 8 }}>
+            Auto-refreshes totals (expenses + credit paid) every 15 seconds and
+            on focus.
           </div>
         </div>
       </div>
