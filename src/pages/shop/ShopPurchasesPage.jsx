@@ -1,4 +1,4 @@
-// src/pages/shop/ShopPurchasesPage.jsx
+// FILE: src/pages/shop/ShopPurchasesPage.jsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext.jsx";
@@ -345,11 +345,10 @@ function ShopPurchasesPage() {
 
   const [shop, setShop] = useState(null);
   const [stockRows, setStockRows] = useState([]);
-  const [itemsCatalog, setItemsCatalog] = useState([]); // ✅ union with stock items
+  const [itemsCatalog, setItemsCatalog] = useState([]); // ✅ shop-scoped items list
 
-  // NEW: which items are assigned to THIS shop
-  // null = not loaded / fallback to old behaviour
-  const [allowedItemIds, setAllowedItemIds] = useState(null);
+  // ✅ If shop-usage endpoint exists, we use it to filter; otherwise we fall back to itemsCatalog ids
+  const [usageAllowedItemIds, setUsageAllowedItemIds] = useState(null);
 
   const [loading, setLoading] = useState(true);
 
@@ -434,7 +433,7 @@ function ShopPurchasesPage() {
     padRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
-  // ✅ Load shop + stock + item catalogue (so purchases are NOT limited by stock rows)
+  // ✅ Load shop + stock + shop items catalogue
   useEffect(() => {
     async function loadData() {
       setLoading(true);
@@ -463,11 +462,11 @@ function ShopPurchasesPage() {
           if (itemsResShop.ok) {
             itemsData = await itemsResShop.json().catch(() => []);
           } else {
-            // ✅ FIX: do NOT fall back to global /items/ (would show all catalogue items)
+            // ✅ IMPORTANT: do NOT fall back to global /items/
             itemsData = [];
           }
         } catch {
-          // ✅ FIX: keep empty instead of falling back to global /items/
+          // ✅ IMPORTANT: keep empty instead of falling back to global /items/
           itemsData = [];
         }
 
@@ -485,7 +484,21 @@ function ShopPurchasesPage() {
     loadData();
   }, [shopId, authHeadersNoJson]);
 
-  // ✅ NEW: load item→shop usage and build allowed IDs for this shop
+  // ✅ Build fallback allowed IDs from itemsCatalog (shop-scoped)
+  const catalogAllowedIds = useMemo(() => {
+    const set = new Set();
+    for (const it of itemsCatalog || []) {
+      const id = it?.id ?? it?.item_id;
+      if (id == null) continue;
+      set.add(Number(id));
+    }
+    // If we truly have no items assigned in catalog, keep empty set (meaning: show none)
+    // BUT we only apply this set when itemsCatalog exists (length > 0).
+    return set;
+  }, [itemsCatalog]);
+
+  // ✅ Optional: load item→shop usage and build allowed IDs for this shop
+  // If this endpoint does not exist, we will fall back to itemsCatalog ids
   useEffect(() => {
     async function loadItemAssignmentsForShop() {
       try {
@@ -493,14 +506,13 @@ function ShopPurchasesPage() {
           headers: authHeadersNoJson,
         });
         if (!res.ok) {
-          // Fallback: no filter, keep old behaviour
-          setAllowedItemIds(null);
+          setUsageAllowedItemIds(null);
           return;
         }
 
         const data = await res.json().catch(() => []);
         if (!Array.isArray(data)) {
-          setAllowedItemIds(null);
+          setUsageAllowedItemIds(null);
           return;
         }
 
@@ -517,22 +529,28 @@ function ShopPurchasesPage() {
             .map((x) => Number(x))
             .some((x) => x === sid);
 
-          if (hasThisShop) {
-            idsSet.add(Number(itemId));
-          }
+          if (hasThisShop) idsSet.add(Number(itemId));
         }
 
-        // If there are no assigned items, we set an empty Set (so dropdown becomes empty)
-        setAllowedItemIds(idsSet);
+        setUsageAllowedItemIds(idsSet);
       } catch (e) {
         console.error("Failed to load item-shop usage for picker:", e);
-        // Fallback: keep old behaviour (no filter)
-        setAllowedItemIds(null);
+        setUsageAllowedItemIds(null);
       }
     }
 
     loadItemAssignmentsForShop();
   }, [shopId, authHeadersNoJson]);
+
+  // ✅ Final allowed IDs:
+  // 1) Prefer /items/shop-usage if it works
+  // 2) Else, fall back to ids returned by /items/?shop_id=...
+  // 3) If even that list is empty (no assigned items), dropdown becomes empty (which is correct)
+  const allowedItemIds = useMemo(() => {
+    if (usageAllowedItemIds instanceof Set) return usageAllowedItemIds;
+    if ((itemsCatalog || []).length > 0) return catalogAllowedIds;
+    return null; // if catalog endpoint returns empty and there is stock, we won't block stock items
+  }, [usageAllowedItemIds, itemsCatalog, catalogAllowedIds]);
 
   const stockByItemId = useMemo(() => {
     const map = {};
@@ -570,13 +588,13 @@ function ShopPurchasesPage() {
   const pickerItems = useMemo(() => {
     const byId = new Map();
 
-    // 1) Items that already exist in stock for this shop
+    // 1) Items that already exist in stock for this shop (fallback if catalogue is empty)
     for (const s of stockRows || []) {
       if (s?.item_id == null) continue;
       byId.set(Number(s.item_id), s?.item_name || `Item ${s.item_id}`);
     }
 
-    // 2) Items in the (possibly per-shop) catalogue
+    // 2) Items in the shop catalogue
     for (const it of itemsCatalog || []) {
       const id = it?.id ?? it?.item_id;
       if (id == null) continue;
@@ -756,8 +774,7 @@ function ShopPurchasesPage() {
         return;
       }
 
-      // Build query safely (prevents 422 from empty/invalid query strings)
-      // Also send both styles to support older backend versions if needed.
+      // Build query safely
       const sp = new URLSearchParams();
       sp.set("shop_id", String(shopId));
 
@@ -915,7 +932,6 @@ function ShopPurchasesPage() {
       if (activeTab === 2) {
         const dayISO = toISODate(purchaseDateForRefresh);
         if (dayISO) {
-          // refresh that day's lines + day summaries
           await loadHistoryDayLines(dayISO);
         }
         await loadHistoryDays();
@@ -1043,7 +1059,7 @@ function ShopPurchasesPage() {
       const piecesPerUnit =
         s.item_pieces_per_unit ?? metaFallback.piecesPerUnit ?? 1;
 
-      // ✅ FIX: recent values fall back to NEW values if stock has no history yet
+      // ✅ recent values fall back to NEW values if stock has no history yet
       const recentUnitCost = chooseRecent(
         s.last_purchase_unit_price,
         line.newUnitCost
@@ -1130,7 +1146,6 @@ function ShopPurchasesPage() {
       const piecesPerUnit =
         s.item_pieces_per_unit ?? metaFallback.piecesPerUnit ?? 1;
 
-      // ✅ Same fallback logic for history
       const recentUnitCost = chooseRecent(
         s.last_purchase_unit_price,
         line.newUnitCost
@@ -1254,7 +1269,7 @@ function ShopPurchasesPage() {
 
       cancelAnyEdit();
       resetPadToDefaults();
-      await loadExistingLines(); // ✅ reload from backend (so UI matches DB)
+      await loadExistingLines(); // ✅ reload from backend
     } catch (err) {
       console.error(err);
       setError(err.message || "Failed to save purchase.");
@@ -1341,7 +1356,6 @@ function ShopPurchasesPage() {
   return (
     <div
       style={{
-        // ✅ FIX: remove full-bleed 100vw hacks (they cause ugly edge collisions inside AppLayout)
         width: "100%",
         maxWidth: "1500px",
         margin: "0 auto",
@@ -1414,7 +1428,7 @@ function ShopPurchasesPage() {
               {shopName}
             </div>
 
-            {/* ✅ Only 2 tabs (less noisy) */}
+            {/* ✅ Only 2 tabs */}
             <div
               style={{
                 marginTop: "10px",
@@ -1445,7 +1459,6 @@ function ShopPurchasesPage() {
                   setError("");
                   setMessage("");
 
-                  // default last 31 days whenever you open All purchases
                   const t = todayISO();
                   setHistoryFrom(addDaysISO(t, -(MAX_HISTORY_DAYS - 1)));
                   setHistoryTo(t);
@@ -1503,7 +1516,7 @@ function ShopPurchasesPage() {
           </div>
         </div>
 
-        {/* Keep your top inputs (still useful) */}
+        {/* Top inputs */}
         <div
           style={{
             display: "grid",
@@ -2063,9 +2076,6 @@ function ShopPurchasesPage() {
             padding: "16px 18px 14px",
           }}
         >
-          {/* (Tab 2 content unchanged — only table wrapper minWidth uses the new constant) */}
-          {/* Your existing Tab 2 is still here — kept intact to avoid breaking features */}
-
           <div
             style={{
               display: "flex",
@@ -2188,33 +2198,15 @@ function ShopPurchasesPage() {
 
           <div style={{ marginTop: 10 }}>
             {historyLoading ? (
-              <div
-                style={{
-                  padding: "14px 4px 6px",
-                  fontSize: "13px",
-                  color: "#6b7280",
-                }}
-              >
+              <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
                 Loading…
               </div>
             ) : filteredHistoryDays.length === 0 ? (
-              <div
-                style={{
-                  padding: "14px 4px 6px",
-                  fontSize: "13px",
-                  color: "#6b7280",
-                }}
-              >
+              <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
                 No purchases found in this date range.
               </div>
             ) : (
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "10px",
-                }}
-              >
+              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                 {filteredHistoryDays.map((d) => {
                   const dayISO = toISODate(d.purchase_date);
                   const isOpen = !!expandedDays[dayISO];
@@ -2227,10 +2219,7 @@ function ShopPurchasesPage() {
                     ? enrichedLines
                     : enrichedLines.filter((ln) => {
                         const name = (ln.meta.itemName || "").toLowerCase();
-                        return (
-                          name.includes(term) ||
-                          String(ln.purchaseDate || "").includes(term)
-                        );
+                        return name.includes(term) || String(ln.purchaseDate || "").includes(term);
                       });
 
                   return (
@@ -2270,34 +2259,16 @@ function ShopPurchasesPage() {
                           }}
                           title={isOpen ? "Collapse" : "Expand"}
                         >
-                          <span
-                            style={{
-                              width: 22,
-                              textAlign: "center",
-                              fontSize: "14px",
-                            }}
-                          >
+                          <span style={{ width: 22, textAlign: "center", fontSize: "14px" }}>
                             {isOpen ? "▾" : "▸"}
                           </span>
                           <span style={{ fontSize: "13px" }}>{dayISO}</span>
-                          <span
-                            style={{
-                              fontSize: "12px",
-                              color: "#6b7280",
-                              fontWeight: 700,
-                            }}
-                          >
+                          <span style={{ fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>
                             • {Number(d.purchases_count || 0)} purchase(s)
                           </span>
                         </button>
 
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: "10px",
-                          }}
-                        >
+                        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                           <div style={{ textAlign: "right" }}>
                             <div
                               style={{
@@ -2309,13 +2280,7 @@ function ShopPurchasesPage() {
                             >
                               Total
                             </div>
-                            <div
-                              style={{
-                                fontSize: "14px",
-                                fontWeight: 900,
-                                color: "#111827",
-                              }}
-                            >
+                            <div style={{ fontSize: "14px", fontWeight: 900, color: "#111827" }}>
                               {formatMoney(d.total_amount || 0)}
                             </div>
                           </div>
@@ -2349,26 +2314,12 @@ function ShopPurchasesPage() {
                       {isOpen && (
                         <div style={{ padding: "10px 10px 12px" }}>
                           {dayIsLoading ? (
-                            <div
-                              style={{
-                                padding: "10px 6px",
-                                fontSize: "13px",
-                                color: "#6b7280",
-                              }}
-                            >
+                            <div style={{ padding: "10px 6px", fontSize: "13px", color: "#6b7280" }}>
                               Loading day items…
                             </div>
                           ) : filteredLines.length === 0 ? (
-                            <div
-                              style={{
-                                padding: "10px 6px",
-                                fontSize: "13px",
-                                color: "#6b7280",
-                              }}
-                            >
-                              {rawLines
-                                ? "No matching items."
-                                : "No lines found for this day."}
+                            <div style={{ padding: "10px 6px", fontSize: "13px", color: "#6b7280" }}>
+                              {rawLines ? "No matching items." : "No lines found for this day."}
                             </div>
                           ) : (
                             <div
@@ -2379,14 +2330,7 @@ function ShopPurchasesPage() {
                                 overflow: "hidden",
                               }}
                             >
-                              <div
-                                style={{
-                                  maxHeight: "520px",
-                                  overflowY: "auto",
-                                  overflowX: "auto",
-                                  scrollbarGutter: "stable",
-                                }}
-                              >
+                              <div style={{ maxHeight: "520px", overflowY: "auto", overflowX: "auto", scrollbarGutter: "stable" }}>
                                 <div
                                   style={{
                                     display: "grid",
@@ -2407,39 +2351,17 @@ function ShopPurchasesPage() {
                                   }}
                                 >
                                   <div>Item</div>
-                                  <div style={{ textAlign: "center" }}>
-                                    Qty units
-                                  </div>
-                                  <div style={{ textAlign: "center" }}>
-                                    Pieces / unit
-                                  </div>
-                                  <div style={{ textAlign: "center" }}>
-                                    All pieces
-                                  </div>
-                                  <div style={{ textAlign: "right" }}>
-                                    Recent cost/unit
-                                  </div>
-                                  <div style={{ textAlign: "right" }}>
-                                    New cost/unit
-                                  </div>
-                                  <div style={{ textAlign: "right" }}>
-                                    Cost / piece
-                                  </div>
-                                  <div style={{ textAlign: "right" }}>
-                                    Recent wholesale
-                                  </div>
-                                  <div style={{ textAlign: "right" }}>
-                                    New wholesale
-                                  </div>
-                                  <div style={{ textAlign: "right" }}>
-                                    Recent retail
-                                  </div>
-                                  <div style={{ textAlign: "right" }}>
-                                    New retail
-                                  </div>
-                                  <div style={{ textAlign: "right" }}>
-                                    Line total
-                                  </div>
+                                  <div style={{ textAlign: "center" }}>Qty units</div>
+                                  <div style={{ textAlign: "center" }}>Pieces / unit</div>
+                                  <div style={{ textAlign: "center" }}>All pieces</div>
+                                  <div style={{ textAlign: "right" }}>Recent cost/unit</div>
+                                  <div style={{ textAlign: "right" }}>New cost/unit</div>
+                                  <div style={{ textAlign: "right" }}>Cost / piece</div>
+                                  <div style={{ textAlign: "right" }}>Recent wholesale</div>
+                                  <div style={{ textAlign: "right" }}>New wholesale</div>
+                                  <div style={{ textAlign: "right" }}>Recent retail</div>
+                                  <div style={{ textAlign: "right" }}>New retail</div>
+                                  <div style={{ textAlign: "right" }}>Line total</div>
                                   <div></div>
                                 </div>
 
@@ -2452,19 +2374,14 @@ function ShopPurchasesPage() {
                                     recentWholesalePerPiece,
                                     recentRetailPerPiece,
                                   } = meta;
-                                  const {
-                                    newCostPerPiece,
-                                    lineTotal,
-                                    allPieces,
-                                  } = computed;
+                                  const { newCostPerPiece, lineTotal, allPieces } = computed;
 
                                   return (
                                     <div
                                       key={line.id}
                                       style={{
                                         display: "grid",
-                                        gridTemplateColumns:
-                                          PURCHASE_GRID_COLUMNS,
+                                        gridTemplateColumns: PURCHASE_GRID_COLUMNS,
                                         minWidth: PURCHASE_GRID_MIN_WIDTH,
                                         alignItems: "center",
                                         padding: "10px 10px",
@@ -2475,9 +2392,7 @@ function ShopPurchasesPage() {
                                       <div>
                                         <button
                                           type="button"
-                                          onClick={() =>
-                                            openHistoryLineForEdit(line)
-                                          }
+                                          onClick={() => openHistoryLineForEdit(line)}
                                           style={{
                                             padding: 0,
                                             margin: 0,
@@ -2493,68 +2408,27 @@ function ShopPurchasesPage() {
                                         >
                                           {itemName || "Unknown item"}
                                         </button>
-                                        <div
-                                          style={{
-                                            fontSize: "11px",
-                                            color: "#6b7280",
-                                            marginTop: 2,
-                                          }}
-                                        >
+                                        <div style={{ fontSize: "11px", color: "#6b7280", marginTop: 2 }}>
                                           Date: {line.purchaseDate}
                                         </div>
                                       </div>
 
-                                      <div style={{ textAlign: "center" }}>
-                                        {formatQty(line.qtyUnits)}
-                                      </div>
-                                      <div style={{ textAlign: "center" }}>
-                                        {formatQty(piecesPerUnit)}
-                                      </div>
-                                      <div style={{ textAlign: "center" }}>
-                                        {formatQty(allPieces)}
-                                      </div>
-                                      <div style={{ textAlign: "right" }}>
-                                        {formatMoney(recentUnitCost)}
-                                      </div>
-                                      <div style={{ textAlign: "right" }}>
-                                        {formatMoney(line.newUnitCost)}
-                                      </div>
-                                      <div style={{ textAlign: "right" }}>
-                                        {formatMoney(newCostPerPiece)}
-                                      </div>
-                                      <div style={{ textAlign: "right" }}>
-                                        {formatMoney(
-                                          recentWholesalePerPiece
-                                        )}
-                                      </div>
-                                      <div style={{ textAlign: "right" }}>
-                                        {formatMoney(
-                                          line.newWholesalePerPiece
-                                        )}
-                                      </div>
-                                      <div style={{ textAlign: "right" }}>
-                                        {formatMoney(recentRetailPerPiece)}
-                                      </div>
-                                      <div style={{ textAlign: "right" }}>
-                                        {formatMoney(
-                                          line.newRetailPerPiece
-                                        )}
-                                      </div>
-                                      <div
-                                        style={{
-                                          textAlign: "right",
-                                          fontWeight: 600,
-                                        }}
-                                      >
-                                        {formatMoney(lineTotal)}
-                                      </div>
+                                      <div style={{ textAlign: "center" }}>{formatQty(line.qtyUnits)}</div>
+                                      <div style={{ textAlign: "center" }}>{formatQty(piecesPerUnit)}</div>
+                                      <div style={{ textAlign: "center" }}>{formatQty(allPieces)}</div>
+                                      <div style={{ textAlign: "right" }}>{formatMoney(recentUnitCost)}</div>
+                                      <div style={{ textAlign: "right" }}>{formatMoney(line.newUnitCost)}</div>
+                                      <div style={{ textAlign: "right" }}>{formatMoney(newCostPerPiece)}</div>
+                                      <div style={{ textAlign: "right" }}>{formatMoney(recentWholesalePerPiece)}</div>
+                                      <div style={{ textAlign: "right" }}>{formatMoney(line.newWholesalePerPiece)}</div>
+                                      <div style={{ textAlign: "right" }}>{formatMoney(recentRetailPerPiece)}</div>
+                                      <div style={{ textAlign: "right" }}>{formatMoney(line.newRetailPerPiece)}</div>
+                                      <div style={{ textAlign: "right", fontWeight: 600 }}>{formatMoney(lineTotal)}</div>
 
                                       <div style={{ textAlign: "center" }}>
                                         <button
                                           type="button"
-                                          onClick={() =>
-                                            deleteSavedLine(line.dbId, dayISO)
-                                          }
+                                          onClick={() => deleteSavedLine(line.dbId, dayISO)}
                                           disabled={padSaving}
                                           title="Delete saved line"
                                           style={{
@@ -2565,9 +2439,7 @@ function ShopPurchasesPage() {
                                             backgroundColor: "#fef2f2",
                                             color: "#b91c1c",
                                             fontSize: "14px",
-                                            cursor: padSaving
-                                              ? "not-allowed"
-                                              : "pointer",
+                                            cursor: padSaving ? "not-allowed" : "pointer",
                                             opacity: padSaving ? 0.7 : 1,
                                           }}
                                         >
