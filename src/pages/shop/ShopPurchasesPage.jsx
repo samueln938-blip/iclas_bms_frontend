@@ -463,13 +463,12 @@ function ShopPurchasesPage() {
           if (itemsResShop.ok) {
             itemsData = await itemsResShop.json().catch(() => []);
           } else {
-            const itemsRes = await fetch(`${API_BASE}/items/`, {
-              headers: authHeadersNoJson,
-            });
-            if (itemsRes.ok) itemsData = await itemsRes.json().catch(() => []);
+            // ✅ FIX: do NOT fall back to global /items/ (would show all catalogue items)
+            itemsData = [];
           }
         } catch {
-          // ok: purchases still work from stock list
+          // ✅ FIX: keep empty instead of falling back to global /items/
+          itemsData = [];
         }
 
         setShop(shopData);
