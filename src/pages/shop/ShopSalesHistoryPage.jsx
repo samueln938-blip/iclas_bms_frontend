@@ -165,7 +165,7 @@ function formatTimeHM(iso) {
 }
 
 // =========================
-// Money + quantity helpers
+// Money helpers
 // =========================
 function formatMoney(value) {
   if (value === null || value === undefined || value === "") return "0";
@@ -173,17 +173,6 @@ function formatMoney(value) {
   return num.toLocaleString("en-RW", {
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
-  });
-}
-
-// ✅ IMPORTANT: quantities can be 0.5, 1.25, etc.
-function formatQty(value) {
-  if (value === null || value === undefined || value === "") return "0";
-  const num = Number(value);
-  const safe = Number.isFinite(num) ? num : 0;
-  return safe.toLocaleString("en-RW", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
   });
 }
 
@@ -490,10 +479,10 @@ function SalesHistoryPage() {
     setError("");
 
     try {
+      // ✅ Removed /shops/detail/:id to avoid noisy 404 in console
       const candidates = [
         `${API_BASE}/shops/${shopId}`,
         `${API_BASE}/shops/${shopId}/`,
-        `${API_BASE}/shops/detail/${shopId}`,
       ];
 
       const tasks = candidates.map((url) =>
@@ -738,34 +727,25 @@ function SalesHistoryPage() {
   }, [historyDaysBack, loadSales]);
 
   // -------------------------
-  // ✅ Open receipt/line in Shop workspace -> Current Sale (and carry the sale date)
+  // ✅ NEW: Open a receipt/line in Shop workspace (Current Sale edit mode)
   // -------------------------
   const openInCurrentSaleFromHistory = useCallback(
-    (saleId, saleLineId = null, saleDateRaw = null) => {
+    (saleId, saleLineId = null) => {
       if (!saleId) return;
-
-      const saleYmd = saleDateRaw ? (ymdFromISO(saleDateRaw) || null) : null;
 
       try {
         localStorage.setItem("iclas_edit_sale_id", String(saleId));
-
-        if (saleLineId != null) localStorage.setItem("iclas_edit_sale_line_id", String(saleLineId));
+        if (saleLineId != null)
+          localStorage.setItem("iclas_edit_sale_line_id", String(saleLineId));
         else localStorage.removeItem("iclas_edit_sale_line_id");
 
-        // tell SalesPOS to open Current Sale tab
+        // Hint for SalesPOS (we'll wire this next on SalesPOS side)
         localStorage.setItem("iclas_pos_desired_tab", "current");
-
-        // ✅ NEW: tell SalesPOS which date this sale belongs to
-        if (saleYmd) localStorage.setItem("iclas_pos_desired_date", saleYmd);
-        else localStorage.removeItem("iclas_pos_desired_date");
       } catch {}
 
+      // Also pass state (extra safety if you later read location.state)
       navigate(`/shops/${shopId}`, {
-        state: {
-          iclas_edit_sale_id: saleId,
-          iclas_edit_sale_line_id: saleLineId,
-          iclas_pos_desired_date: saleYmd,
-        },
+        state: { iclas_edit_sale_id: saleId, iclas_edit_sale_line_id: saleLineId },
       });
     },
     [navigate, shopId]
@@ -816,7 +796,7 @@ function SalesHistoryPage() {
   }, [sales, paymentFilter, tab, searchQuery, stockByItemId]);
 
   // -------------------------
-  // Build items rows (stable ids + lineIndex so inline edit always targets)
+  // Build items rows for a given sales list (FIXED: day-specific support)
   // -------------------------
   const buildItemsRows = useCallback(
     (salesList) => {
@@ -827,8 +807,7 @@ function SalesHistoryPage() {
         const creditOpen = isOpenCreditSale(sale);
 
         const lines = pickLines(sale);
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
+        for (const line of lines) {
           const { itemId, qty, unitPrice, total, profit } = extractLineFields(line);
 
           const stockRow = itemId ? stockByItemId[itemId] : null;
@@ -839,12 +818,9 @@ function SalesHistoryPage() {
             line?.name ||
             (itemId != null ? `Item #${itemId}` : "Unknown item");
 
-          const stableLineKey = line.id ?? `idx${i}`;
-
           rows.push({
-            id: `${sale.id}-${stableLineKey}`, // ✅ stable (no Math.random)
+            id: `${sale.id}-${line.id ?? Math.random().toString(16).slice(2)}`,
             lineId: line.id ?? null,
-            lineIndex: i, // ✅ fallback targeting if lineId missing
             saleId: sale.id,
             time: saleTime,
             itemId,
@@ -863,7 +839,10 @@ function SalesHistoryPage() {
     [stockByItemId]
   );
 
-  const allItemsRows = useMemo(() => buildItemsRows(filteredSales), [filteredSales, buildItemsRows]);
+  const allItemsRows = useMemo(
+    () => buildItemsRows(filteredSales),
+    [filteredSales, buildItemsRows]
+  );
 
   // -------------------------
   // Summary for active range
@@ -1007,14 +986,10 @@ function SalesHistoryPage() {
         }
 
         // 2) Build new lines payload (only one line changed)
-        const linesPayload = linesSrc.map((ln, idx) => {
+        const linesPayload = linesSrc.map((ln) => {
           const lineId = ln.id ?? ln.line_id ?? null;
-
           const isTarget =
-            (row.lineId != null &&
-              lineId != null &&
-              String(lineId) === String(row.lineId)) ||
-            (row.lineId == null && row.lineIndex != null && idx === row.lineIndex);
+            lineId != null && row.lineId != null ? String(lineId) === String(row.lineId) : false;
 
           const itemId = ln.item_id ?? ln.itemId ?? (ln.item && ln.item.id);
 
@@ -1221,9 +1196,7 @@ function SalesHistoryPage() {
                   Inline edit is optional. You can also{" "}
                   <button
                     type="button"
-                    onClick={() =>
-                      openInCurrentSaleFromHistory(currentRow.saleId, currentRow.lineId, currentRow.time)
-                    }
+                    onClick={() => openInCurrentSaleFromHistory(currentRow.saleId, currentRow.lineId)}
                     style={{
                       border: "none",
                       background: "transparent",
@@ -1448,8 +1421,7 @@ function SalesHistoryPage() {
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        // ✅ includes the specific sale date
-                        openInCurrentSaleFromHistory(row.saleId, row.lineId, row.time);
+                        openInCurrentSaleFromHistory(row.saleId, row.lineId);
                       }}
                       style={{
                         border: "none",
@@ -1460,7 +1432,7 @@ function SalesHistoryPage() {
                         cursor: "pointer",
                         textDecoration: "underline",
                       }}
-                      title="Open this receipt in Current Sale (same date) to edit & add items"
+                      title="Open this receipt in Current Sale to edit & add items"
                     >
                       {row.itemName}
                     </button>
@@ -1472,7 +1444,7 @@ function SalesHistoryPage() {
                   </td>
 
                   <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                    {formatQty(row.qtyPieces)}
+                    {formatMoney(row.qtyPieces)}
                   </td>
                   <td style={{ padding: "8px 4px", textAlign: "right" }}>
                     {formatMoney(row.unitPrice)}
@@ -1606,7 +1578,7 @@ function SalesHistoryPage() {
 
                       <button
                         type="button"
-                        onClick={() => openInCurrentSaleFromHistory(sale.id, null, sale.sale_date)}
+                        onClick={() => openInCurrentSaleFromHistory(sale.id, null)}
                         style={{
                           display: "block",
                           border: "none",
@@ -1619,7 +1591,7 @@ function SalesHistoryPage() {
                           textDecoration: "underline",
                           marginTop: 2,
                         }}
-                        title="Open this receipt in Current Sale (same date) to edit & add items"
+                        title="Open this receipt in Current Sale to edit & add items"
                       >
                         Receipt #{sale.id}
                       </button>
@@ -1630,7 +1602,7 @@ function SalesHistoryPage() {
 
                       <button
                         type="button"
-                        onClick={() => openInCurrentSaleFromHistory(sale.id, null, sale.sale_date)}
+                        onClick={() => openInCurrentSaleFromHistory(sale.id, null)}
                         style={{
                           display: "block",
                           border: "none",
@@ -1643,7 +1615,7 @@ function SalesHistoryPage() {
                           textDecoration: "underline",
                           marginTop: 2,
                         }}
-                        title="Open this receipt in Current Sale (same date) to edit & add items"
+                        title="Open this receipt in Current Sale to edit & add items"
                       >
                         Receipt #{sale.id}
                       </button>
@@ -1651,11 +1623,15 @@ function SalesHistoryPage() {
                   )}
                 </td>
 
-                <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatQty(piecesCount)}</td>
+                <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                  {formatMoney(piecesCount)}
+                </td>
                 <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600 }}>
                   {formatMoney(total)}
                 </td>
-                <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(profit)}</td>
+                <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                  {formatMoney(profit)}
+                </td>
                 <td style={{ padding: "8px 4px" }}>
                   <span
                     style={{
@@ -2353,7 +2329,9 @@ function SalesHistoryPage() {
 
           <div>
             <div style={{ color: "#6b7280" }}>Pieces sold</div>
-            <div style={{ fontSize: "16px", fontWeight: 800 }}>{formatQty(rangeSummary.piecesSold)}</div>
+            <div style={{ fontSize: "16px", fontWeight: 800 }}>
+              {formatMoney(rangeSummary.piecesSold)}
+            </div>
           </div>
 
           <div>
@@ -2394,7 +2372,7 @@ function SalesHistoryPage() {
           >
             <div style={{ fontWeight: 900, fontSize: 13 }}>Daily totals</div>
             <div style={{ fontSize: 12, color: "#6b7280" }}>
-              Tip: click a day to expand receipts (then click item/receipt to edit in Current Sale)
+              Tip: click a day (date) to expand receipts/items
             </div>
           </div>
 
@@ -2431,9 +2409,9 @@ function SalesHistoryPage() {
                   <th style={{ padding: "6px 4px", textAlign: "right" }}>Total</th>
                   <th style={{ padding: "6px 4px", textAlign: "right" }}>Profit</th>
                   <th style={{ padding: "6px 4px", textAlign: "right" }}>Open credit</th>
-                  <th style={{ padding: "6px 4px" }}></th>
                 </tr>
               </thead>
+
               <tbody>
                 {dailyTotalsTable.map((r) => {
                   const open = !!openDays[r.day];
@@ -2449,9 +2427,12 @@ function SalesHistoryPage() {
                             [r.day]: !prev[r.day],
                           }))
                         }
-                        title="Click to expand/collapse"
+                        title="Click date to expand/collapse"
                       >
-                        <td style={{ padding: "8px 4px", fontWeight: 800 }}>{r.day}</td>
+                        <td style={{ padding: "8px 4px", fontWeight: 800 }}>
+                          {open ? "▾ " : "▸ "}
+                          {r.day}
+                        </td>
                         <td style={{ padding: "8px 4px", textAlign: "right" }}>
                           {formatMoney(r.receipts)}
                         </td>
@@ -2478,34 +2459,11 @@ function SalesHistoryPage() {
                         >
                           {formatMoney(r.openCredit)}
                         </td>
-                        <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setOpenDays((prev) => ({
-                                ...prev,
-                                [r.day]: !prev[r.day],
-                              }));
-                            }}
-                            style={{
-                              padding: "6px 10px",
-                              borderRadius: 999,
-                              border: "1px solid #e5e7eb",
-                              background: "#fff",
-                              cursor: "pointer",
-                              fontSize: 12,
-                              fontWeight: 800,
-                            }}
-                          >
-                            {open ? "Hide" : "View"}
-                          </button>
-                        </td>
                       </tr>
 
                       {open && (
                         <tr>
-                          <td colSpan={6} style={{ padding: "10px 4px" }}>
+                          <td colSpan={5} style={{ padding: "10px 4px" }}>
                             <div
                               style={{
                                 borderRadius: 14,
@@ -2540,7 +2498,9 @@ function SalesHistoryPage() {
             padding: "10px 12px 10px",
           }}
         >
-          {viewMode === "items" ? renderItemsTable(filteredSales) : renderReceiptsTable(filteredSales)}
+          {viewMode === "items"
+            ? renderItemsTable(filteredSales)
+            : renderReceiptsTable(filteredSales)}
         </div>
       )}
     </div>
