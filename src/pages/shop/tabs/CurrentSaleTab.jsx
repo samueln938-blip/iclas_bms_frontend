@@ -144,6 +144,30 @@ function CustomerModal({ open, onClose, onSave }) {
   );
 }
 
+/**
+ * Work-date helpers:
+ * - We accept YYYY-MM-DD (from SalesPOS / Sales History navigation)
+ * - For NEW sales, we send an ISO datetime at midday UTC to avoid timezone date shifting.
+ * - For EDITING existing receipts, we do NOT change the sale_date.
+ */
+function isValidYmd(s) {
+  const v = String(s || "").trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(v);
+}
+
+function ymdTodayLocal() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+// Midday UTC keeps the same calendar date for almost all timezones (Kigali included)
+function ymdToIsoMiddayUtc(ymd) {
+  return `${ymd}T12:00:00.000Z`;
+}
+
 export default function CurrentSaleTab({
   API_BASE,
   shopId,
@@ -156,6 +180,11 @@ export default function CurrentSaleTab({
   onGoToday,
   setError,
   clearAlerts,
+
+  // ✅ NEW: working date (YYYY-MM-DD) for creating missing past sales
+  // If not provided, behavior remains the same as before.
+  workDate,
+
   // ✅ optional legacy prop
   editSaleId,
   onEditDone,
@@ -173,6 +202,18 @@ export default function CurrentSaleTab({
       maximumFractionDigits: 3,
     });
   };
+
+  // ✅ Resolve work date safely
+  const effectiveWorkDate = useMemo(() => {
+    if (isValidYmd(workDate)) return String(workDate);
+    return ymdTodayLocal();
+  }, [workDate]);
+
+  const isPastWorkDate = useMemo(() => {
+    // Lexicographic comparison works for YYYY-MM-DD
+    const today = ymdTodayLocal();
+    return String(effectiveWorkDate) < String(today);
+  }, [effectiveWorkDate]);
 
   // Pad + cart
   const [pad, setPad] = useState({
@@ -653,8 +694,6 @@ export default function CurrentSaleTab({
       },
     ]);
 
-    // ✅ clear the whole pad immediately after adding (prevents double-add)
-    // ✅ and STOP cursor/dropdown from auto popping up
     resetPadAfterAdd();
   };
 
@@ -963,10 +1002,15 @@ export default function CurrentSaleTab({
     let savedOk = false;
 
     try {
+      // ✅ IMPORTANT:
+      // - Editing: keep the original sale_date (NO changes)
+      // - New sale: use the chosen work date (from Sales history / closure date), to fix missing past sales
       const saleDate =
         isEditingExistingSale && editSourceSale?.sale_date
           ? editSourceSale.sale_date
-          : new Date().toISOString();
+          : (isValidYmd(effectiveWorkDate)
+              ? ymdToIsoMiddayUtc(effectiveWorkDate)
+              : new Date().toISOString());
 
       const shouldSendCustomer = isCreditSale || attachCustomer;
 
@@ -1032,7 +1076,7 @@ export default function CurrentSaleTab({
       clearEditHandoffStorage();
       resetCurrentSaleState();
 
-      // ✅ These are nice-to-have, but must NOT block navigation to "My Sales Today"
+      // ✅ These are nice-to-have, but must NOT block navigation
       try {
         await onRefreshStock?.();
       } catch (e) {
@@ -1371,19 +1415,39 @@ export default function CurrentSaleTab({
           </button>
         </div>
 
-        <div style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
-          <div
-            style={{
-              fontSize: 12,
-              color: "#6b7280",
-              letterSpacing: "0.10em",
-              textTransform: "uppercase",
-            }}
-          >
-            Amount to pay
-          </div>
-          <div style={{ fontSize: 26, fontWeight: 950, color: "#111827" }}>
-            {formatMoney(amountToPay)}
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          {/* ✅ Work date badge (prevents cashier saving missing sales under wrong day) */}
+          {!isEditingExistingSale && (
+            <div
+              style={{
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: isPastWorkDate ? "1px solid #fed7aa" : "1px solid #e5e7eb",
+                background: isPastWorkDate ? "#fff7ed" : "#f9fafb",
+                fontSize: 12,
+                fontWeight: 800,
+                color: "#111827",
+              }}
+              title="This date will be used for NEW sales you save from this tab"
+            >
+              Work date: <span style={{ fontWeight: 950 }}>{effectiveWorkDate}</span>
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
+            <div
+              style={{
+                fontSize: 12,
+                color: "#6b7280",
+                letterSpacing: "0.10em",
+                textTransform: "uppercase",
+              }}
+            >
+              Amount to pay
+            </div>
+            <div style={{ fontSize: 26, fontWeight: 950, color: "#111827" }}>
+              {formatMoney(amountToPay)}
+            </div>
           </div>
         </div>
       </div>
