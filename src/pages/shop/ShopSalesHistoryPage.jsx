@@ -67,9 +67,7 @@ function parseDateAssumeKigali(raw) {
   }
 
   const mDT =
-    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/.exec(
-      s
-    );
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/.exec(s);
 
   if (mDT) {
     const y = Number(mDT[1]);
@@ -81,7 +79,6 @@ function parseDateAssumeKigali(raw) {
     const ms = Number(mDT[7] || 0);
     if (!y || !mo || !da) return null;
 
-    // Kigali local (UTC+2) => UTC = local - 2h
     return new Date(Date.UTC(y, mo - 1, da, hh - 2, mi, ss, ms));
   }
 
@@ -204,8 +201,7 @@ function pickLines(sale) {
 }
 
 function extractLineFields(line) {
-  const itemId =
-    line?.item_id ?? line?.itemId ?? line?.item ?? line?.itemID ?? null;
+  const itemId = line?.item_id ?? line?.itemId ?? line?.item ?? line?.itemID ?? null;
 
   const qty = Number(
     line?.quantity_pieces ??
@@ -287,7 +283,6 @@ function SalesHistoryPage() {
   const { shopId } = useParams();
   const navigate = useNavigate();
 
-  // ✅ Use the same auth headers as Sales & POS
   const auth = useAuth();
   const authHeadersNoJson = auth?.authHeadersNoJson || auth?.authHeaders || {};
 
@@ -296,52 +291,39 @@ function SalesHistoryPage() {
   const [error, setError] = useState("");
 
   const [tab, setTab] = useState("history"); // history | today | range | month | credits | search
-
-  // View mode: items OR receipts
   const [viewMode, setViewMode] = useState("items");
-
-  // Payment filter: all / cash / card / mobile / credit
   const [paymentFilter, setPaymentFilter] = useState("all");
 
-  // ✅ All-history days back + draft input
   const [historyDaysBack, setHistoryDaysBack] = useState(30);
   const [historyDaysBackDraft, setHistoryDaysBackDraft] = useState("30");
 
-  // Today
   const [selectedDate, setSelectedDate] = useState(todayDateString());
 
-  // Range
   const [rangeFrom, setRangeFrom] = useState(addDaysYMD(todayDateString(), -6));
   const [rangeTo, setRangeTo] = useState(todayDateString());
 
-  // Month
   const [selectedMonth, setSelectedMonth] = useState(todayDateString().slice(0, 7));
 
-  // Credits tab (range)
   const [creditFrom, setCreditFrom] = useState(addDaysYMD(todayDateString(), -30));
   const [creditTo, setCreditTo] = useState(todayDateString());
 
-  // Search tab
   const [searchDaysBack, setSearchDaysBack] = useState(30);
   const [searchQuery, setSearchQuery] = useState("");
 
-  // Sales + loading
   const [sales, setSales] = useState([]);
   const [loadingSales, setLoadingSales] = useState(false);
 
-  // Stock rows to map item_id -> item_name
   const [stockRows, setStockRows] = useState([]);
   const [loadingStock, setLoadingStock] = useState(false);
 
-  // Auto refresh (Today tab only)
   const [autoRefreshToday, setAutoRefreshToday] = useState(true);
   const autoTimerRef = useRef(null);
 
-  // Last sync info
   const [lastSalesSyncAt, setLastSalesSyncAt] = useState(null);
 
-  // ✅ NEW: selected day panel (replaces "View/Hide" buttons)
+  // ✅ NEW: selected day (for day items list panel)
   const [selectedDay, setSelectedDay] = useState(null);
+  const dayPanelRef = useRef(null);
 
   const shopName = shop?.name || `Shop ${shopId}`;
 
@@ -352,6 +334,17 @@ function SalesHistoryPage() {
       Object.keys(authHeadersNoJson).length > 0
     );
   }, [authHeadersNoJson]);
+
+  // ✅ Navigate to SalesPOS Current sale for a given receipt
+  const goToSaleEdit = useCallback(
+    (saleId) => {
+      if (!saleId) return;
+      navigate(
+        `/shops/${shopId}/sales-pos?tab=current&saleId=${encodeURIComponent(saleId)}`
+      );
+    },
+    [navigate, shopId]
+  );
 
   useEffect(() => {
     if (!headersReady) {
@@ -367,7 +360,7 @@ function SalesHistoryPage() {
   }, [headersReady]);
 
   // -------------------------
-  // Decide active date range based on tab
+  // Decide active date range
   // -------------------------
   const activeDateFrom = useMemo(() => {
     if (tab === "history") {
@@ -420,7 +413,7 @@ function SalesHistoryPage() {
   }, [tab, selectedDate, rangeTo, creditTo, selectedMonth]);
 
   // -------------------------
-  // Safe JSON fetch helper (no cache + abortable)
+  // Safe JSON fetch helper
   // -------------------------
   const fetchJson = useCallback(async (url, headers, signal) => {
     const res = await fetch(url, { headers, signal, cache: "no-store" });
@@ -475,7 +468,10 @@ function SalesHistoryPage() {
       ];
 
       const tasks = candidates.map((url) =>
-        fetchJson(url, authHeadersNoJson, controller.signal).then((json) => ({ url, json }))
+        fetchJson(url, authHeadersNoJson, controller.signal).then((json) => ({
+          url,
+          json,
+        }))
       );
 
       let winner = null;
@@ -509,7 +505,7 @@ function SalesHistoryPage() {
   }, [loadShop]);
 
   // -------------------------
-  // Load stock to map item_id -> item_name (AUTH)
+  // Load stock map (AUTH)
   // -------------------------
   const loadStock = useCallback(async () => {
     if (!shopId) return;
@@ -531,7 +527,10 @@ function SalesHistoryPage() {
       ];
 
       const tasks = candidates.map((url) =>
-        fetchJson(url, authHeadersNoJson, controller.signal).then((json) => ({ url, json }))
+        fetchJson(url, authHeadersNoJson, controller.signal).then((json) => ({
+          url,
+          json,
+        }))
       );
 
       let winner = null;
@@ -571,7 +570,6 @@ function SalesHistoryPage() {
 
   // -------------------------
   // Load sales helper (AUTH)
-  // mode: "replace" | "append"
   // -------------------------
   const loadSales = useCallback(
     async ({ dateFrom, dateTo, mode = "replace" } = {}) => {
@@ -630,13 +628,11 @@ function SalesHistoryPage() {
     [shopId, headersReady, activeDateFrom, activeDateTo, fetchJson, authHeadersNoJson]
   );
 
-  // ✅ Auto-load sales for NON-history tabs (history is controlled)
   useEffect(() => {
     if (tab === "history") return;
     loadSales({ mode: "replace" });
   }, [tab, loadSales]);
 
-  // ✅ History initial load
   useEffect(() => {
     if (tab !== "history") return;
     if (!headersReady || !shopId) return;
@@ -713,37 +709,7 @@ function SalesHistoryPage() {
   }, [historyDaysBack, loadSales]);
 
   // -------------------------
-  // ✅ FIX: Open Current Sale tab in SalesPOS (not shop workspace root)
-  // -------------------------
-  const openInCurrentSaleFromHistory = useCallback(
-    (saleId, saleLineId = null) => {
-      if (!saleId) return;
-
-      // Keep your storage hints (backward compatible)
-      try {
-        localStorage.setItem("iclas_edit_sale_id", String(saleId));
-        if (saleLineId != null)
-          localStorage.setItem("iclas_edit_sale_line_id", String(saleLineId));
-        else localStorage.removeItem("iclas_edit_sale_line_id");
-
-        localStorage.setItem("iclas_pos_desired_tab", "current");
-      } catch {}
-
-      // ✅ Primary navigation: SalesPOS with explicit tab + edit ids
-      const qs = new URLSearchParams();
-      qs.set("tab", "current");
-      qs.set("editSaleId", String(saleId));
-      if (saleLineId != null) qs.set("editLineId", String(saleLineId));
-
-      navigate(`/shops/${shopId}/sales-pos?${qs.toString()}`, {
-        state: { iclas_edit_sale_id: saleId, iclas_edit_sale_line_id: saleLineId },
-      });
-    },
-    [navigate, shopId]
-  );
-
-  // -------------------------
-  // Filter by payment / credit (normalized)
+  // Filtered sales
   // -------------------------
   const filteredSales = useMemo(() => {
     const q = String(searchQuery || "").trim().toLowerCase();
@@ -757,7 +723,8 @@ function SalesHistoryPage() {
       if (effectivePaymentFilter === "credit") return creditOpen;
       if (effectivePaymentFilter === "cash") return !creditOpen && paymentType === "cash";
       if (effectivePaymentFilter === "card") return !creditOpen && paymentType === "card";
-      if (effectivePaymentFilter === "mobile") return !creditOpen && paymentType === "mobile";
+      if (effectivePaymentFilter === "mobile")
+        return !creditOpen && paymentType === "mobile";
 
       if (tab === "search" && q) {
         const idHit = String(sale?.id ?? "").toLowerCase().includes(q);
@@ -787,7 +754,7 @@ function SalesHistoryPage() {
   }, [sales, paymentFilter, tab, searchQuery, stockByItemId]);
 
   // -------------------------
-  // Build items rows for a given sales list
+  // Build items rows
   // -------------------------
   const buildItemsRows = useCallback(
     (salesList) => {
@@ -867,7 +834,7 @@ function SalesHistoryPage() {
   }, [filteredSales, allItemsRows]);
 
   // -------------------------
-  // Group by day (for non-today tabs, including history)
+  // Group by day
   // -------------------------
   const groupedByDay = useMemo(() => {
     const map = new Map();
@@ -901,19 +868,28 @@ function SalesHistoryPage() {
     return rows;
   }, [groupedByDay]);
 
+  // ✅ When selectedDay changes, scroll to Day panel
+  useEffect(() => {
+    if (!selectedDay) return;
+    const el = dayPanelRef.current;
+    if (!el) return;
+    try {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch {}
+  }, [selectedDay]);
+
   // -------------------------
-  // ✅ Edit pad state (items view)
+  // Inline edit states
   // -------------------------
   const [editRowId, setEditRowId] = useState(null);
   const [editDraft, setEditDraft] = useState({ qtyPieces: "", unitPrice: "" });
   const [savingEdit, setSavingEdit] = useState(false);
   const [editError, setEditError] = useState("");
 
-  // reset UI when range changes
   useEffect(() => {
-    setSelectedDay(null);
     setEditRowId(null);
     setEditError("");
+    // keep selectedDay as-is (user intentionally selected a day)
   }, [tab, activeDateFrom, activeDateTo]);
 
   const startEditRow = useCallback((row) => {
@@ -951,6 +927,7 @@ function SalesHistoryPage() {
         setSavingEdit(true);
         setEditError("");
 
+        // 1) Load full sale (with lines)
         const saleRes = await fetch(`${API_BASE}/sales/${row.saleId}`, {
           headers: authHeadersNoJson,
           cache: "no-store",
@@ -973,6 +950,7 @@ function SalesHistoryPage() {
           throw new Error("Sale has no lines to edit.");
         }
 
+        // 2) Build new lines payload (only one line changed)
         const linesPayload = linesSrc.map((ln) => {
           const lineId = ln.id ?? ln.line_id ?? null;
           const isTarget =
@@ -1013,6 +991,7 @@ function SalesHistoryPage() {
           lines: linesPayload,
         };
 
+        // 3) PUT update
         const putRes = await fetch(`${API_BASE}/sales/${row.saleId}`, {
           method: "PUT",
           headers: {
@@ -1035,6 +1014,7 @@ function SalesHistoryPage() {
 
         await putRes.json();
 
+        // 4) Reload sales + stock
         await loadSales({ mode: "replace" });
         await loadStock();
 
@@ -1140,7 +1120,8 @@ function SalesHistoryPage() {
               padding: "10px 14px",
               borderRadius: 999,
               border: "1px dashed #d1d5db",
-              background: "linear-gradient(135deg, #f9fafb 0%, #f3f4ff 40%, #eef2ff 100%)",
+              background:
+                "linear-gradient(135deg, #f9fafb 0%, #f3f4ff 40%, #eef2ff 100%)",
             }}
           >
             <div
@@ -1176,25 +1157,6 @@ function SalesHistoryPage() {
                   }}
                 >
                   Sale #{currentRow.saleId} • {currentRow.itemName}
-                </div>
-                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>
-                  Inline edit is optional. You can also{" "}
-                  <button
-                    type="button"
-                    onClick={() => openInCurrentSaleFromHistory(currentRow.saleId, currentRow.lineId)}
-                    style={{
-                      border: "none",
-                      background: "transparent",
-                      color: "#2563eb",
-                      cursor: "pointer",
-                      fontWeight: 800,
-                      padding: 0,
-                      textDecoration: "underline",
-                    }}
-                  >
-                    open in Current Sale
-                  </button>{" "}
-                  to add more items.
                 </div>
               </div>
 
@@ -1342,9 +1304,7 @@ function SalesHistoryPage() {
           </div>
         ) : (
           <div style={{ marginBottom: 6, fontSize: 12, color: "#6b7280" }}>
-            Tip: click any row to open inline edit pad — or click the{" "}
-            <span style={{ fontWeight: 800, color: "#2563eb" }}>item name</span> to open it in
-            Current Sale and add new items.
+            Tip: click an item row to open it in <b>SalesPOS → Current sale</b>.
           </div>
         )}
 
@@ -1397,34 +1357,38 @@ function SalesHistoryPage() {
                     cursor: "pointer",
                     backgroundColor: isEditing ? "#fefce8" : undefined,
                   }}
-                  onClick={() => startEditRow(row)}
+                  onClick={() => goToSaleEdit(row.saleId)}
+                  title={`Open Sale #${row.saleId} in Current sale`}
                 >
                   <td style={{ padding: "8px 4px" }}>{formatTimeHM(row.time)}</td>
 
                   <td style={{ padding: "8px 4px" }}>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        openInCurrentSaleFromHistory(row.saleId, row.lineId);
-                      }}
-                      style={{
-                        border: "none",
-                        background: "transparent",
-                        padding: 0,
-                        color: "#2563eb",
-                        fontWeight: 700,
-                        cursor: "pointer",
-                        textDecoration: "underline",
-                      }}
-                      title="Open this receipt in Current Sale to edit & add items"
-                    >
-                      {row.itemName}
-                    </button>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <span style={{ color: "#2563eb", fontWeight: 600 }}>{row.itemName}</span>
 
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          startEditRow(row);
+                        }}
+                        style={{
+                          padding: "3px 10px",
+                          borderRadius: 999,
+                          border: "1px solid #e5e7eb",
+                          background: "#fff",
+                          cursor: "pointer",
+                          fontSize: 11,
+                          fontWeight: 800,
+                          color: "#111827",
+                        }}
+                        title="Edit this line here (inline)"
+                      >
+                        Edit here
+                      </button>
+                    </div>
                     <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>
                       Receipt #{row.saleId}
-                      {row.lineId != null ? ` • Line ${row.lineId}` : ""}
                     </div>
                   </td>
 
@@ -1511,7 +1475,6 @@ function SalesHistoryPage() {
           >
             <th style={{ padding: "6px 4px" }}>Date &amp; time</th>
             <th style={{ padding: "6px 4px" }}>Customer</th>
-            <th style={{ padding: "6px 4px", textAlign: "right" }}>Items</th>
             <th style={{ padding: "6px 4px", textAlign: "right" }}>Total</th>
             <th style={{ padding: "6px 4px", textAlign: "right" }}>Profit</th>
             <th style={{ padding: "6px 4px" }}>Payment</th>
@@ -1520,15 +1483,8 @@ function SalesHistoryPage() {
         </thead>
         <tbody>
           {salesList.map((sale) => {
-            const lines = pickLines(sale);
-            const piecesCount = lines.reduce(
-              (sum, l) => sum + Number(extractLineFields(l).qty || 0),
-              0
-            );
-
             const paymentType = normalizePaymentType(sale.payment_type);
             const { total, profit } = getSaleTotals(sale);
-
             const creditOpen = isOpenCreditSale(sale);
 
             const paymentLabel =
@@ -1546,75 +1502,23 @@ function SalesHistoryPage() {
             const statusColor = creditOpen ? "#b91c1c" : "#166534";
 
             return (
-              <tr key={sale.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
+              <tr
+                key={sale.id}
+                style={{ borderBottom: "1px solid #f3f4f6", cursor: "pointer" }}
+                onClick={() => goToSaleEdit(sale.id)}
+                title={`Open Sale #${sale.id} in Current sale`}
+              >
                 <td style={{ padding: "8px 4px" }}>{formatDateTime(sale.sale_date)}</td>
-
                 <td style={{ padding: "8px 4px" }}>
-                  {sale.customer_name ? (
-                    <>
-                      <span style={{ color: "#2563eb", fontWeight: 600 }}>
-                        {sale.customer_name}
-                      </span>
-                      {sale.customer_phone && (
-                        <span style={{ display: "block", fontSize: "11px", color: "#6b7280" }}>
-                          {sale.customer_phone}
-                        </span>
-                      )}
-
-                      <button
-                        type="button"
-                        onClick={() => openInCurrentSaleFromHistory(sale.id, null)}
-                        style={{
-                          display: "block",
-                          border: "none",
-                          background: "transparent",
-                          padding: 0,
-                          fontSize: "11px",
-                          color: "#2563eb",
-                          cursor: "pointer",
-                          fontWeight: 800,
-                          textDecoration: "underline",
-                          marginTop: 2,
-                        }}
-                        title="Open this receipt in Current Sale to edit & add items"
-                      >
-                        Receipt #{sale.id}
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <span style={{ color: "#6b7280" }}>Walk-in</span>
-
-                      <button
-                        type="button"
-                        onClick={() => openInCurrentSaleFromHistory(sale.id, null)}
-                        style={{
-                          display: "block",
-                          border: "none",
-                          background: "transparent",
-                          padding: 0,
-                          fontSize: "11px",
-                          color: "#2563eb",
-                          cursor: "pointer",
-                          fontWeight: 800,
-                          textDecoration: "underline",
-                          marginTop: 2,
-                        }}
-                        title="Open this receipt in Current Sale to edit & add items"
-                      >
-                        Receipt #{sale.id}
-                      </button>
-                    </>
-                  )}
+                  <div style={{ color: "#111827", fontWeight: 700 }}>
+                    {sale.customer_name || "Walk-in"}
+                  </div>
+                  <div style={{ fontSize: 11, color: "#9ca3af" }}>Receipt #{sale.id}</div>
                 </td>
-
-                <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                  {formatMoney(piecesCount)}
-                </td>
-                <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600 }}>
+                <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 800 }}>
                   {formatMoney(total)}
                 </td>
-                <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                <td style={{ padding: "8px 4px", textAlign: "right", color: "#16a34a", fontWeight: 800 }}>
                   {formatMoney(profit)}
                 </td>
                 <td style={{ padding: "8px 4px" }}>
@@ -1656,9 +1560,6 @@ function SalesHistoryPage() {
     );
   };
 
-  // -------------------------
-  // Page layout
-  // -------------------------
   const title =
     tab === "history"
       ? "Sales History — All history"
@@ -1672,10 +1573,11 @@ function SalesHistoryPage() {
       ? "Sales History — Open Credits"
       : "Sales History — Search";
 
+  // ✅ Day sales for selected day
   const selectedDaySales = useMemo(() => {
     if (!selectedDay) return [];
     return groupedByDay.map.get(selectedDay) || [];
-  }, [selectedDay, groupedByDay]);
+  }, [groupedByDay, selectedDay]);
 
   return (
     <div style={{ padding: "16px 24px 24px" }}>
@@ -1704,14 +1606,7 @@ function SalesHistoryPage() {
         }}
       >
         <div>
-          <h1
-            style={{
-              fontSize: "28px",
-              fontWeight: 800,
-              letterSpacing: "0.02em",
-              margin: 0,
-            }}
-          >
+          <h1 style={{ fontSize: "28px", fontWeight: 800, letterSpacing: "0.02em", margin: 0 }}>
             {title}
           </h1>
           <p style={{ color: "#6b7280", marginTop: "0.5rem" }}>
@@ -1727,15 +1622,7 @@ function SalesHistoryPage() {
 
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           {tab === "today" && (
-            <label
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                fontSize: 12,
-                color: "#374151",
-              }}
-            >
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "#374151" }}>
               <input
                 type="checkbox"
                 checked={autoRefreshToday}
@@ -1803,9 +1690,10 @@ function SalesHistoryPage() {
                 if (t.key === "credits") setPaymentFilter("credit");
                 if (t.key !== "credits" && paymentFilter === "credit") setPaymentFilter("all");
 
-                if (t.key === "history") {
-                  setHistoryDaysBackDraft(String(historyDaysBack));
-                }
+                if (t.key === "history") setHistoryDaysBackDraft(String(historyDaysBack));
+
+                // ✅ Clear day selection when changing tab
+                setSelectedDay(null);
               }}
               style={{
                 border: "none",
@@ -1826,26 +1714,9 @@ function SalesHistoryPage() {
       </div>
 
       {/* Controls row */}
-      <div
-        style={{
-          marginTop: 14,
-          display: "flex",
-          flexWrap: "wrap",
-          gap: "10px 16px",
-          alignItems: "center",
-        }}
-      >
+      <div style={{ marginTop: 14, display: "flex", flexWrap: "wrap", gap: "10px 16px", alignItems: "center" }}>
         {tab === "history" && (
-          <div
-            style={{
-              display: "flex",
-              gap: 10,
-              alignItems: "center",
-              flexWrap: "wrap",
-              color: "#6b7280",
-              fontSize: 13,
-            }}
-          >
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", color: "#6b7280", fontSize: 13 }}>
             <span style={{ fontWeight: 800, color: "#111827" }}>All history:</span>
             <span>Show last</span>
             <input
@@ -1854,110 +1725,21 @@ function SalesHistoryPage() {
               step="1"
               value={historyDaysBackDraft}
               onChange={(e) => setHistoryDaysBackDraft(e.target.value)}
-              style={{
-                width: 90,
-                padding: "6px 10px",
-                borderRadius: 999,
-                border: "1px solid #d1d5db",
-                fontSize: 13,
-              }}
+              style={{ width: 90, padding: "6px 10px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13 }}
             />
             <span>days</span>
             <button
               type="button"
               onClick={applyHistoryDays}
-              style={{
-                padding: "6px 10px",
-                borderRadius: 999,
-                border: "1px solid #e5e7eb",
-                background: "#fff",
-                cursor: "pointer",
-                fontSize: 12,
-                fontWeight: 800,
-              }}
+              style={{ padding: "6px 10px", borderRadius: 999, border: "1px solid #e5e7eb", background: "#fff", cursor: "pointer", fontSize: 12, fontWeight: 800 }}
             >
               Apply
             </button>
 
             <button
               type="button"
-              onClick={() => {
-                setHistoryDaysBack(30);
-                setHistoryDaysBackDraft("30");
-                const to = todayDateString();
-                const from = addDaysYMD(to, -30 + 1);
-                loadSales({ dateFrom: from, dateTo: to, mode: "replace" });
-              }}
-              style={{
-                padding: "6px 10px",
-                borderRadius: 999,
-                border: "1px solid #e5e7eb",
-                background: "#fff",
-                cursor: "pointer",
-                fontSize: 12,
-                fontWeight: 700,
-              }}
-            >
-              30d
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setHistoryDaysBack(90);
-                setHistoryDaysBackDraft("90");
-                const to = todayDateString();
-                const from = addDaysYMD(to, -90 + 1);
-                loadSales({ dateFrom: from, dateTo: to, mode: "replace" });
-              }}
-              style={{
-                padding: "6px 10px",
-                borderRadius: 999,
-                border: "1px solid #e5e7eb",
-                background: "#fff",
-                cursor: "pointer",
-                fontSize: 12,
-                fontWeight: 700,
-              }}
-            >
-              90d
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setHistoryDaysBack(365);
-                setHistoryDaysBackDraft("365");
-                const to = todayDateString();
-                const from = addDaysYMD(to, -365 + 1);
-                loadSales({ dateFrom: from, dateTo: to, mode: "replace" });
-              }}
-              style={{
-                padding: "6px 10px",
-                borderRadius: 999,
-                border: "1px solid #e5e7eb",
-                background: "#fff",
-                cursor: "pointer",
-                fontSize: 12,
-                fontWeight: 700,
-              }}
-            >
-              1 year
-            </button>
-
-            <button
-              type="button"
               onClick={loadOlderHistory}
-              style={{
-                padding: "6px 10px",
-                borderRadius: 999,
-                border: "1px solid #111827",
-                background: "#111827",
-                color: "#fff",
-                cursor: "pointer",
-                fontSize: 12,
-                fontWeight: 900,
-              }}
+              style={{ padding: "6px 10px", borderRadius: 999, border: "1px solid #111827", background: "#111827", color: "#fff", cursor: "pointer", fontSize: 12, fontWeight: 900 }}
               title={`Fetch older sales (+${HISTORY_STEP_DAYS} days) and append`}
             >
               Load older +{HISTORY_STEP_DAYS}d
@@ -1965,121 +1747,218 @@ function SalesHistoryPage() {
           </div>
         )}
 
-        {/* (All your other tab controls remain unchanged — omitted here only because we pasted full file above) */}
-        {/* Payment filter + View mode toggles also remain unchanged in your original layout */}
+        {tab === "today" && (
+          <div style={{ fontSize: "13px", color: "#6b7280" }}>
+            Date:&nbsp;
+            <input
+              type="date"
+              value={selectedDate}
+              onChange={(e) => setSelectedDate(e.target.value)}
+              style={{ padding: "6px 10px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px" }}
+            />
+            <button
+              type="button"
+              onClick={() => setSelectedDate(todayDateString())}
+              style={{ marginLeft: 8, padding: "6px 10px", borderRadius: 999, border: "1px solid #e5e7eb", background: "#fff", cursor: "pointer", fontSize: 12, fontWeight: 700 }}
+            >
+              Today
+            </button>
+          </div>
+        )}
+
+        {tab === "range" && (
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", color: "#6b7280", fontSize: 13 }}>
+            <div>
+              From:&nbsp;
+              <input
+                type="date"
+                value={rangeFrom}
+                onChange={(e) => setRangeFrom(e.target.value)}
+                style={{ padding: "6px 10px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13 }}
+              />
+            </div>
+            <div>
+              To:&nbsp;
+              <input
+                type="date"
+                value={rangeTo}
+                onChange={(e) => setRangeTo(e.target.value)}
+                style={{ padding: "6px 10px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13 }}
+              />
+            </div>
+          </div>
+        )}
+
+        {tab === "month" && (
+          <div style={{ color: "#6b7280", fontSize: 13 }}>
+            Month:&nbsp;
+            <input
+              type="month"
+              value={selectedMonth}
+              onChange={(e) => setSelectedMonth(e.target.value)}
+              style={{ padding: "6px 10px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13 }}
+            />
+          </div>
+        )}
+
+        {tab === "credits" && (
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", color: "#6b7280", fontSize: 13 }}>
+            <div>
+              From:&nbsp;
+              <input
+                type="date"
+                value={creditFrom}
+                onChange={(e) => setCreditFrom(e.target.value)}
+                style={{ padding: "6px 10px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13 }}
+              />
+            </div>
+            <div>
+              To:&nbsp;
+              <input
+                type="date"
+                value={creditTo}
+                onChange={(e) => setCreditTo(e.target.value)}
+                style={{ padding: "6px 10px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13 }}
+              />
+            </div>
+            <span style={{ fontSize: 12, color: "#b91c1c", fontWeight: 800 }}>
+              Showing credit_balance &gt; 0
+            </span>
+          </div>
+        )}
+
+        {tab === "search" && (
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ color: "#6b7280", fontSize: 13 }}>
+              Last&nbsp;
+              <input
+                type="number"
+                min="1"
+                step="1"
+                value={searchDaysBack}
+                onChange={(e) => setSearchDaysBack(e.target.value)}
+                style={{ width: 80, padding: "6px 10px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13 }}
+              />
+              &nbsp;days
+            </div>
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search: receipt #, phone, customer, item..."
+              style={{ minWidth: 260, padding: "8px 12px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13, background: "#fff" }}
+            />
+          </div>
+        )}
+
+        {/* Payment filter */}
+        <div style={{ display: "inline-flex", backgroundColor: "#e5e7eb", borderRadius: "999px", padding: "2px" }}>
+          {[
+            { key: "all", label: "All" },
+            { key: "cash", label: "Cash" },
+            { key: "card", label: "POS" },
+            { key: "mobile", label: "MoMo" },
+            { key: "credit", label: "Credit" },
+          ].map((opt) => {
+            const isActive = (tab === "credits" ? "credit" : paymentFilter) === opt.key;
+            return (
+              <button
+                key={opt.key}
+                type="button"
+                onClick={() => tab !== "credits" && setPaymentFilter(opt.key)}
+                style={{
+                  border: "none",
+                  cursor: tab === "credits" ? "not-allowed" : "pointer",
+                  padding: "4px 10px",
+                  borderRadius: "999px",
+                  fontSize: "12px",
+                  fontWeight: 700,
+                  backgroundColor: isActive ? "#ffffff" : "transparent",
+                  color: isActive ? "#111827" : "#4b5563",
+                  boxShadow: isActive ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
+                  opacity: tab === "credits" ? 0.6 : 1,
+                }}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* View mode */}
+        <div style={{ marginLeft: "auto", display: "inline-flex", backgroundColor: "#e5e7eb", borderRadius: "999px", padding: "2px" }}>
+          {[
+            { key: "items", label: "Items" },
+            { key: "receipts", label: "Receipts" },
+          ].map((opt) => {
+            const isActive = viewMode === opt.key;
+            return (
+              <button
+                key={opt.key}
+                type="button"
+                onClick={() => setViewMode(opt.key)}
+                style={{
+                  border: "none",
+                  cursor: "pointer",
+                  padding: "4px 10px",
+                  borderRadius: "999px",
+                  fontSize: "12px",
+                  fontWeight: 700,
+                  backgroundColor: isActive ? "#ffffff" : "transparent",
+                  color: isActive ? "#111827" : "#4b5563",
+                  boxShadow: isActive ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
+                }}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
-      {/* Errors */}
       {error && shop && (
-        <div
-          style={{
-            marginTop: 12,
-            padding: "10px 12px",
-            borderRadius: 14,
-            background: "#fef2f2",
-            border: "1px solid #fecaca",
-            color: "#b91c1c",
-            fontWeight: 700,
-            fontSize: 13,
-          }}
-        >
+        <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 14, background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", fontWeight: 700, fontSize: 13 }}>
           {error}
         </div>
       )}
 
-      {/* Summary card */}
-      <div
-        style={{
-          marginTop: 12,
-          marginBottom: "12px",
-          backgroundColor: "#ffffff",
-          borderRadius: "18px",
-          boxShadow: "0 10px 30px rgba(15,37,128,0.06)",
-          padding: "14px 18px 14px",
-          fontSize: "12px",
-        }}
-      >
+      {/* Summary */}
+      <div style={{ marginTop: 12, marginBottom: "12px", backgroundColor: "#ffffff", borderRadius: "18px", boxShadow: "0 10px 30px rgba(15,37,128,0.06)", padding: "14px 18px 14px", fontSize: "12px" }}>
         <div style={{ fontSize: "14px", fontWeight: 800, marginBottom: "6px" }}>Summary</div>
-        <div
-          style={{
-            fontSize: "11px",
-            textTransform: "uppercase",
-            letterSpacing: "0.12em",
-            color: "#9ca3af",
-            marginBottom: "8px",
-          }}
-        >
+        <div style={{ fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.12em", color: "#9ca3af", marginBottom: "8px" }}>
           {activeDateFrom} → {activeDateTo}
         </div>
 
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
-            rowGap: "8px",
-            columnGap: "16px",
-          }}
-        >
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", rowGap: "8px", columnGap: "16px" }}>
           <div>
             <div style={{ color: "#6b7280" }}>Total sales</div>
-            <div style={{ fontSize: "18px", fontWeight: 900 }}>
-              {formatMoney(rangeSummary.totalSales)}
-            </div>
+            <div style={{ fontSize: "18px", fontWeight: 900 }}>{formatMoney(rangeSummary.totalSales)}</div>
           </div>
-
           <div>
             <div style={{ color: "#6b7280" }}>Total profit</div>
-            <div style={{ fontSize: "16px", fontWeight: 800, color: "#16a34a" }}>
-              {formatMoney(rangeSummary.totalProfit)}
-            </div>
+            <div style={{ fontSize: "16px", fontWeight: 800, color: "#16a34a" }}>{formatMoney(rangeSummary.totalProfit)}</div>
           </div>
-
           <div>
             <div style={{ color: "#6b7280" }}>Pieces sold</div>
-            <div style={{ fontSize: "16px", fontWeight: 800 }}>
-              {formatMoney(rangeSummary.piecesSold)}
-            </div>
+            <div style={{ fontSize: "16px", fontWeight: 800 }}>{formatMoney(rangeSummary.piecesSold)}</div>
           </div>
-
           <div>
             <div style={{ color: "#6b7280" }}>Receipts</div>
-            <div style={{ fontSize: "16px", fontWeight: 800 }}>
-              {formatMoney(rangeSummary.receiptsCount)}
-            </div>
+            <div style={{ fontSize: "16px", fontWeight: 800 }}>{formatMoney(rangeSummary.receiptsCount)}</div>
           </div>
-
           <div>
             <div style={{ color: "#6b7280" }}>Open credit</div>
-            <div style={{ fontWeight: 900, color: "#b91c1c" }}>
-              {formatMoney(rangeSummary.openCredit)}
-            </div>
+            <div style={{ fontWeight: 900, color: "#b91c1c" }}>{formatMoney(rangeSummary.openCredit)}</div>
           </div>
         </div>
       </div>
 
-      {/* Daily totals list (all tabs except Today) */}
+      {/* ✅ Daily totals list (all tabs except Today) */}
       {tab !== "today" && (
-        <div
-          style={{
-            backgroundColor: "#ffffff",
-            borderRadius: "18px",
-            boxShadow: "0 6px 18px rgba(15,37,128,0.04)",
-            padding: "10px 12px 12px",
-            marginBottom: 12,
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "baseline",
-              gap: 12,
-              flexWrap: "wrap",
-            }}
-          >
+        <div style={{ backgroundColor: "#ffffff", borderRadius: "18px", boxShadow: "0 6px 18px rgba(15,37,128,0.04)", padding: "10px 12px 12px", marginBottom: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
             <div style={{ fontWeight: 900, fontSize: 13 }}>Daily totals</div>
             <div style={{ fontSize: 12, color: "#6b7280" }}>
-              Tip: click a day (date) to open Day items list
+              Click a <b>date</b> to open the <b>Day items list</b>
             </div>
           </div>
 
@@ -2092,165 +1971,109 @@ function SalesHistoryPage() {
               No data in this range.
             </div>
           ) : (
-            <>
-              <table
-                style={{
-                  width: "100%",
-                  borderCollapse: "collapse",
-                  fontSize: 13,
-                  marginTop: 8,
-                }}
-              >
-                <thead>
-                  <tr
-                    style={{
-                      textAlign: "left",
-                      borderBottom: "1px solid #e5e7eb",
-                      fontSize: "11px",
-                      textTransform: "uppercase",
-                      letterSpacing: "0.08em",
-                      color: "#6b7280",
-                    }}
-                  >
-                    <th style={{ padding: "6px 4px" }}>Day</th>
-                    <th style={{ padding: "6px 4px", textAlign: "right" }}>Receipts</th>
-                    <th style={{ padding: "6px 4px", textAlign: "right" }}>Total</th>
-                    <th style={{ padding: "6px 4px", textAlign: "right" }}>Profit</th>
-                    <th style={{ padding: "6px 4px", textAlign: "right" }}>Open credit</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {dailyTotalsTable.map((r) => {
-                    const isSelected = selectedDay === r.day;
-                    return (
-                      <tr
-                        key={r.day}
-                        style={{
-                          borderBottom: "1px solid #f3f4f6",
-                          backgroundColor: isSelected ? "#f5f5ff" : "transparent",
-                        }}
-                      >
-                        <td style={{ padding: "8px 4px", fontWeight: 800 }}>
-                          <button
-                            type="button"
-                            onClick={() => setSelectedDay((prev) => (prev === r.day ? null : r.day))}
-                            style={{
-                              border: "none",
-                              background: "transparent",
-                              padding: 0,
-                              margin: 0,
-                              cursor: "pointer",
-                              color: "#2563eb",
-                              textDecoration: "underline",
-                              fontSize: 13,
-                              fontWeight: 900,
-                            }}
-                            title={isSelected ? "Close day items list" : "Open day items list"}
-                          >
-                            {r.day}
-                          </button>
-                        </td>
-
-                        <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                          {formatMoney(r.receipts)}
-                        </td>
-
-                        <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 800 }}>
-                          {formatMoney(r.total)}
-                        </td>
-
-                        <td
-                          style={{
-                            padding: "8px 4px",
-                            textAlign: "right",
-                            color: "#16a34a",
-                            fontWeight: 800,
-                          }}
-                        >
-                          {formatMoney(r.profit)}
-                        </td>
-
-                        <td
-                          style={{
-                            padding: "8px 4px",
-                            textAlign: "right",
-                            color: "#b91c1c",
-                            fontWeight: 900,
-                          }}
-                        >
-                          {formatMoney(r.openCredit)}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-
-              {/* ✅ Day items list panel */}
-              {selectedDay && (
-                <div
-                  style={{
-                    marginTop: 10,
-                    borderRadius: 14,
-                    border: "1px solid #e5e7eb",
-                    background: "#fafafa",
-                    padding: 12,
-                  }}
-                >
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      gap: 10,
-                      flexWrap: "wrap",
-                      marginBottom: 8,
-                    }}
-                  >
-                    <div>
-                      <div style={{ fontWeight: 900, fontSize: 13 }}>Day items list</div>
-                      <div style={{ fontSize: 12, color: "#6b7280" }}>
-                        {selectedDay} • {formatMoney(selectedDaySales.length)} receipts
-                      </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => setSelectedDay(null)}
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginTop: 8 }}>
+              <thead>
+                <tr style={{ textAlign: "left", borderBottom: "1px solid #e5e7eb", fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.08em", color: "#6b7280" }}>
+                  <th style={{ padding: "6px 4px" }}>Day</th>
+                  <th style={{ padding: "6px 4px", textAlign: "right" }}>Receipts</th>
+                  <th style={{ padding: "6px 4px", textAlign: "right" }}>Total</th>
+                  <th style={{ padding: "6px 4px", textAlign: "right" }}>Profit</th>
+                  <th style={{ padding: "6px 4px", textAlign: "right" }}>Open credit</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dailyTotalsTable.map((r) => {
+                  const isSelected = selectedDay === r.day;
+                  return (
+                    <tr
+                      key={r.day}
                       style={{
-                        padding: "6px 10px",
-                        borderRadius: 999,
-                        border: "1px solid #e5e7eb",
-                        background: "#fff",
-                        cursor: "pointer",
-                        fontSize: 12,
-                        fontWeight: 800,
+                        borderBottom: "1px solid #f3f4f6",
+                        background: isSelected ? "#f5f5ff" : "transparent",
                       }}
                     >
-                      Close
-                    </button>
-                  </div>
-
-                  {viewMode === "items"
-                    ? renderItemsTable(selectedDaySales)
-                    : renderReceiptsTable(selectedDaySales)}
-                </div>
-              )}
-            </>
+                      <td style={{ padding: "8px 4px", fontWeight: 900 }}>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedDay(r.day)}
+                          style={{
+                            border: "none",
+                            background: "transparent",
+                            padding: 0,
+                            margin: 0,
+                            cursor: "pointer",
+                            color: "#2563eb",
+                            textDecoration: "underline",
+                            fontSize: 13,
+                            fontWeight: 900,
+                          }}
+                          title="Open Day items list"
+                        >
+                          {r.day}
+                        </button>
+                      </td>
+                      <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(r.receipts)}</td>
+                      <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 800 }}>{formatMoney(r.total)}</td>
+                      <td style={{ padding: "8px 4px", textAlign: "right", color: "#16a34a", fontWeight: 800 }}>{formatMoney(r.profit)}</td>
+                      <td style={{ padding: "8px 4px", textAlign: "right", color: "#b91c1c", fontWeight: 900 }}>{formatMoney(r.openCredit)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           )}
+        </div>
+      )}
+
+      {/* ✅ Day items list panel (opens when user clicks a date) */}
+      {tab !== "today" && selectedDay && (
+        <div
+          ref={dayPanelRef}
+          style={{
+            backgroundColor: "#ffffff",
+            borderRadius: "18px",
+            boxShadow: "0 6px 18px rgba(15,37,128,0.06)",
+            padding: "12px 12px 12px",
+            marginBottom: 12,
+            border: "1px solid #eef2ff",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 900 }}>Day items list</div>
+              <div style={{ fontSize: 12, color: "#6b7280" }}>
+                {selectedDay} • Receipts: <b>{formatMoney(selectedDaySales.length)}</b>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setSelectedDay(null)}
+              style={{
+                padding: "8px 12px",
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                cursor: "pointer",
+                fontWeight: 900,
+                fontSize: 12,
+              }}
+            >
+              Close
+            </button>
+          </div>
+
+          <div style={{ marginTop: 10 }}>
+            {viewMode === "items"
+              ? renderItemsTable(selectedDaySales)
+              : renderReceiptsTable(selectedDaySales)}
+          </div>
         </div>
       )}
 
       {/* Today tab main table */}
       {tab === "today" && (
-        <div
-          style={{
-            backgroundColor: "#ffffff",
-            borderRadius: "18px",
-            boxShadow: "0 6px 18px rgba(15,37,128,0.04)",
-            padding: "10px 12px 10px",
-          }}
-        >
+        <div style={{ backgroundColor: "#ffffff", borderRadius: "18px", boxShadow: "0 6px 18px rgba(15,37,128,0.04)", padding: "10px 12px 10px" }}>
           {viewMode === "items"
             ? renderItemsTable(filteredSales)
             : renderReceiptsTable(filteredSales)}
