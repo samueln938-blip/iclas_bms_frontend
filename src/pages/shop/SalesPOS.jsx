@@ -1,5 +1,5 @@
 // src/pages/shop/SalesPOS.jsx
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext.jsx";
 
@@ -271,12 +271,15 @@ export default function SalesPOS() {
   // ✅ This date controls which day's closure we are viewing/editing
   const [closureDate, setClosureDate] = useState(todayDateString());
 
-  // ✅ NEW: this date controls which day Current Sale is working on (opt-in via URL)
+  // ✅ This date controls which day Current Sale is working on (opt-in via URL/handoff)
   // - default is today (NO behavior change for normal cashier flow)
   const [workDate, setWorkDate] = useState(todayDateString());
 
-  // ✅ Sale edit handoff (from Today tab → Current tab)
+  // ✅ Sale edit handoff (from Today tab → Current tab, or from History → Current)
   const [editSaleId, setEditSaleId] = useState(null);
+
+  // ✅ Optional: line hint (History can set this; CurrentSaleTab may ignore safely)
+  const [editSaleLineId, setEditSaleLineId] = useState(null);
 
   // Global alerts
   const [error, setError] = useState("");
@@ -295,6 +298,31 @@ export default function SalesPOS() {
       );
     },
     [navigate, location.pathname]
+  );
+
+  // ✅ Helper: set Current tab + workDate (for missing sales / past day work)
+  const openCurrentSaleForDate = useCallback(
+    (dateStr, { replaceUrl = true } = {}) => {
+      let resolved = dateStr || todayDateString();
+      if (!canEditPastSales) resolved = todayDateString();
+
+      setActiveTab("current");
+      setWorkDate(resolved);
+
+      const sp = new URLSearchParams(location.search);
+      sp.set("tab", "current");
+
+      // ✅ Only include workDate when it's not today (keeps cashier flow unchanged)
+      if (resolved && resolved !== todayDateString()) sp.set("workDate", resolved);
+      else sp.delete("workDate");
+
+      // If we are entering Current Sale as "new/missing sale" context, clear editSaleId
+      sp.delete("editSaleId");
+      sp.delete("closureDate");
+
+      if (replaceUrl) navigateWithSearch(sp);
+    },
+    [canEditPastSales, location.search, navigateWithSearch]
   );
 
   // 🔑 Helper: update closureDate (used by URL + DailyClosureTab history clicks)
@@ -332,6 +360,7 @@ export default function SalesPOS() {
       if (key !== "current") {
         sp.delete("editSaleId");
         setEditSaleId(null);
+        setEditSaleLineId(null);
       }
 
       navigateWithSearch(sp);
@@ -385,6 +414,7 @@ export default function SalesPOS() {
       if (key !== "current") {
         sp.delete("editSaleId");
         setEditSaleId(null);
+        setEditSaleLineId(null);
       }
 
       navigateWithSearch(sp);
@@ -410,6 +440,7 @@ export default function SalesPOS() {
 
       setActiveTab("current");
       setEditSaleId(sId);
+      setEditSaleLineId(null);
 
       const sp = new URLSearchParams(location.search);
       sp.set("tab", "current");
@@ -428,12 +459,118 @@ export default function SalesPOS() {
   // ✅ Do NOT force tab=current here, or it will override onGoToday() navigation
   const clearEditSale = useCallback(() => {
     setEditSaleId(null);
+    setEditSaleLineId(null);
     const sp = new URLSearchParams(location.search);
     sp.delete("editSaleId");
     // keep current tab as-is (do not set tab=current)
     navigateWithSearch(sp);
   }, [location.search, navigateWithSearch]);
 
+  // =========================================================
+  // ✅ NEW: cross-page handoff (History → SalesPOS)
+  // Supports:
+  // - localStorage: iclas_pos_desired_tab, iclas_pos_desired_date, iclas_edit_sale_id, iclas_edit_sale_line_id
+  // - location.state: same keys (when navigate(..., { state }) is used)
+  // Without changing routes or breaking existing flows.
+  // =========================================================
+  const handoffAppliedRef = useRef(false);
+
+  useEffect(() => {
+    if (handoffAppliedRef.current) return;
+
+    const state = location?.state || {};
+    const getLS = (k) => {
+      try {
+        return localStorage.getItem(k);
+      } catch {
+        return null;
+      }
+    };
+    const delLS = (k) => {
+      try {
+        localStorage.removeItem(k);
+      } catch {
+        // ignore
+      }
+    };
+
+    const desiredTab =
+      state?.iclas_pos_desired_tab || getLS("iclas_pos_desired_tab") || "";
+
+    const desiredDate =
+      state?.iclas_pos_desired_date ||
+      getLS("iclas_pos_desired_date") ||
+      "";
+
+    const desiredEditSaleId =
+      state?.iclas_edit_sale_id || getLS("iclas_edit_sale_id") || "";
+
+    const desiredEditSaleLineId =
+      state?.iclas_edit_sale_line_id || getLS("iclas_edit_sale_line_id") || "";
+
+    // Only act if something is present (prevents extra URL churn)
+    const hasHandoff =
+      !!desiredTab || !!desiredDate || !!desiredEditSaleId || !!desiredEditSaleLineId;
+
+    if (!hasHandoff) {
+      handoffAppliedRef.current = true;
+      return;
+    }
+
+    // Clear immediately so it doesn't repeat on refresh
+    delLS("iclas_pos_desired_tab");
+    delLS("iclas_pos_desired_date");
+    delLS("iclas_edit_sale_id");
+    delLS("iclas_edit_sale_line_id");
+
+    handoffAppliedRef.current = true;
+
+    // If requested tab is current, apply it
+    const wantsCurrent = String(desiredTab || "").toLowerCase() === "current";
+
+    if (!wantsCurrent) return;
+
+    clearAlerts();
+
+    const sp = new URLSearchParams(location.search);
+    sp.set("tab", "current");
+    sp.delete("closureDate");
+
+    // If they provided editSaleId (open existing receipt), prefer edit mode
+    if (desiredEditSaleId) {
+      setActiveTab("current");
+      setEditSaleId(String(desiredEditSaleId));
+      setEditSaleLineId(desiredEditSaleLineId ? String(desiredEditSaleLineId) : null);
+
+      sp.set("editSaleId", String(desiredEditSaleId));
+
+      // Keep workDate OUT when editing a sale (same rule as startEditSale)
+      sp.delete("workDate");
+      setWorkDate(todayDateString()); // keep UI safe
+
+      navigateWithSearch(sp);
+      return;
+    }
+
+    // Otherwise: open Current Sale as "missing sale" on a specific date
+    const resolved = canEditPastSales ? (desiredDate || todayDateString()) : todayDateString();
+
+    setActiveTab("current");
+    setEditSaleId(null);
+    setEditSaleLineId(null);
+    setWorkDate(resolved);
+
+    if (resolved && resolved !== todayDateString()) sp.set("workDate", resolved);
+    else sp.delete("workDate");
+
+    sp.delete("editSaleId");
+
+    navigateWithSearch(sp);
+  }, [location.state, location.search, navigateWithSearch, canEditPastSales, clearAlerts]);
+
+  // =========================================================
+  // URL-driven state (tab / closureDate / workDate / editSaleId)
+  // =========================================================
   useEffect(() => {
     const search = new URLSearchParams(location.search);
     const tabFromUrl = search.get("tab");
@@ -442,7 +579,7 @@ export default function SalesPOS() {
     const dateFromUrl =
       search.get("closureDate") || search.get("date") || search.get("day");
 
-    // ✅ NEW: work date (current tab) – we avoid "date" to not conflict with closure behavior
+    // ✅ work date (current tab)
     const workDateFromUrl = search.get("workDate") || search.get("saleDate");
 
     const editFromUrl = search.get("editSaleId");
@@ -615,7 +752,8 @@ export default function SalesPOS() {
     activeTab === "current" &&
     canEditPastSales &&
     String(workDate || "") &&
-    workDate !== todayDateString();
+    workDate !== todayDateString() &&
+    !editSaleId; // ✅ show badge only when doing "missing sale" work (not editing a receipt)
 
   return (
     <div style={{ padding: "18px 18px 28px" }}>
@@ -723,6 +861,24 @@ export default function SalesPOS() {
                 }}
               >
                 Working date (Current Sale): {workDate} (past day)
+                <button
+                  type="button"
+                  onClick={() => openCurrentSaleForDate(todayDateString())}
+                  style={{
+                    marginLeft: 6,
+                    border: "none",
+                    background: "#111827",
+                    color: "#fff",
+                    padding: "6px 10px",
+                    borderRadius: 999,
+                    cursor: "pointer",
+                    fontSize: 11,
+                    fontWeight: 900,
+                  }}
+                  title="Back to today"
+                >
+                  Back to today
+                </button>
               </span>
             </div>
           ) : null}
@@ -811,9 +967,11 @@ export default function SalesPOS() {
           clearAlerts={clearAlerts}
           editSaleId={editSaleId}
           onEditDone={clearEditSale}
-          // ✅ NEW: pass work date to CurrentSaleTab (today by default)
+          // ✅ Work date (today by default; can be past day for Owner/Manager/Admin)
           workDate={workDate}
           saleDate={workDate}
+          // ✅ Optional hint (safe if CurrentSaleTab ignores)
+          editSaleLineId={editSaleLineId}
         />
       ) : null}
 
