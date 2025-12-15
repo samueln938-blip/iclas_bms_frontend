@@ -11,8 +11,6 @@ const API_BASE = CLIENT_API_BASE;
 // Timezone helpers (Kigali)
 // =========================
 const KIGALI_TZ = "Africa/Kigali";
-const HISTORY_STEP_DAYS = 30;
-const HISTORY_MAX_DAYS = 3650; // 10 years safety cap
 
 function _fmtPartsYMD(date) {
   try {
@@ -40,8 +38,7 @@ function _hasTZInfo(s) {
 /**
  * Parse backend timestamps safely:
  * - If it has timezone (Z or +02:00), normal Date parsing is fine.
- * - If it's "naive" (no timezone), we assume it represents Kigali local time (UTC+2),
- *   and convert it to a real Date object consistently.
+ * - If it's "naive" (no timezone), assume Kigali local time (UTC+2).
  */
 function parseDateAssumeKigali(raw) {
   if (!raw) return null;
@@ -50,28 +47,23 @@ function parseDateAssumeKigali(raw) {
   const s0 = String(raw).trim();
   if (!s0) return null;
 
-  // normalize "YYYY-MM-DD HH:mm:ss" -> "YYYY-MM-DDTHH:mm:ss"
   const s = s0.includes("T") ? s0 : s0.replace(" ", "T");
 
-  // timezone-aware string: trust it
   if (_hasTZInfo(s)) {
     const d = new Date(s);
     return Number.isNaN(d.getTime()) ? null : d;
   }
 
-  // date-only: "YYYY-MM-DD"
   const mDate = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
   if (mDate) {
     const y = Number(mDate[1]);
     const mo = Number(mDate[2]);
     const da = Number(mDate[3]);
     if (!y || !mo || !da) return null;
-
     // Kigali midnight -> UTC is minus 2 hours
     return new Date(Date.UTC(y, mo - 1, da, -2, 0, 0, 0));
   }
 
-  // datetime without tz: "YYYY-MM-DDTHH:mm(:ss(.ms)?)?"
   const mDT =
     /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/.exec(
       s
@@ -91,13 +83,11 @@ function parseDateAssumeKigali(raw) {
     return new Date(Date.UTC(y, mo - 1, da, hh - 2, mi, ss, ms));
   }
 
-  // fallback (best effort)
   const d = new Date(s);
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
 function todayDateString() {
-  // ✅ Kigali date (even if device timezone is wrong)
   return (
     _fmtPartsYMD(new Date()) ||
     (() => {
@@ -110,27 +100,18 @@ function todayDateString() {
   );
 }
 
-function addDaysYMD(ymd, deltaDays) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd || "").trim());
-  if (!m) return "";
-  const y = Number(m[1]);
-  const mo = Number(m[2]);
-  const da = Number(m[3]);
-  if (!y || !mo || !da) return "";
-
-  // Do date math in UTC to avoid timezone drift
-  const base = Date.UTC(y, mo - 1, da);
-  const d = new Date(base + deltaDays * 86400000);
-  const yy = d.getUTCFullYear();
-  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(d.getUTCDate()).padStart(2, "0");
-  return `${yy}-${mm}-${dd}`;
-}
-
-function ymdFromISO(raw) {
-  const d = parseDateAssumeKigali(raw);
+function formatTimeHM(iso) {
+  const d = parseDateAssumeKigali(iso);
   if (!d) return "";
-  return _fmtPartsYMD(d);
+  try {
+    return new Intl.DateTimeFormat("en-RW", {
+      timeZone: KIGALI_TZ,
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(d);
+  } catch {
+    return "";
+  }
 }
 
 function formatDateTime(iso) {
@@ -150,20 +131,6 @@ function formatDateTime(iso) {
   }
 }
 
-function formatTimeHM(iso) {
-  const d = parseDateAssumeKigali(iso);
-  if (!d) return "";
-  try {
-    return new Intl.DateTimeFormat("en-RW", {
-      timeZone: KIGALI_TZ,
-      hour: "2-digit",
-      minute: "2-digit",
-    }).format(d);
-  } catch {
-    return "";
-  }
-}
-
 // =========================
 // Money helpers
 // =========================
@@ -174,24 +141,6 @@ function formatMoney(value) {
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
   });
-}
-
-/**
- * ✅ IMPORTANT:
- * A sale is considered "open credit" ONLY when credit_balance > 0.
- */
-function isOpenCreditSale(sale) {
-  const creditBalance = Number(sale?.credit_balance ?? sale?.creditBalance ?? 0);
-  return creditBalance > 0;
-}
-
-function normalizePaymentType(raw) {
-  const s = String(raw || "").toLowerCase();
-  if (!s) return "unknown";
-  if (s.includes("cash")) return "cash";
-  if (s.includes("mobile") || s.includes("momo")) return "mobile";
-  if (s.includes("card") || s.includes("pos")) return "card";
-  return s;
 }
 
 function getSaleTotals(sale) {
@@ -250,7 +199,10 @@ function extractLineFields(line) {
       ? Number(line.profit)
       : 0;
 
+  const lineId = line?.id ?? line?.line_id ?? null;
+
   return {
+    lineId,
     itemId,
     qty,
     unitPrice,
@@ -259,100 +211,20 @@ function extractLineFields(line) {
   };
 }
 
-function saleSortKeyMs(sale) {
-  const d = parseDateAssumeKigali(sale?.sale_date);
-  return d ? d.getTime() : 0;
-}
-
-function mergeSalesUnique(prevList, nextList) {
-  const map = new Map();
-
-  for (const s of prevList || []) {
-    if (s && s.id != null) map.set(String(s.id), s);
-  }
-  for (const s of nextList || []) {
-    if (s && s.id != null) map.set(String(s.id), s);
-  }
-
-  const merged = Array.from(map.values());
-
-  merged.sort((a, b) => {
-    const t = saleSortKeyMs(b) - saleSortKeyMs(a);
-    if (t !== 0) return t;
-    const aid = Number(a?.id ?? 0);
-    const bid = Number(b?.id ?? 0);
-    return bid - aid;
-  });
-
-  return merged;
-}
-
-function clampDaysBack(n) {
-  const x = Math.max(1, Math.floor(Number(n || 0)));
-  return Math.min(HISTORY_MAX_DAYS, x);
-}
-
 function SalesHistoryPage() {
   const { shopId } = useParams();
   const navigate = useNavigate();
 
-  // ✅ Use the same auth headers as Sales & POS
   const auth = useAuth();
   const authHeadersNoJson = auth?.authHeadersNoJson || auth?.authHeaders || {};
+  const user = auth?.user || null;
 
-  const [shop, setShop] = useState(null);
-  const [loadingShop, setLoadingShop] = useState(true);
-  const [error, setError] = useState("");
-
-  // ✅ NEW: Default is All history (not just today)
-  const [tab, setTab] = useState("history"); // history | today | range | month | credits | search
-
-  // View mode: items (detail) OR receipts (summary)
-  const [viewMode, setViewMode] = useState("items");
-
-  // Payment filter: all / cash / card / mobile / credit
-  const [paymentFilter, setPaymentFilter] = useState("all");
-
-  // ✅ NEW: All-history days back + draft input
-  const [historyDaysBack, setHistoryDaysBack] = useState(30);
-  const [historyDaysBackDraft, setHistoryDaysBackDraft] = useState("30");
-
-  // Today
-  const [selectedDate, setSelectedDate] = useState(todayDateString());
-
-  // Range
-  const [rangeFrom, setRangeFrom] = useState(addDaysYMD(todayDateString(), -6)); // last 7 days by default
-  const [rangeTo, setRangeTo] = useState(todayDateString());
-
-  // Month
-  const [selectedMonth, setSelectedMonth] = useState(
-    todayDateString().slice(0, 7)
-  ); // YYYY-MM
-
-  // Credits tab (range)
-  const [creditFrom, setCreditFrom] = useState(addDaysYMD(todayDateString(), -30));
-  const [creditTo, setCreditTo] = useState(todayDateString());
-
-  // Search tab
-  const [searchDaysBack, setSearchDaysBack] = useState(30);
-  const [searchQuery, setSearchQuery] = useState("");
-
-  // Sales + loading
-  const [sales, setSales] = useState([]);
-  const [loadingSales, setLoadingSales] = useState(false);
-
-  // Stock rows to get REAL item names
-  const [stockRows, setStockRows] = useState([]);
-  const [loadingStock, setLoadingStock] = useState(false);
-
-  // Auto refresh (Today tab only)
-  const [autoRefreshToday, setAutoRefreshToday] = useState(true);
-  const autoTimerRef = useRef(null);
-
-  // Last sync info
-  const [lastSalesSyncAt, setLastSalesSyncAt] = useState(null);
-
-  const shopName = shop?.name || `Shop ${shopId}`;
+  // Roles
+  const role = String(user?.role || "").toLowerCase();
+  const isOwner = role === "owner" || role === "admin";
+  const isManager = role === "manager";
+  const isCashier = role === "cashier";
+  const canEditHistory = isOwner || isManager;
 
   const headersReady = useMemo(() => {
     return (
@@ -361,6 +233,23 @@ function SalesHistoryPage() {
       Object.keys(authHeadersNoJson).length > 0
     );
   }, [authHeadersNoJson]);
+
+  const [shop, setShop] = useState(null);
+  const [loadingShop, setLoadingShop] = useState(true);
+  const [error, setError] = useState("");
+
+  const [selectedDate, setSelectedDate] = useState(todayDateString());
+
+  // Sales + loading
+  const [sales, setSales] = useState([]);
+  const [loadingSales, setLoadingSales] = useState(false);
+  const [lastSalesSyncAt, setLastSalesSyncAt] = useState(null);
+
+  // Stock rows to get REAL item names
+  const [stockRows, setStockRows] = useState([]);
+  const [loadingStock, setLoadingStock] = useState(false);
+
+  const shopName = shop?.name || `Shop ${shopId}`;
 
   // ✅ IMPORTANT: avoid infinite "Loading session..."
   useEffect(() => {
@@ -375,59 +264,6 @@ function SalesHistoryPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [headersReady]);
-
-  // -------------------------
-  // Decide active date range based on tab
-  // -------------------------
-  const activeDateFrom = useMemo(() => {
-    if (tab === "history") {
-      const to = todayDateString();
-      const days = clampDaysBack(historyDaysBack);
-      return addDaysYMD(to, -days + 1);
-    }
-    if (tab === "today") return selectedDate;
-    if (tab === "range") return rangeFrom;
-    if (tab === "credits") return creditFrom;
-    if (tab === "search")
-      return addDaysYMD(
-        todayDateString(),
-        -Math.max(1, Number(searchDaysBack) || 30) + 1
-      );
-    if (tab === "month") {
-      const [y, m] = String(selectedMonth || "").split("-");
-      if (!y || !m) return todayDateString();
-      return `${y}-${m}-01`;
-    }
-    return selectedDate;
-  }, [
-    tab,
-    historyDaysBack,
-    selectedDate,
-    rangeFrom,
-    creditFrom,
-    searchDaysBack,
-    selectedMonth,
-  ]);
-
-  const activeDateTo = useMemo(() => {
-    if (tab === "history") return todayDateString();
-    if (tab === "today") return selectedDate;
-    if (tab === "range") return rangeTo;
-    if (tab === "credits") return creditTo;
-    if (tab === "search") return todayDateString();
-    if (tab === "month") {
-      const [yStr, mStr] = String(selectedMonth || "").split("-");
-      const y = Number(yStr);
-      const m = Number(mStr);
-      if (!y || !m) return todayDateString();
-      const last = new Date(Date.UTC(y, m, 0)); // last day of month in UTC-safe way
-      const yy = last.getUTCFullYear();
-      const mm = String(last.getUTCMonth() + 1).padStart(2, "0");
-      const dd = String(last.getUTCDate()).padStart(2, "0");
-      return `${yy}-${mm}-${dd}`;
-    }
-    return selectedDate;
-  }, [tab, selectedDate, rangeTo, creditTo, selectedMonth]);
 
   // -------------------------
   // Safe JSON fetch helper (no cache + abortable)
@@ -479,7 +315,6 @@ function SalesHistoryPage() {
     setError("");
 
     try {
-      // ✅ Removed /shops/detail/:id to avoid noisy 404 in console
       const candidates = [
         `${API_BASE}/shops/${shopId}`,
         `${API_BASE}/shops/${shopId}/`,
@@ -520,7 +355,7 @@ function SalesHistoryPage() {
   }, [loadShop]);
 
   // -------------------------
-  // Load stock to map item_id -> item_name (AUTH)
+  // Load stock (AUTH)
   // -------------------------
   const loadStock = useCallback(async () => {
     if (!shopId) return;
@@ -581,17 +416,14 @@ function SalesHistoryPage() {
   }, [stockRows]);
 
   // -------------------------
-  // Load sales helper (AUTH)
-  // mode: "replace" | "append"
+  // Load sales for selected date
   // -------------------------
-  const loadSales = useCallback(
-    async ({ dateFrom, dateTo, mode = "replace" } = {}) => {
+  const loadSalesForDate = useCallback(
+    async (ymd) => {
       if (!shopId) return;
       if (!headersReady) return;
-
-      const from = dateFrom || activeDateFrom;
-      const to = dateTo || activeDateTo;
-      if (!from || !to) return;
+      const date = String(ymd || "").trim();
+      if (!date) return;
 
       if (salesAbortRef.current) salesAbortRef.current.abort();
       const controller = new AbortController();
@@ -603,7 +435,7 @@ function SalesHistoryPage() {
       setError("");
 
       try {
-        const url = `${API_BASE}/sales/?shop_id=${shopId}&date_from=${from}&date_to=${to}`;
+        const url = `${API_BASE}/sales/?shop_id=${shopId}&date_from=${date}&date_to=${date}`;
         const json = await fetchJson(url, authHeadersNoJson, controller.signal);
         const list = Array.isArray(json)
           ? json
@@ -613,256 +445,89 @@ function SalesHistoryPage() {
 
         if (reqId !== salesReqIdRef.current) return;
 
-        if (mode === "append") setSales((prev) => mergeSalesUnique(prev, list || []));
-        else setSales(list || []);
-
-        const nowIso = new Date().toISOString();
-        setLastSalesSyncAt(nowIso);
-
-        try {
-          window.dispatchEvent(
-            new CustomEvent("iclas:sales-history-synced", {
-              detail: { shopId, dateFrom: from, dateTo: to, at: Date.now() },
-            })
-          );
-        } catch {}
+        setSales(list || []);
+        setLastSalesSyncAt(new Date().toISOString());
       } catch (err) {
         if (err?.name === "AbortError") return;
         console.error(err);
 
         if (reqId !== salesReqIdRef.current) return;
 
-        if (mode !== "append") setSales([]);
+        setSales([]);
         setError(err.message || "Failed to load sales history.");
       } finally {
         if (reqId === salesReqIdRef.current) setLoadingSales(false);
       }
     },
-    [shopId, headersReady, activeDateFrom, activeDateTo, fetchJson, authHeadersNoJson]
+    [shopId, headersReady, fetchJson, authHeadersNoJson]
   );
 
-  // ✅ Auto-load sales for NON-history tabs (history is manual/controlled)
+  // Load when date changes
   useEffect(() => {
-    if (tab === "history") return;
-    loadSales({ mode: "replace" });
-  }, [tab, loadSales]);
-
-  // ✅ History initial load when entering tab / shop changes
-  useEffect(() => {
-    if (tab !== "history") return;
-    if (!headersReady || !shopId) return;
-
-    // sync draft UI with actual value
-    setHistoryDaysBackDraft(String(historyDaysBack));
-
-    const to = todayDateString();
-    const days = clampDaysBack(historyDaysBack);
-    const from = addDaysYMD(to, -days + 1);
-
-    loadSales({ dateFrom: from, dateTo: to, mode: "replace" });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, shopId, headersReady]);
+    if (!headersReady) return;
+    loadSalesForDate(selectedDate);
+  }, [headersReady, selectedDate, loadSalesForDate]);
 
   // -------------------------
-  // Auto-refresh Today tab
+  // Build "clean items list" rows for this date
   // -------------------------
-  useEffect(() => {
-    if (autoTimerRef.current) {
-      window.clearInterval(autoTimerRef.current);
-      autoTimerRef.current = null;
+  const itemsRows = useMemo(() => {
+    const rows = [];
+    for (const sale of sales || []) {
+      const saleTime = sale?.sale_date;
+      const lines = pickLines(sale);
+      for (const line of lines) {
+        const { lineId, itemId, qty, unitPrice, total, profit } = extractLineFields(line);
+
+        const stockRow = itemId ? stockByItemId[itemId] : null;
+        const itemName =
+          stockRow?.item_name ||
+          stockRow?.item?.name ||
+          line?.item_name ||
+          line?.name ||
+          (itemId != null ? `Item #${itemId}` : "Unknown item");
+
+        rows.push({
+          id: `${sale.id}-${lineId ?? Math.random().toString(16).slice(2)}`,
+          saleId: sale.id,
+          saleDate: sale?.sale_date,
+          lineId: lineId ?? null,
+          itemId,
+          itemName,
+          qtyPieces: qty,
+          unitPrice,
+          total,
+          profit,
+        });
+      }
     }
 
-    if (tab !== "today") return;
-    if (!autoRefreshToday) return;
-
-    autoTimerRef.current = window.setInterval(() => {
-      loadSales({ mode: "replace" });
-    }, 8000);
-
-    return () => {
-      if (autoTimerRef.current) {
-        window.clearInterval(autoTimerRef.current);
-        autoTimerRef.current = null;
-      }
-    };
-  }, [tab, autoRefreshToday, loadSales]);
-
-  // -------------------------
-  // History actions
-  // -------------------------
-  const applyHistoryDays = useCallback(async () => {
-    const days = clampDaysBack(historyDaysBackDraft);
-    setHistoryDaysBack(days);
-    setHistoryDaysBackDraft(String(days));
-
-    const to = todayDateString();
-    const from = addDaysYMD(to, -days + 1);
-
-    await loadSales({ dateFrom: from, dateTo: to, mode: "replace" });
-  }, [historyDaysBackDraft, loadSales]);
-
-  const loadOlderHistory = useCallback(async () => {
-    const cur = clampDaysBack(historyDaysBack);
-    if (cur >= HISTORY_MAX_DAYS) return;
-
-    const next = clampDaysBack(cur + HISTORY_STEP_DAYS);
-
-    const to = todayDateString();
-    const curFrom = addDaysYMD(to, -cur + 1); // current earliest day
-    const nextFrom = addDaysYMD(to, -next + 1); // new earliest day
-    const extraTo = addDaysYMD(curFrom, -1); // day before current range
-
-    // If ranges overlap or invalid, just expand without fetching
-    if (!nextFrom || !extraTo || extraTo < nextFrom) {
-      setHistoryDaysBack(next);
-      setHistoryDaysBackDraft(String(next));
-      return;
-    }
-
-    // Fetch only the additional older slice and APPEND
-    await loadSales({ dateFrom: nextFrom, dateTo: extraTo, mode: "append" });
-
-    setHistoryDaysBack(next);
-    setHistoryDaysBackDraft(String(next));
-  }, [historyDaysBack, loadSales]);
-
-  // -------------------------
-  // ✅ NEW: Open a receipt/line in Shop workspace (Current Sale edit mode)
-  // -------------------------
-  const openInCurrentSaleFromHistory = useCallback(
-    (saleId, saleLineId = null) => {
-      if (!saleId) return;
-
-      try {
-        localStorage.setItem("iclas_edit_sale_id", String(saleId));
-        if (saleLineId != null)
-          localStorage.setItem("iclas_edit_sale_line_id", String(saleLineId));
-        else localStorage.removeItem("iclas_edit_sale_line_id");
-
-        // Hint for SalesPOS (we'll wire this next on SalesPOS side)
-        localStorage.setItem("iclas_pos_desired_tab", "current");
-      } catch {}
-
-      // Also pass state (extra safety if you later read location.state)
-      navigate(`/shops/${shopId}`, {
-        state: { iclas_edit_sale_id: saleId, iclas_edit_sale_line_id: saleLineId },
-      });
-    },
-    [navigate, shopId]
-  );
-
-  // -------------------------
-  // Filter by payment / credit (normalized)
-  // -------------------------
-  const filteredSales = useMemo(() => {
-    const q = String(searchQuery || "").trim().toLowerCase();
-
-    return (sales || []).filter((sale) => {
-      const paymentType = normalizePaymentType(sale?.payment_type);
-      const creditOpen = isOpenCreditSale(sale);
-
-      const effectivePaymentFilter = tab === "credits" ? "credit" : paymentFilter;
-
-      if (effectivePaymentFilter === "credit") return creditOpen;
-      if (effectivePaymentFilter === "cash") return !creditOpen && paymentType === "cash";
-      if (effectivePaymentFilter === "card") return !creditOpen && paymentType === "card";
-      if (effectivePaymentFilter === "mobile") return !creditOpen && paymentType === "mobile";
-
-      if (tab === "search" && q) {
-        const idHit = String(sale?.id ?? "").toLowerCase().includes(q);
-        const nameHit = String(sale?.customer_name ?? "").toLowerCase().includes(q);
-        const phoneHit = String(sale?.customer_phone ?? "").toLowerCase().includes(q);
-
-        let itemHit = false;
-        const lines = pickLines(sale);
-        for (const ln of lines) {
-          const { itemId } = extractLineFields(ln);
-          const stockRow = itemId ? stockByItemId[itemId] : null;
-          const nm =
-            stockRow?.item_name ||
-            stockRow?.item?.name ||
-            String(ln?.item_name || ln?.name || "");
-          if (String(nm).toLowerCase().includes(q)) {
-            itemHit = true;
-            break;
-          }
-        }
-
-        return idHit || nameHit || phoneHit || itemHit;
-      }
-
-      return true;
+    // Newest first (by sale time)
+    rows.sort((a, b) => {
+      const ta = parseDateAssumeKigali(a.saleDate)?.getTime?.() || 0;
+      const tb = parseDateAssumeKigali(b.saleDate)?.getTime?.() || 0;
+      if (tb !== ta) return tb - ta;
+      return Number(b.saleId || 0) - Number(a.saleId || 0);
     });
-  }, [sales, paymentFilter, tab, searchQuery, stockByItemId]);
+
+    return rows;
+  }, [sales, stockByItemId]);
 
   // -------------------------
-  // Build items rows for a given sales list (FIXED: day-specific support)
+  // Summary
   // -------------------------
-  const buildItemsRows = useCallback(
-    (salesList) => {
-      const rows = [];
-      for (const sale of salesList || []) {
-        const saleTime = sale.sale_date;
-        const paymentType = normalizePaymentType(sale.payment_type);
-        const creditOpen = isOpenCreditSale(sale);
-
-        const lines = pickLines(sale);
-        for (const line of lines) {
-          const { itemId, qty, unitPrice, total, profit } = extractLineFields(line);
-
-          const stockRow = itemId ? stockByItemId[itemId] : null;
-          const itemName =
-            stockRow?.item_name ||
-            stockRow?.item?.name ||
-            line?.item_name ||
-            line?.name ||
-            (itemId != null ? `Item #${itemId}` : "Unknown item");
-
-          rows.push({
-            id: `${sale.id}-${line.id ?? Math.random().toString(16).slice(2)}`,
-            lineId: line.id ?? null,
-            saleId: sale.id,
-            time: saleTime,
-            itemId,
-            itemName,
-            qtyPieces: qty,
-            unitPrice,
-            total,
-            profit,
-            paymentType,
-            isCreditOpen: creditOpen,
-          });
-        }
-      }
-      return rows;
-    },
-    [stockByItemId]
-  );
-
-  const allItemsRows = useMemo(
-    () => buildItemsRows(filteredSales),
-    [filteredSales, buildItemsRows]
-  );
-
-  // -------------------------
-  // Summary for active range
-  // -------------------------
-  const rangeSummary = useMemo(() => {
+  const summary = useMemo(() => {
     let totalSales = 0;
     let totalProfit = 0;
     let piecesSold = 0;
-    let openCredit = 0;
 
-    for (const sale of filteredSales || []) {
+    for (const sale of sales || []) {
       const { total, profit } = getSaleTotals(sale);
       totalSales += total;
       totalProfit += profit;
-
-      const cb = Number(sale?.credit_balance ?? sale?.creditBalance ?? 0);
-      if (cb > 0) openCredit += cb;
     }
 
-    for (const row of allItemsRows || []) {
+    for (const row of itemsRows || []) {
       piecesSold += Number(row.qtyPieces || 0);
     }
 
@@ -870,108 +535,74 @@ function SalesHistoryPage() {
       totalSales,
       totalProfit,
       piecesSold,
-      receiptsCount: filteredSales.length,
-      openCredit,
+      receiptsCount: (sales || []).length,
     };
-  }, [filteredSales, allItemsRows]);
+  }, [sales, itemsRows]);
 
-  // -------------------------
-  // Group by day (for non-today tabs, including history)
-  // -------------------------
-  const groupedByDay = useMemo(() => {
-    const map = new Map();
-    for (const sale of filteredSales || []) {
-      const day = ymdFromISO(sale?.sale_date) || "Unknown";
-      if (!map.has(day)) map.set(day, []);
-      map.get(day).push(sale);
-    }
-    const days = Array.from(map.keys()).sort((a, b) => String(b).localeCompare(String(a)));
-    return { map, days };
-  }, [filteredSales]);
+  // =========================
+  // Receipt Item Pad (modal)
+  // =========================
+  const [padOpen, setPadOpen] = useState(false);
+  const [padSaleId, setPadSaleId] = useState(null);
 
-  const dailyTotalsTable = useMemo(() => {
-    const rows = [];
-    for (const day of groupedByDay.days) {
-      const list = groupedByDay.map.get(day) || [];
-      let total = 0;
-      let profit = 0;
-      let openCredit = 0;
+  const [padLoading, setPadLoading] = useState(false);
+  const [padError, setPadError] = useState("");
 
-      for (const sale of list) {
-        const t = getSaleTotals(sale);
-        total += t.total;
-        profit += t.profit;
-        const cb = Number(sale?.credit_balance ?? sale?.creditBalance ?? 0);
-        if (cb > 0) openCredit += cb;
-      }
+  const [padSale, setPadSale] = useState(null); // full sale object (with lines)
+  const [padDraftLines, setPadDraftLines] = useState([]); // editable lines
 
-      rows.push({ day, receipts: list.length, total, profit, openCredit });
-    }
-    return rows;
-  }, [groupedByDay]);
+  // Add-item sub-panel
+  const [addMode, setAddMode] = useState(false);
+  const [addSearch, setAddSearch] = useState("");
+  const [addItemId, setAddItemId] = useState("");
+  const [addQty, setAddQty] = useState("");
+  const [addPrice, setAddPrice] = useState("");
 
-  // -------------------------
-  // UI states
-  // -------------------------
-  const [openDays, setOpenDays] = useState({});
+  const closePad = useCallback(() => {
+    setPadOpen(false);
+    setPadSaleId(null);
+    setPadSale(null);
+    setPadDraftLines([]);
+    setPadError("");
+    setAddMode(false);
+    setAddSearch("");
+    setAddItemId("");
+    setAddQty("");
+    setAddPrice("");
+  }, []);
 
-  // ✅ Edit pad state (items view)
-  const [editRowId, setEditRowId] = useState(null);
-  const [editDraft, setEditDraft] = useState({ qtyPieces: "", unitPrice: "" });
-  const [savingEdit, setSavingEdit] = useState(false);
-  const [editError, setEditError] = useState("");
-
+  // ESC closes
   useEffect(() => {
-    setOpenDays({});
-    setEditRowId(null);
-    setEditError("");
-  }, [tab, activeDateFrom, activeDateTo]);
+    if (!padOpen) return;
+    const onKey = (e) => {
+      if (e.key === "Escape") closePad();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [padOpen, closePad]);
 
-  const startEditRow = useCallback((row) => {
-    if (!row) return;
-    setEditRowId(row.id);
-    setEditDraft({
-      qtyPieces: row.qtyPieces != null ? String(row.qtyPieces) : "",
-      unitPrice: row.unitPrice != null ? String(row.unitPrice) : "",
-    });
-    setEditError("");
-  }, []);
-
-  const cancelEdit = useCallback(() => {
-    setEditRowId(null);
-    setEditError("");
-  }, []);
-
-  const saveInlineEdit = useCallback(
-    async (row) => {
-      if (!row) return;
-
-      const qty = Number(editDraft.qtyPieces);
-      const price = Number(editDraft.unitPrice);
-
-      if (!Number.isFinite(qty) || qty <= 0) {
-        setEditError("Quantity must be greater than 0.");
-        return;
-      }
-      if (!Number.isFinite(price) || price <= 0) {
-        setEditError("Unit price must be greater than 0.");
-        return;
-      }
+  const openPadForSale = useCallback(
+    async (saleId) => {
+      if (!saleId) return;
+      setPadOpen(true);
+      setPadSaleId(saleId);
+      setPadSale(null);
+      setPadDraftLines([]);
+      setPadError("");
+      setAddMode(false);
 
       try {
-        setSavingEdit(true);
-        setEditError("");
+        setPadLoading(true);
 
-        // 1) Load full sale (with lines)
-        const saleRes = await fetch(`${API_BASE}/sales/${row.saleId}`, {
+        const res = await fetch(`${API_BASE}/sales/${saleId}`, {
           headers: authHeadersNoJson,
           cache: "no-store",
         });
 
-        if (!saleRes.ok) {
-          let detail = `Failed to load sale #${row.saleId} (status ${saleRes.status}).`;
+        if (!res.ok) {
+          let detail = `Failed to load receipt #${saleId} (status ${res.status}).`;
           try {
-            const j = await saleRes.json();
+            const j = await res.json();
             if (j?.detail) {
               detail = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
             }
@@ -979,91 +610,253 @@ function SalesHistoryPage() {
           throw new Error(detail);
         }
 
-        const sale = await saleRes.json();
-        const linesSrc = sale.lines || sale.sale_lines || sale.items || [];
-        if (!Array.isArray(linesSrc) || linesSrc.length === 0) {
-          throw new Error("Sale has no lines to edit.");
-        }
+        const fullSale = await res.json();
+        const lines = pickLines(fullSale);
 
-        // 2) Build new lines payload (only one line changed)
-        const linesPayload = linesSrc.map((ln) => {
-          const lineId = ln.id ?? ln.line_id ?? null;
-          const isTarget =
-            lineId != null && row.lineId != null ? String(lineId) === String(row.lineId) : false;
-
-          const itemId = ln.item_id ?? ln.itemId ?? (ln.item && ln.item.id);
-
-          const originalQty =
-            ln.quantity_pieces ??
-            ln.quantity ??
-            ln.qty_pieces ??
-            ln.qtyPieces ??
-            ln.qty ??
-            0;
-
-          const originalPrice =
-            ln.sale_price_per_piece ??
-            ln.unit_sale_price ??
-            ln.unit_price ??
-            ln.unitPrice ??
-            ln.price_per_piece ??
-            ln.price ??
-            0;
-
-          return {
-            item_id: itemId,
-            quantity_pieces: isTarget ? qty : originalQty,
-            sale_price_per_piece: isTarget ? price : originalPrice,
-          };
-        });
-
-        const payload = {
-          shop_id: sale.shop_id ?? sale.shopId,
-          payment_type: sale.payment_type ?? sale.paymentType ?? null,
-          is_credit_sale: sale.is_credit_sale ?? sale.isCreditSale ?? false,
-          customer_name: sale.customer_name ?? sale.customerName ?? null,
-          customer_phone: sale.customer_phone ?? sale.customerPhone ?? null,
-          lines: linesPayload,
-        };
-
-        // 3) PUT update
-        const putRes = await fetch(`${API_BASE}/sales/${row.saleId}`, {
-          method: "PUT",
-          headers: {
-            ...authHeadersNoJson,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(payload),
-        });
-
-        if (!putRes.ok) {
-          let detail = `Failed to update sale line (status ${putRes.status}).`;
-          try {
-            const j = await putRes.json();
-            if (j?.detail) {
-              detail = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
-            }
-          } catch {}
-          throw new Error(detail);
-        }
-
-        await putRes.json();
-
-        // 4) Reload sales + stock to keep everything consistent
-        await loadSales({ mode: "replace" });
-        await loadStock();
-
-        setEditRowId(null);
-        setEditError("");
+        setPadSale(fullSale);
+        // Normalize into editable lines
+        setPadDraftLines(
+          lines.map((ln) => {
+            const f = extractLineFields(ln);
+            return {
+              _key: String(f.lineId ?? Math.random().toString(16).slice(2)),
+              lineId: f.lineId ?? null,
+              itemId: f.itemId ?? null,
+              qtyPieces: f.qty ?? 0,
+              unitPrice: f.unitPrice ?? 0,
+            };
+          })
+        );
       } catch (err) {
-        console.error("Inline edit failed:", err);
-        setEditError(err.message || "Failed to update sale line.");
+        console.error(err);
+        setPadError(err.message || "Failed to load receipt.");
       } finally {
-        setSavingEdit(false);
+        setPadLoading(false);
       }
     },
-    [editDraft, authHeadersNoJson, loadSales, loadStock]
+    [authHeadersNoJson]
   );
+
+  const updateDraftLine = useCallback((key, patch) => {
+    setPadDraftLines((prev) =>
+      (prev || []).map((l) => (l._key === key ? { ...l, ...patch } : l))
+    );
+  }, []);
+
+  const itemsForAddPicker = useMemo(() => {
+    const q = String(addSearch || "").trim().toLowerCase();
+    const list = (stockRows || []).map((r) => {
+      const id = r?.item_id;
+      const nm = r?.item_name || r?.item?.name || `Item #${id}`;
+      return { id, name: nm };
+    });
+
+    if (!q) return list.slice(0, 200);
+    return list
+      .filter((x) => String(x.name).toLowerCase().includes(q) || String(x.id).includes(q))
+      .slice(0, 200);
+  }, [stockRows, addSearch]);
+
+  const buildPutPayloadFromDraft = useCallback(
+    (saleObj, draftLines) => {
+      const sale = saleObj || {};
+      const linesPayload = (draftLines || []).map((l) => {
+        return {
+          item_id: l.itemId,
+          quantity_pieces: Number(l.qtyPieces),
+          sale_price_per_piece: Number(l.unitPrice),
+        };
+      });
+
+      return {
+        shop_id: sale.shop_id ?? sale.shopId,
+        payment_type: sale.payment_type ?? sale.paymentType ?? null,
+        is_credit_sale: sale.is_credit_sale ?? sale.isCreditSale ?? false,
+        customer_name: sale.customer_name ?? sale.customerName ?? null,
+        customer_phone: sale.customer_phone ?? sale.customerPhone ?? null,
+        lines: linesPayload,
+      };
+    },
+    []
+  );
+
+  const savePadChanges = useCallback(async () => {
+    if (!padSaleId) return;
+    if (!padSale) return;
+
+    // Permission guard
+    if (!canEditHistory) {
+      setPadError("Only Owner/Manager can edit past sales.");
+      return;
+    }
+
+    // Validate lines
+    for (const l of padDraftLines || []) {
+      const qty = Number(l.qtyPieces);
+      const price = Number(l.unitPrice);
+      if (!Number.isFinite(qty) || qty <= 0) {
+        setPadError("Each line quantity must be greater than 0.");
+        return;
+      }
+      if (!Number.isFinite(price) || price <= 0) {
+        setPadError("Each line price must be greater than 0.");
+        return;
+      }
+      if (!l.itemId) {
+        setPadError("Each line must have an item.");
+        return;
+      }
+    }
+
+    try {
+      setPadLoading(true);
+      setPadError("");
+
+      const payload = buildPutPayloadFromDraft(padSale, padDraftLines);
+
+      const putRes = await fetch(`${API_BASE}/sales/${padSaleId}`, {
+        method: "PUT",
+        headers: {
+          ...authHeadersNoJson,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!putRes.ok) {
+        let detail = `Failed to update receipt (status ${putRes.status}).`;
+        try {
+          const j = await putRes.json();
+          if (j?.detail) {
+            detail = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
+          }
+        } catch {}
+        throw new Error(detail);
+      }
+
+      await putRes.json();
+
+      // Reload day + stock to keep UI consistent
+      await loadSalesForDate(selectedDate);
+      await loadStock();
+
+      // Reload pad with fresh sale
+      await openPadForSale(padSaleId);
+    } catch (err) {
+      console.error(err);
+      setPadError(err.message || "Failed to update receipt.");
+    } finally {
+      setPadLoading(false);
+    }
+  }, [
+    padSaleId,
+    padSale,
+    padDraftLines,
+    authHeadersNoJson,
+    canEditHistory,
+    buildPutPayloadFromDraft,
+    loadSalesForDate,
+    selectedDate,
+    loadStock,
+    openPadForSale,
+  ]);
+
+  const addNewItemToReceipt = useCallback(async () => {
+    if (!padSaleId || !padSale) return;
+
+    if (!canEditHistory) {
+      setPadError("Only Owner/Manager can add items to past sales.");
+      return;
+    }
+
+    const itemIdNum = Number(addItemId);
+    const qtyNum = Number(addQty);
+    const priceNum = Number(addPrice);
+
+    if (!Number.isFinite(itemIdNum) || itemIdNum <= 0) {
+      setPadError("Choose an item to add.");
+      return;
+    }
+    if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
+      setPadError("Quantity must be greater than 0.");
+      return;
+    }
+    if (!Number.isFinite(priceNum) || priceNum <= 0) {
+      setPadError("Unit price must be greater than 0.");
+      return;
+    }
+
+    try {
+      setPadLoading(true);
+      setPadError("");
+
+      const nextDraft = [
+        ...(padDraftLines || []),
+        {
+          _key: `new-${Date.now()}`,
+          lineId: null,
+          itemId: itemIdNum,
+          qtyPieces: qtyNum,
+          unitPrice: priceNum,
+        },
+      ];
+
+      const payload = buildPutPayloadFromDraft(padSale, nextDraft);
+
+      const putRes = await fetch(`${API_BASE}/sales/${padSaleId}`, {
+        method: "PUT",
+        headers: {
+          ...authHeadersNoJson,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!putRes.ok) {
+        let detail = `Failed to add item (status ${putRes.status}).`;
+        try {
+          const j = await putRes.json();
+          if (j?.detail) {
+            detail = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
+          }
+        } catch {}
+        throw new Error(detail);
+      }
+
+      await putRes.json();
+
+      // reload day + stock, then reload pad
+      await loadSalesForDate(selectedDate);
+      await loadStock();
+      await openPadForSale(padSaleId);
+
+      // reset add form
+      setAddMode(false);
+      setAddSearch("");
+      setAddItemId("");
+      setAddQty("");
+      setAddPrice("");
+    } catch (err) {
+      console.error(err);
+      setPadError(err.message || "Failed to add item.");
+    } finally {
+      setPadLoading(false);
+    }
+  }, [
+    padSaleId,
+    padSale,
+    padDraftLines,
+    addItemId,
+    addQty,
+    addPrice,
+    authHeadersNoJson,
+    canEditHistory,
+    buildPutPayloadFromDraft,
+    loadSalesForDate,
+    selectedDate,
+    loadStock,
+    openPadForSale,
+  ]);
 
   // -------------------------
   // Guards
@@ -1113,579 +906,7 @@ function SalesHistoryPage() {
     );
   }
 
-  // -------------------------
-  // Render helpers
-  // -------------------------
-  const renderItemsTable = (salesList) => {
-    if (loadingSales || loadingStock) {
-      return (
-        <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
-          Loading items...
-        </div>
-      );
-    }
-
-    const rows = buildItemsRows(salesList);
-    if (rows.length === 0) {
-      return (
-        <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
-          No items found.
-        </div>
-      );
-    }
-
-    const currentRow = rows.find((r) => r.id === editRowId) || null;
-
-    const draftQtyNum = Number(editDraft.qtyPieces);
-    const draftPriceNum = Number(editDraft.unitPrice);
-    const showDraftTotal =
-      Number.isFinite(draftQtyNum) &&
-      draftQtyNum > 0 &&
-      Number.isFinite(draftPriceNum) &&
-      draftPriceNum > 0;
-    const draftTotal = showDraftTotal ? draftQtyNum * draftPriceNum : null;
-
-    return (
-      <>
-        {/* Edit pad at top */}
-        {currentRow ? (
-          <div
-            style={{
-              marginBottom: 10,
-              padding: "10px 14px",
-              borderRadius: 999,
-              border: "1px dashed #d1d5db",
-              background: "linear-gradient(135deg, #f9fafb 0%, #f3f4ff 40%, #eef2ff 100%)",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                gap: 12,
-                alignItems: "center",
-                flexWrap: "wrap",
-              }}
-            >
-              <div style={{ minWidth: 0 }}>
-                <div
-                  style={{
-                    fontSize: 12,
-                    fontWeight: 800,
-                    textTransform: "uppercase",
-                    letterSpacing: "0.12em",
-                    color: "#4b5563",
-                    marginBottom: 4,
-                  }}
-                >
-                  Edit sale line (inline)
-                </div>
-                <div
-                  style={{
-                    fontSize: 13,
-                    fontWeight: 700,
-                    color: "#111827",
-                    whiteSpace: "nowrap",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                  }}
-                >
-                  Sale #{currentRow.saleId} • {currentRow.itemName}
-                </div>
-                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>
-                  Inline edit is optional. You can also{" "}
-                  <button
-                    type="button"
-                    onClick={() => openInCurrentSaleFromHistory(currentRow.saleId, currentRow.lineId)}
-                    style={{
-                      border: "none",
-                      background: "transparent",
-                      color: "#2563eb",
-                      cursor: "pointer",
-                      fontWeight: 800,
-                      padding: 0,
-                      textDecoration: "underline",
-                    }}
-                  >
-                    open in Current Sale
-                  </button>{" "}
-                  to add more items.
-                </div>
-              </div>
-
-              <div
-                style={{
-                  flex: 1,
-                  display: "grid",
-                  gridTemplateColumns:
-                    "minmax(90px, 130px) minmax(110px, 150px) minmax(120px, 1fr)",
-                  gap: 8,
-                  alignItems: "center",
-                }}
-              >
-                <div>
-                  <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 2 }}>
-                    Pieces
-                  </div>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={editDraft.qtyPieces}
-                    onChange={(e) =>
-                      setEditDraft((prev) => ({
-                        ...prev,
-                        qtyPieces: e.target.value,
-                      }))
-                    }
-                    style={{
-                      width: "100%",
-                      padding: "8px 10px",
-                      borderRadius: 999,
-                      border: "1px solid #d1d5db",
-                      fontSize: 13,
-                      textAlign: "right",
-                      backgroundColor: "#ffffff",
-                    }}
-                  />
-                </div>
-
-                <div>
-                  <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 2 }}>
-                    Price per piece
-                  </div>
-                  <input
-                    type="number"
-                    step="1"
-                    value={editDraft.unitPrice}
-                    onChange={(e) =>
-                      setEditDraft((prev) => ({
-                        ...prev,
-                        unitPrice: e.target.value,
-                      }))
-                    }
-                    style={{
-                      width: "100%",
-                      padding: "8px 10px",
-                      borderRadius: 999,
-                      border: "1px solid #d1d5db",
-                      fontSize: 13,
-                      textAlign: "right",
-                      backgroundColor: "#ffffff",
-                    }}
-                  />
-                </div>
-
-                <div
-                  style={{
-                    display: "flex",
-                    gap: 8,
-                    alignItems: "center",
-                    justifyContent: "flex-end",
-                    flexWrap: "wrap",
-                  }}
-                >
-                  {showDraftTotal && (
-                    <div style={{ fontSize: 12, color: "#111827", fontWeight: 700 }}>
-                      Total:&nbsp;<span>{formatMoney(draftTotal)}</span>
-                    </div>
-                  )}
-
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (!savingEdit) saveInlineEdit(currentRow);
-                    }}
-                    disabled={savingEdit}
-                    style={{
-                      padding: "8px 16px",
-                      borderRadius: 999,
-                      border: "none",
-                      background: "linear-gradient(135deg, #2563eb, #1d4ed8)",
-                      color: "#ffffff",
-                      fontSize: 13,
-                      fontWeight: 800,
-                      cursor: savingEdit ? "default" : "pointer",
-                      boxShadow: "0 4px 14px rgba(37, 99, 235, 0.35)",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {savingEdit ? "Saving..." : "Save"}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (!savingEdit) cancelEdit();
-                    }}
-                    disabled={savingEdit}
-                    style={{
-                      padding: "8px 12px",
-                      borderRadius: 999,
-                      border: "1px solid #e5e7eb",
-                      background: "#ffffff",
-                      color: "#4b5563",
-                      fontSize: 12,
-                      fontWeight: 700,
-                      cursor: savingEdit ? "default" : "pointer",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {editError && (
-              <div
-                style={{
-                  marginTop: 6,
-                  padding: "6px 8px",
-                  borderRadius: 12,
-                  background: "#fef2f2",
-                  border: "1px solid #fecaca",
-                  color: "#b91c1c",
-                  fontSize: 11,
-                  fontWeight: 600,
-                }}
-              >
-                {editError}
-              </div>
-            )}
-          </div>
-        ) : (
-          <div style={{ marginBottom: 6, fontSize: 12, color: "#6b7280" }}>
-            Tip: click any row to open inline edit pad — or click the{" "}
-            <span style={{ fontWeight: 800, color: "#2563eb" }}>item name</span> to open it in
-            Current Sale and add new items.
-          </div>
-        )}
-
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
-          <thead>
-            <tr
-              style={{
-                textAlign: "left",
-                borderBottom: "1px solid #e5e7eb",
-                fontSize: "11px",
-                textTransform: "uppercase",
-                letterSpacing: "0.08em",
-                color: "#6b7280",
-              }}
-            >
-              <th style={{ padding: "6px 4px" }}>Time</th>
-              <th style={{ padding: "6px 4px" }}>Item</th>
-              <th style={{ padding: "6px 4px", textAlign: "right" }}>Qty</th>
-              <th style={{ padding: "6px 4px", textAlign: "right" }}>Unit price</th>
-              <th style={{ padding: "6px 4px", textAlign: "right" }}>Total</th>
-              <th style={{ padding: "6px 4px", textAlign: "right" }}>Profit</th>
-              <th style={{ padding: "6px 4px" }}>Payment</th>
-              <th style={{ padding: "6px 4px" }}>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => {
-              const paymentLabel =
-                row.paymentType === "cash"
-                  ? "Cash"
-                  : row.paymentType === "card"
-                  ? "POS"
-                  : row.paymentType === "mobile"
-                  ? "MoMo"
-                  : row.paymentType || "N/A";
-
-              const isCredit = row.isCreditOpen;
-              const statusLabel = isCredit ? "Credit" : "Paid";
-              const statusBg = isCredit ? "#fef2f2" : "#ecfdf3";
-              const statusBorder = isCredit ? "#fecaca" : "#bbf7d0";
-              const statusColor = isCredit ? "#b91c1c" : "#166534";
-
-              const isEditing = editRowId === row.id;
-
-              return (
-                <tr
-                  key={row.id}
-                  style={{
-                    borderBottom: "1px solid #f3f4f6",
-                    cursor: "pointer",
-                    backgroundColor: isEditing ? "#fefce8" : undefined,
-                  }}
-                  onClick={() => startEditRow(row)}
-                >
-                  <td style={{ padding: "8px 4px" }}>{formatTimeHM(row.time)}</td>
-
-                  <td style={{ padding: "8px 4px" }}>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        openInCurrentSaleFromHistory(row.saleId, row.lineId);
-                      }}
-                      style={{
-                        border: "none",
-                        background: "transparent",
-                        padding: 0,
-                        color: "#2563eb",
-                        fontWeight: 700,
-                        cursor: "pointer",
-                        textDecoration: "underline",
-                      }}
-                      title="Open this receipt in Current Sale to edit & add items"
-                    >
-                      {row.itemName}
-                    </button>
-
-                    <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>
-                      Receipt #{row.saleId}
-                      {row.lineId != null ? ` • Line ${row.lineId}` : ""}
-                    </div>
-                  </td>
-
-                  <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                    {formatMoney(row.qtyPieces)}
-                  </td>
-                  <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                    {formatMoney(row.unitPrice)}
-                  </td>
-                  <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600 }}>
-                    {formatMoney(row.total)}
-                  </td>
-                  <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                    {formatMoney(row.profit)}
-                  </td>
-                  <td style={{ padding: "8px 4px" }}>
-                    <span
-                      style={{
-                        display: "inline-block",
-                        padding: "2px 8px",
-                        borderRadius: "999px",
-                        backgroundColor: "#eff6ff",
-                        color: "#1d4ed8",
-                        fontSize: "11px",
-                        fontWeight: 600,
-                      }}
-                    >
-                      {paymentLabel}
-                    </span>
-                  </td>
-                  <td style={{ padding: "8px 4px" }}>
-                    <span
-                      style={{
-                        display: "inline-block",
-                        padding: "2px 8px",
-                        borderRadius: "999px",
-                        backgroundColor: statusBg,
-                        border: `1px solid ${statusBorder}`,
-                        color: statusColor,
-                        fontSize: "11px",
-                        fontWeight: 600,
-                      }}
-                    >
-                      {statusLabel}
-                    </span>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </>
-    );
-  };
-
-  const renderReceiptsTable = (salesList) => {
-    if (loadingSales) {
-      return (
-        <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
-          Loading receipts...
-        </div>
-      );
-    }
-    if (!salesList?.length) {
-      return (
-        <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
-          No receipts found.
-        </div>
-      );
-    }
-
-    return (
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
-        <thead>
-          <tr
-            style={{
-              textAlign: "left",
-              borderBottom: "1px solid #e5e7eb",
-              fontSize: "11px",
-              textTransform: "uppercase",
-              letterSpacing: "0.08em",
-              color: "#6b7280",
-            }}
-          >
-            <th style={{ padding: "6px 4px" }}>Date &amp; time</th>
-            <th style={{ padding: "6px 4px" }}>Customer</th>
-            <th style={{ padding: "6px 4px", textAlign: "right" }}>Items</th>
-            <th style={{ padding: "6px 4px", textAlign: "right" }}>Total</th>
-            <th style={{ padding: "6px 4px", textAlign: "right" }}>Profit</th>
-            <th style={{ padding: "6px 4px" }}>Payment</th>
-            <th style={{ padding: "6px 4px" }}>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {salesList.map((sale) => {
-            const lines = pickLines(sale);
-            const piecesCount = lines.reduce(
-              (sum, l) => sum + Number(extractLineFields(l).qty || 0),
-              0
-            );
-
-            const paymentType = normalizePaymentType(sale.payment_type);
-            const { total, profit } = getSaleTotals(sale);
-
-            const creditOpen = isOpenCreditSale(sale);
-
-            const paymentLabel =
-              paymentType === "cash"
-                ? "Cash"
-                : paymentType === "card"
-                ? "POS"
-                : paymentType === "mobile"
-                ? "MoMo"
-                : "N/A";
-
-            const statusLabel = creditOpen ? "Credit" : "Paid";
-            const statusBg = creditOpen ? "#fef2f2" : "#ecfdf3";
-            const statusBorder = creditOpen ? "#fecaca" : "#bbf7d0";
-            const statusColor = creditOpen ? "#b91c1c" : "#166534";
-
-            return (
-              <tr key={sale.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
-                <td style={{ padding: "8px 4px" }}>{formatDateTime(sale.sale_date)}</td>
-
-                <td style={{ padding: "8px 4px" }}>
-                  {sale.customer_name ? (
-                    <>
-                      <span style={{ color: "#2563eb", fontWeight: 600 }}>
-                        {sale.customer_name}
-                      </span>
-                      {sale.customer_phone && (
-                        <span style={{ display: "block", fontSize: "11px", color: "#6b7280" }}>
-                          {sale.customer_phone}
-                        </span>
-                      )}
-
-                      <button
-                        type="button"
-                        onClick={() => openInCurrentSaleFromHistory(sale.id, null)}
-                        style={{
-                          display: "block",
-                          border: "none",
-                          background: "transparent",
-                          padding: 0,
-                          fontSize: "11px",
-                          color: "#2563eb",
-                          cursor: "pointer",
-                          fontWeight: 800,
-                          textDecoration: "underline",
-                          marginTop: 2,
-                        }}
-                        title="Open this receipt in Current Sale to edit & add items"
-                      >
-                        Receipt #{sale.id}
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <span style={{ color: "#6b7280" }}>Walk-in</span>
-
-                      <button
-                        type="button"
-                        onClick={() => openInCurrentSaleFromHistory(sale.id, null)}
-                        style={{
-                          display: "block",
-                          border: "none",
-                          background: "transparent",
-                          padding: 0,
-                          fontSize: "11px",
-                          color: "#2563eb",
-                          cursor: "pointer",
-                          fontWeight: 800,
-                          textDecoration: "underline",
-                          marginTop: 2,
-                        }}
-                        title="Open this receipt in Current Sale to edit & add items"
-                      >
-                        Receipt #{sale.id}
-                      </button>
-                    </>
-                  )}
-                </td>
-
-                <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                  {formatMoney(piecesCount)}
-                </td>
-                <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600 }}>
-                  {formatMoney(total)}
-                </td>
-                <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                  {formatMoney(profit)}
-                </td>
-                <td style={{ padding: "8px 4px" }}>
-                  <span
-                    style={{
-                      display: "inline-block",
-                      padding: "2px 8px",
-                      borderRadius: "999px",
-                      backgroundColor: "#eff6ff",
-                      color: "#1d4ed8",
-                      fontSize: "11px",
-                      fontWeight: 600,
-                    }}
-                  >
-                    {paymentLabel}
-                  </span>
-                </td>
-                <td style={{ padding: "8px 4px" }}>
-                  <span
-                    style={{
-                      display: "inline-block",
-                      padding: "2px 8px",
-                      borderRadius: "999px",
-                      backgroundColor: statusBg,
-                      border: `1px solid ${statusBorder}`,
-                      color: statusColor,
-                      fontSize: "11px",
-                      fontWeight: 600,
-                    }}
-                  >
-                    {statusLabel}
-                  </span>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    );
-  };
-
-  // -------------------------
-  // Page layout
-  // -------------------------
-  const title =
-    tab === "history"
-      ? "Sales History — All history"
-      : tab === "today"
-      ? "Sales History — Today"
-      : tab === "range"
-      ? "Sales History — Date Range"
-      : tab === "month"
-      ? "Sales History — Monthly"
-      : tab === "credits"
-      ? "Sales History — Open Credits"
-      : "Sales History — Search";
+  const isViewingToday = selectedDate === todayDateString();
 
   return (
     <div style={{ padding: "16px 24px 24px" }}>
@@ -1722,257 +943,36 @@ function SalesHistoryPage() {
               margin: 0,
             }}
           >
-            {title}
+            Sales History
           </h1>
           <p style={{ color: "#6b7280", marginTop: "0.5rem" }}>
-            <strong>{shopName}</strong> • Range: <strong>{activeDateFrom}</strong> →{" "}
-            <strong>{activeDateTo}</strong>
+            <strong>{shopName}</strong> • Date: <strong>{selectedDate}</strong>
             {lastSalesSyncAt && (
               <span style={{ marginLeft: 10, fontSize: 12, color: "#9ca3af" }}>
                 • Synced: {formatTimeHM(lastSalesSyncAt)}
               </span>
             )}
           </p>
+          {isCashier && (
+            <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 800 }}>
+              Cashier view is read-only here. Use SalesPOS for today’s selling.
+            </div>
+          )}
+          {!canEditHistory && !isCashier && (
+            <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 800 }}>
+              You do not have permission to edit history. Only Owner/Manager can edit past
+              sales.
+            </div>
+          )}
+          {canEditHistory && !isViewingToday && (
+            <div style={{ fontSize: 12, color: "#374151", fontWeight: 700 }}>
+              You’re editing history for <strong>{selectedDate}</strong>. Changes affect stock
+              and totals.
+            </div>
+          )}
         </div>
 
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          {tab === "today" && (
-            <label
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                fontSize: 12,
-                color: "#374151",
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={autoRefreshToday}
-                onChange={(e) => setAutoRefreshToday(e.target.checked)}
-              />
-              Auto-refresh
-            </label>
-          )}
-
-          <button
-            type="button"
-            onClick={() => {
-              if (tab === "history") {
-                applyHistoryDays();
-              } else {
-                loadSales({ mode: "replace" });
-              }
-              loadStock();
-            }}
-            style={{
-              padding: "8px 12px",
-              borderRadius: 999,
-              border: "1px solid #e5e7eb",
-              background: "#fff",
-              cursor: "pointer",
-              fontWeight: 700,
-              fontSize: 12,
-            }}
-            title="Refresh from backend"
-          >
-            ⟳ Refresh
-          </button>
-        </div>
-      </div>
-
-      {/* Tabs */}
-      <div
-        style={{
-          marginTop: 10,
-          display: "inline-flex",
-          backgroundColor: "#e5e7eb",
-          borderRadius: "999px",
-          padding: "3px",
-          gap: 4,
-          flexWrap: "wrap",
-        }}
-      >
-        {[
-          { key: "history", label: "All history" },
-          { key: "today", label: "Today" },
-          { key: "range", label: "Date range" },
-          { key: "month", label: "Monthly" },
-          { key: "credits", label: "Open credits" },
-          { key: "search", label: "Search" },
-        ].map((t) => {
-          const active = tab === t.key;
-          return (
-            <button
-              key={t.key}
-              type="button"
-              onClick={() => {
-                setTab(t.key);
-
-                if (t.key === "today") setSelectedDate(todayDateString());
-                if (t.key === "credits") setPaymentFilter("credit");
-                if (t.key !== "credits" && paymentFilter === "credit") setPaymentFilter("all");
-
-                if (t.key === "history") {
-                  setHistoryDaysBackDraft(String(historyDaysBack));
-                }
-              }}
-              style={{
-                border: "none",
-                cursor: "pointer",
-                padding: "6px 12px",
-                borderRadius: "999px",
-                fontSize: "12px",
-                fontWeight: 700,
-                backgroundColor: active ? "#ffffff" : "transparent",
-                color: active ? "#111827" : "#4b5563",
-                boxShadow: active ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
-              }}
-            >
-              {t.label}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Controls row */}
-      <div
-        style={{
-          marginTop: 14,
-          display: "flex",
-          flexWrap: "wrap",
-          gap: "10px 16px",
-          alignItems: "center",
-        }}
-      >
-        {tab === "history" && (
-          <div
-            style={{
-              display: "flex",
-              gap: 10,
-              alignItems: "center",
-              flexWrap: "wrap",
-              color: "#6b7280",
-              fontSize: 13,
-            }}
-          >
-            <span style={{ fontWeight: 800, color: "#111827" }}>All history:</span>
-            <span>Show last</span>
-            <input
-              type="number"
-              min="1"
-              step="1"
-              value={historyDaysBackDraft}
-              onChange={(e) => setHistoryDaysBackDraft(e.target.value)}
-              style={{
-                width: 90,
-                padding: "6px 10px",
-                borderRadius: 999,
-                border: "1px solid #d1d5db",
-                fontSize: 13,
-              }}
-            />
-            <span>days</span>
-            <button
-              type="button"
-              onClick={applyHistoryDays}
-              style={{
-                padding: "6px 10px",
-                borderRadius: 999,
-                border: "1px solid #e5e7eb",
-                background: "#fff",
-                cursor: "pointer",
-                fontSize: 12,
-                fontWeight: 800,
-              }}
-            >
-              Apply
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setHistoryDaysBack(30);
-                setHistoryDaysBackDraft("30");
-                const to = todayDateString();
-                const from = addDaysYMD(to, -30 + 1);
-                loadSales({ dateFrom: from, dateTo: to, mode: "replace" });
-              }}
-              style={{
-                padding: "6px 10px",
-                borderRadius: 999,
-                border: "1px solid #e5e7eb",
-                background: "#fff",
-                cursor: "pointer",
-                fontSize: 12,
-                fontWeight: 700,
-              }}
-            >
-              30d
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setHistoryDaysBack(90);
-                setHistoryDaysBackDraft("90");
-                const to = todayDateString();
-                const from = addDaysYMD(to, -90 + 1);
-                loadSales({ dateFrom: from, dateTo: to, mode: "replace" });
-              }}
-              style={{
-                padding: "6px 10px",
-                borderRadius: 999,
-                border: "1px solid #e5e7eb",
-                background: "#fff",
-                cursor: "pointer",
-                fontSize: 12,
-                fontWeight: 700,
-              }}
-            >
-              90d
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setHistoryDaysBack(365);
-                setHistoryDaysBackDraft("365");
-                const to = todayDateString();
-                const from = addDaysYMD(to, -365 + 1);
-                loadSales({ dateFrom: from, dateTo: to, mode: "replace" });
-              }}
-              style={{
-                padding: "6px 10px",
-                borderRadius: 999,
-                border: "1px solid #e5e7eb",
-                background: "#fff",
-                cursor: "pointer",
-                fontSize: 12,
-                fontWeight: 700,
-              }}
-            >
-              1 year
-            </button>
-
-            <button
-              type="button"
-              onClick={loadOlderHistory}
-              style={{
-                padding: "6px 10px",
-                borderRadius: 999,
-                border: "1px solid #111827",
-                background: "#111827",
-                color: "#fff",
-                cursor: "pointer",
-                fontSize: 12,
-                fontWeight: 900,
-              }}
-              title={`Fetch older sales (+${HISTORY_STEP_DAYS} days) and append`}
-            >
-              Load older +{HISTORY_STEP_DAYS}d
-            </button>
-          </div>
-        )}
-
-        {tab === "today" && (
           <div style={{ fontSize: "13px", color: "#6b7280" }}>
             Date:&nbsp;
             <input
@@ -2003,262 +1003,26 @@ function SalesHistoryPage() {
               Today
             </button>
           </div>
-        )}
 
-        {tab === "range" && (
-          <div
-            style={{
-              display: "flex",
-              gap: 10,
-              alignItems: "center",
-              flexWrap: "wrap",
-              color: "#6b7280",
-              fontSize: 13,
+          <button
+            type="button"
+            onClick={() => {
+              loadSalesForDate(selectedDate);
+              loadStock();
             }}
-          >
-            <div>
-              From:&nbsp;
-              <input
-                type="date"
-                value={rangeFrom}
-                onChange={(e) => setRangeFrom(e.target.value)}
-                style={{
-                  padding: "6px 10px",
-                  borderRadius: 999,
-                  border: "1px solid #d1d5db",
-                  fontSize: 13,
-                }}
-              />
-            </div>
-            <div>
-              To:&nbsp;
-              <input
-                type="date"
-                value={rangeTo}
-                onChange={(e) => setRangeTo(e.target.value)}
-                style={{
-                  padding: "6px 10px",
-                  borderRadius: 999,
-                  border: "1px solid #d1d5db",
-                  fontSize: 13,
-                }}
-              />
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                setRangeFrom(addDaysYMD(todayDateString(), -6));
-                setRangeTo(todayDateString());
-              }}
-              style={{
-                padding: "6px 10px",
-                borderRadius: 999,
-                border: "1px solid #e5e7eb",
-                background: "#fff",
-                cursor: "pointer",
-                fontSize: 12,
-                fontWeight: 700,
-              }}
-            >
-              Last 7 days
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setRangeFrom(addDaysYMD(todayDateString(), -29));
-                setRangeTo(todayDateString());
-              }}
-              style={{
-                padding: "6px 10px",
-                borderRadius: 999,
-                border: "1px solid #e5e7eb",
-                background: "#fff",
-                cursor: "pointer",
-                fontSize: 12,
-                fontWeight: 700,
-              }}
-            >
-              Last 30 days
-            </button>
-          </div>
-        )}
-
-        {tab === "month" && (
-          <div style={{ color: "#6b7280", fontSize: 13 }}>
-            Month:&nbsp;
-            <input
-              type="month"
-              value={selectedMonth}
-              onChange={(e) => setSelectedMonth(e.target.value)}
-              style={{
-                padding: "6px 10px",
-                borderRadius: 999,
-                border: "1px solid #d1d5db",
-                fontSize: 13,
-              }}
-            />
-          </div>
-        )}
-
-        {tab === "credits" && (
-          <div
             style={{
-              display: "flex",
-              gap: 10,
-              alignItems: "center",
-              flexWrap: "wrap",
-              color: "#6b7280",
-              fontSize: 13,
+              padding: "8px 12px",
+              borderRadius: 999,
+              border: "1px solid #e5e7eb",
+              background: "#fff",
+              cursor: "pointer",
+              fontWeight: 700,
+              fontSize: 12,
             }}
+            title="Refresh from backend"
           >
-            <div>
-              From:&nbsp;
-              <input
-                type="date"
-                value={creditFrom}
-                onChange={(e) => setCreditFrom(e.target.value)}
-                style={{
-                  padding: "6px 10px",
-                  borderRadius: 999,
-                  border: "1px solid #d1d5db",
-                  fontSize: 13,
-                }}
-              />
-            </div>
-            <div>
-              To:&nbsp;
-              <input
-                type="date"
-                value={creditTo}
-                onChange={(e) => setCreditTo(e.target.value)}
-                style={{
-                  padding: "6px 10px",
-                  borderRadius: 999,
-                  border: "1px solid #d1d5db",
-                  fontSize: 13,
-                }}
-              />
-            </div>
-            <span style={{ fontSize: 12, color: "#b91c1c", fontWeight: 800 }}>
-              Showing credit_balance &gt; 0
-            </span>
-          </div>
-        )}
-
-        {tab === "search" && (
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <div style={{ color: "#6b7280", fontSize: 13 }}>
-              Last&nbsp;
-              <input
-                type="number"
-                min="1"
-                step="1"
-                value={searchDaysBack}
-                onChange={(e) => setSearchDaysBack(e.target.value)}
-                style={{
-                  width: 80,
-                  padding: "6px 10px",
-                  borderRadius: 999,
-                  border: "1px solid #d1d5db",
-                  fontSize: 13,
-                }}
-              />
-              &nbsp;days
-            </div>
-            <input
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search: receipt #, phone, customer, item..."
-              style={{
-                minWidth: 260,
-                padding: "8px 12px",
-                borderRadius: 999,
-                border: "1px solid #d1d5db",
-                fontSize: 13,
-                background: "#fff",
-              }}
-            />
-          </div>
-        )}
-
-        {/* Payment filter */}
-        <div
-          style={{
-            display: "inline-flex",
-            backgroundColor: "#e5e7eb",
-            borderRadius: "999px",
-            padding: "2px",
-          }}
-        >
-          {[
-            { key: "all", label: "All" },
-            { key: "cash", label: "Cash" },
-            { key: "card", label: "POS" },
-            { key: "mobile", label: "MoMo" },
-            { key: "credit", label: "Credit" },
-          ].map((opt) => {
-            const isActive = (tab === "credits" ? "credit" : paymentFilter) === opt.key;
-            return (
-              <button
-                key={opt.key}
-                type="button"
-                onClick={() => tab !== "credits" && setPaymentFilter(opt.key)}
-                style={{
-                  border: "none",
-                  cursor: tab === "credits" ? "not-allowed" : "pointer",
-                  padding: "4px 10px",
-                  borderRadius: "999px",
-                  fontSize: "12px",
-                  fontWeight: 700,
-                  backgroundColor: isActive ? "#ffffff" : "transparent",
-                  color: isActive ? "#111827" : "#4b5563",
-                  boxShadow: isActive ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
-                  opacity: tab === "credits" ? 0.6 : 1,
-                }}
-                title={tab === "credits" ? "Credits tab always shows Credit" : ""}
-              >
-                {opt.label}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* View mode */}
-        <div
-          style={{
-            marginLeft: "auto",
-            display: "inline-flex",
-            backgroundColor: "#e5e7eb",
-            borderRadius: "999px",
-            padding: "2px",
-          }}
-        >
-          {[
-            { key: "items", label: "Items" },
-            { key: "receipts", label: "Receipts" },
-          ].map((opt) => {
-            const isActive = viewMode === opt.key;
-            return (
-              <button
-                key={opt.key}
-                type="button"
-                onClick={() => setViewMode(opt.key)}
-                style={{
-                  border: "none",
-                  cursor: "pointer",
-                  padding: "4px 10px",
-                  borderRadius: "999px",
-                  fontSize: "12px",
-                  fontWeight: 700,
-                  backgroundColor: isActive ? "#ffffff" : "transparent",
-                  color: isActive ? "#111827" : "#4b5563",
-                  boxShadow: isActive ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
-                }}
-              >
-                {opt.label}
-              </button>
-            );
-          })}
+            ⟳ Refresh
+          </button>
         </div>
       </div>
 
@@ -2295,20 +1059,8 @@ function SalesHistoryPage() {
         <div style={{ fontSize: "14px", fontWeight: 800, marginBottom: "6px" }}>Summary</div>
         <div
           style={{
-            fontSize: "11px",
-            textTransform: "uppercase",
-            letterSpacing: "0.12em",
-            color: "#9ca3af",
-            marginBottom: "8px",
-          }}
-        >
-          {activeDateFrom} → {activeDateTo}
-        </div>
-
-        <div
-          style={{
             display: "grid",
-            gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
+            gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
             rowGap: "8px",
             columnGap: "16px",
           }}
@@ -2316,83 +1068,62 @@ function SalesHistoryPage() {
           <div>
             <div style={{ color: "#6b7280" }}>Total sales</div>
             <div style={{ fontSize: "18px", fontWeight: 900 }}>
-              {formatMoney(rangeSummary.totalSales)}
+              {formatMoney(summary.totalSales)}
             </div>
           </div>
 
           <div>
             <div style={{ color: "#6b7280" }}>Total profit</div>
             <div style={{ fontSize: "16px", fontWeight: 800, color: "#16a34a" }}>
-              {formatMoney(rangeSummary.totalProfit)}
+              {formatMoney(summary.totalProfit)}
             </div>
           </div>
 
           <div>
             <div style={{ color: "#6b7280" }}>Pieces sold</div>
             <div style={{ fontSize: "16px", fontWeight: 800 }}>
-              {formatMoney(rangeSummary.piecesSold)}
+              {formatMoney(summary.piecesSold)}
             </div>
           </div>
 
           <div>
             <div style={{ color: "#6b7280" }}>Receipts</div>
             <div style={{ fontSize: "16px", fontWeight: 800 }}>
-              {formatMoney(rangeSummary.receiptsCount)}
-            </div>
-          </div>
-
-          <div>
-            <div style={{ color: "#6b7280" }}>Open credit</div>
-            <div style={{ fontWeight: 900, color: "#b91c1c" }}>
-              {formatMoney(rangeSummary.openCredit)}
+              {formatMoney(summary.receiptsCount)}
             </div>
           </div>
         </div>
       </div>
 
-      {/* Daily totals list (all tabs except Today) */}
-      {tab !== "today" && (
-        <div
-          style={{
-            backgroundColor: "#ffffff",
-            borderRadius: "18px",
-            boxShadow: "0 6px 18px rgba(15,37,128,0.04)",
-            padding: "10px 12px 12px",
-            marginBottom: 12,
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "baseline",
-              gap: 12,
-              flexWrap: "wrap",
-            }}
-          >
-            <div style={{ fontWeight: 900, fontSize: 13 }}>Daily totals</div>
-            <div style={{ fontSize: 12, color: "#6b7280" }}>
-              Tip: click a day (date) to expand receipts/items
-            </div>
+      {/* Clean items list */}
+      <div
+        style={{
+          backgroundColor: "#ffffff",
+          borderRadius: "18px",
+          boxShadow: "0 6px 18px rgba(15,37,128,0.04)",
+          padding: "10px 12px 10px",
+        }}
+      >
+        {(loadingSales || loadingStock) && (
+          <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
+            Loading items...
           </div>
+        )}
 
-          {loadingSales ? (
-            <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
-              Loading daily totals...
+        {!loadingSales && itemsRows.length === 0 && (
+          <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
+            No sales/items found for this date.
+          </div>
+        )}
+
+        {itemsRows.length > 0 && (
+          <>
+            <div style={{ marginBottom: 8, fontSize: 12, color: "#6b7280" }}>
+              Tip: click a row to open the <strong>Receipt Item Pad</strong> and{" "}
+              <strong>add forgotten items</strong>.
             </div>
-          ) : dailyTotalsTable.length === 0 ? (
-            <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
-              No data in this range.
-            </div>
-          ) : (
-            <table
-              style={{
-                width: "100%",
-                borderCollapse: "collapse",
-                fontSize: 13,
-                marginTop: 8,
-              }}
-            >
+
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
               <thead>
                 <tr
                   style={{
@@ -2404,103 +1135,425 @@ function SalesHistoryPage() {
                     color: "#6b7280",
                   }}
                 >
-                  <th style={{ padding: "6px 4px" }}>Day</th>
-                  <th style={{ padding: "6px 4px", textAlign: "right" }}>Receipts</th>
+                  <th style={{ padding: "6px 4px" }}>Time</th>
+                  <th style={{ padding: "6px 4px" }}>Item</th>
+                  <th style={{ padding: "6px 4px" }}>Receipt</th>
+                  <th style={{ padding: "6px 4px", textAlign: "right" }}>Qty</th>
+                  <th style={{ padding: "6px 4px", textAlign: "right" }}>Unit price</th>
                   <th style={{ padding: "6px 4px", textAlign: "right" }}>Total</th>
                   <th style={{ padding: "6px 4px", textAlign: "right" }}>Profit</th>
-                  <th style={{ padding: "6px 4px", textAlign: "right" }}>Open credit</th>
                 </tr>
               </thead>
-
               <tbody>
-                {dailyTotalsTable.map((r) => {
-                  const open = !!openDays[r.day];
-                  const daySales = groupedByDay.map.get(r.day) || [];
+                {itemsRows.map((row) => (
+                  <tr
+                    key={row.id}
+                    style={{
+                      borderBottom: "1px solid #f3f4f6",
+                      cursor: "pointer",
+                    }}
+                    onClick={() => openPadForSale(row.saleId)}
+                    title="Open Receipt Item Pad"
+                  >
+                    <td style={{ padding: "8px 4px" }}>{formatTimeHM(row.saleDate)}</td>
 
-                  return (
-                    <React.Fragment key={r.day}>
-                      <tr
-                        style={{ borderBottom: "1px solid #f3f4f6", cursor: "pointer" }}
-                        onClick={() =>
-                          setOpenDays((prev) => ({
-                            ...prev,
-                            [r.day]: !prev[r.day],
-                          }))
-                        }
-                        title="Click date to expand/collapse"
-                      >
-                        <td style={{ padding: "8px 4px", fontWeight: 800 }}>
-                          {open ? "▾ " : "▸ "}
-                          {r.day}
-                        </td>
-                        <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                          {formatMoney(r.receipts)}
-                        </td>
-                        <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 800 }}>
-                          {formatMoney(r.total)}
-                        </td>
-                        <td
-                          style={{
-                            padding: "8px 4px",
-                            textAlign: "right",
-                            color: "#16a34a",
-                            fontWeight: 800,
-                          }}
-                        >
-                          {formatMoney(r.profit)}
-                        </td>
-                        <td
-                          style={{
-                            padding: "8px 4px",
-                            textAlign: "right",
-                            color: "#b91c1c",
-                            fontWeight: 900,
-                          }}
-                        >
-                          {formatMoney(r.openCredit)}
-                        </td>
-                      </tr>
+                    <td style={{ padding: "8px 4px" }}>
+                      <div style={{ fontWeight: 800, color: "#111827" }}>{row.itemName}</div>
+                      <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>
+                        {formatDateTime(row.saleDate)}
+                      </div>
+                    </td>
 
-                      {open && (
-                        <tr>
-                          <td colSpan={5} style={{ padding: "10px 4px" }}>
-                            <div
-                              style={{
-                                borderRadius: 14,
-                                border: "1px solid #e5e7eb",
-                                background: "#fafafa",
-                                padding: 10,
-                              }}
-                            >
-                              {viewMode === "items"
-                                ? renderItemsTable(daySales)
-                                : renderReceiptsTable(daySales)}
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  );
-                })}
+                    <td style={{ padding: "8px 4px" }}>
+                      <span style={{ fontWeight: 900, color: "#2563eb" }}>#{row.saleId}</span>
+                    </td>
+
+                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                      {formatMoney(row.qtyPieces)}
+                    </td>
+                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                      {formatMoney(row.unitPrice)}
+                    </td>
+                    <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 800 }}>
+                      {formatMoney(row.total)}
+                    </td>
+                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                      {formatMoney(row.profit)}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
-          )}
-        </div>
-      )}
+          </>
+        )}
+      </div>
 
-      {/* Today tab main table */}
-      {tab === "today" && (
+      {/* Receipt Item Pad Modal */}
+      {padOpen && (
         <div
+          onClick={closePad}
           style={{
-            backgroundColor: "#ffffff",
-            borderRadius: "18px",
-            boxShadow: "0 6px 18px rgba(15,37,128,0.04)",
-            padding: "10px 12px 10px",
+            position: "fixed",
+            inset: 0,
+            background: "rgba(17,24,39,0.55)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 14,
+            zIndex: 9999,
           }}
         >
-          {viewMode === "items"
-            ? renderItemsTable(filteredSales)
-            : renderReceiptsTable(filteredSales)}
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "min(980px, 96vw)",
+              maxHeight: "92vh",
+              overflow: "auto",
+              background: "#ffffff",
+              borderRadius: 18,
+              boxShadow: "0 20px 60px rgba(0,0,0,0.35)",
+              padding: 14,
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 10,
+                alignItems: "center",
+                flexWrap: "wrap",
+              }}
+            >
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12, color: "#6b7280", fontWeight: 800 }}>
+                  Receipt Item Pad
+                </div>
+                <div
+                  style={{
+                    fontSize: 18,
+                    fontWeight: 900,
+                    color: "#111827",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  Receipt #{padSaleId} • {selectedDate}
+                </div>
+                {padSale?.sale_date && (
+                  <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>
+                    Time: {formatDateTime(padSale.sale_date)}
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  onClick={closePad}
+                  style={{
+                    padding: "8px 12px",
+                    borderRadius: 999,
+                    border: "1px solid #e5e7eb",
+                    background: "#fff",
+                    cursor: "pointer",
+                    fontWeight: 800,
+                    fontSize: 12,
+                  }}
+                >
+                  Close
+                </button>
+
+                <button
+                  type="button"
+                  disabled={padLoading || !canEditHistory}
+                  onClick={() => setAddMode((v) => !v)}
+                  style={{
+                    padding: "8px 12px",
+                    borderRadius: 999,
+                    border: "none",
+                    background: canEditHistory
+                      ? "linear-gradient(135deg, #2563eb, #1d4ed8)"
+                      : "#9ca3af",
+                    color: "#fff",
+                    cursor: canEditHistory ? "pointer" : "not-allowed",
+                    fontWeight: 900,
+                    fontSize: 12,
+                    boxShadow: canEditHistory ? "0 4px 14px rgba(37, 99, 235, 0.35)" : "none",
+                  }}
+                  title={canEditHistory ? "Add forgotten item to this receipt" : "Owner/Manager only"}
+                >
+                  + Add item
+                </button>
+
+                <button
+                  type="button"
+                  disabled={padLoading || !canEditHistory}
+                  onClick={savePadChanges}
+                  style={{
+                    padding: "8px 14px",
+                    borderRadius: 999,
+                    border: "none",
+                    background: canEditHistory
+                      ? "linear-gradient(135deg, #16a34a, #15803d)"
+                      : "#9ca3af",
+                    color: "#fff",
+                    cursor: canEditHistory ? "pointer" : "not-allowed",
+                    fontWeight: 900,
+                    fontSize: 12,
+                    boxShadow: canEditHistory ? "0 4px 14px rgba(22, 163, 74, 0.28)" : "none",
+                  }}
+                  title={canEditHistory ? "Save receipt changes" : "Owner/Manager only"}
+                >
+                  {padLoading ? "Saving..." : "Save changes"}
+                </button>
+              </div>
+            </div>
+
+            {padError && (
+              <div
+                style={{
+                  marginTop: 10,
+                  padding: "10px 12px",
+                  borderRadius: 14,
+                  background: "#fef2f2",
+                  border: "1px solid #fecaca",
+                  color: "#b91c1c",
+                  fontWeight: 800,
+                  fontSize: 12,
+                }}
+              >
+                {padError}
+              </div>
+            )}
+
+            {!canEditHistory && (
+              <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
+                This pad is read-only for your role. Only Owner/Manager can edit or add items.
+              </div>
+            )}
+
+            {padLoading && !padSale && (
+              <div style={{ marginTop: 12, fontSize: 13, color: "#6b7280" }}>
+                Loading receipt...
+              </div>
+            )}
+
+            {addMode && (
+              <div
+                style={{
+                  marginTop: 12,
+                  borderRadius: 16,
+                  border: "1px dashed #d1d5db",
+                  background: "linear-gradient(135deg, #f9fafb 0%, #eef2ff 100%)",
+                  padding: 12,
+                }}
+              >
+                <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 8 }}>
+                  Add forgotten item
+                </div>
+
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                  <input
+                    value={addSearch}
+                    onChange={(e) => setAddSearch(e.target.value)}
+                    placeholder="Search item name / id..."
+                    style={{
+                      minWidth: 240,
+                      flex: 1,
+                      padding: "8px 12px",
+                      borderRadius: 999,
+                      border: "1px solid #d1d5db",
+                      fontSize: 13,
+                      background: "#fff",
+                    }}
+                  />
+
+                  <select
+                    value={addItemId}
+                    onChange={(e) => setAddItemId(e.target.value)}
+                    style={{
+                      minWidth: 240,
+                      flex: 1,
+                      padding: "8px 12px",
+                      borderRadius: 999,
+                      border: "1px solid #d1d5db",
+                      fontSize: 13,
+                      background: "#fff",
+                    }}
+                  >
+                    <option value="">Select item…</option>
+                    {itemsForAddPicker.map((it) => (
+                      <option key={it.id} value={String(it.id)}>
+                        #{it.id} — {it.name}
+                      </option>
+                    ))}
+                  </select>
+
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={addQty}
+                    onChange={(e) => setAddQty(e.target.value)}
+                    placeholder="Qty"
+                    style={{
+                      width: 120,
+                      padding: "8px 12px",
+                      borderRadius: 999,
+                      border: "1px solid #d1d5db",
+                      fontSize: 13,
+                      textAlign: "right",
+                      background: "#fff",
+                    }}
+                  />
+
+                  <input
+                    type="number"
+                    step="1"
+                    value={addPrice}
+                    onChange={(e) => setAddPrice(e.target.value)}
+                    placeholder="Unit price"
+                    style={{
+                      width: 140,
+                      padding: "8px 12px",
+                      borderRadius: 999,
+                      border: "1px solid #d1d5db",
+                      fontSize: 13,
+                      textAlign: "right",
+                      background: "#fff",
+                    }}
+                  />
+
+                  <button
+                    type="button"
+                    disabled={padLoading || !canEditHistory}
+                    onClick={addNewItemToReceipt}
+                    style={{
+                      padding: "8px 14px",
+                      borderRadius: 999,
+                      border: "none",
+                      background: canEditHistory
+                        ? "linear-gradient(135deg, #111827, #0f172a)"
+                        : "#9ca3af",
+                      color: "#fff",
+                      cursor: canEditHistory ? "pointer" : "not-allowed",
+                      fontWeight: 900,
+                      fontSize: 12,
+                    }}
+                  >
+                    Add
+                  </button>
+                </div>
+
+                <div style={{ marginTop: 8, fontSize: 11, color: "#6b7280" }}>
+                  Tip: After adding, press <strong>Save changes</strong> if you also edited other
+                  lines.
+                </div>
+              </div>
+            )}
+
+            {/* Lines editor */}
+            {padSale && (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontSize: 13, fontWeight: 900, marginBottom: 8 }}>
+                  Items in this receipt
+                </div>
+
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead>
+                    <tr
+                      style={{
+                        textAlign: "left",
+                        borderBottom: "1px solid #e5e7eb",
+                        fontSize: "11px",
+                        textTransform: "uppercase",
+                        letterSpacing: "0.08em",
+                        color: "#6b7280",
+                      }}
+                    >
+                      <th style={{ padding: "6px 4px" }}>Item</th>
+                      <th style={{ padding: "6px 4px", textAlign: "right" }}>Qty</th>
+                      <th style={{ padding: "6px 4px", textAlign: "right" }}>Unit price</th>
+                      <th style={{ padding: "6px 4px", textAlign: "right" }}>Line total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {padDraftLines.map((l) => {
+                      const stockRow = l.itemId ? stockByItemId[l.itemId] : null;
+                      const nm =
+                        stockRow?.item_name ||
+                        stockRow?.item?.name ||
+                        (l.itemId != null ? `Item #${l.itemId}` : "Unknown item");
+                      const qty = Number(l.qtyPieces) || 0;
+                      const price = Number(l.unitPrice) || 0;
+                      const lineTotal = qty > 0 && price > 0 ? qty * price : 0;
+
+                      return (
+                        <tr key={l._key} style={{ borderBottom: "1px solid #f3f4f6" }}>
+                          <td style={{ padding: "8px 4px" }}>
+                            <div style={{ fontWeight: 800 }}>{nm}</div>
+                            <div style={{ fontSize: 11, color: "#9ca3af" }}>
+                              {l.itemId != null ? `#${l.itemId}` : "No item id"}
+                            </div>
+                          </td>
+
+                          <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                            <input
+                              type="number"
+                              step="0.01"
+                              disabled={!canEditHistory || padLoading}
+                              value={String(l.qtyPieces ?? "")}
+                              onChange={(e) =>
+                                updateDraftLine(l._key, { qtyPieces: e.target.value })
+                              }
+                              style={{
+                                width: 110,
+                                padding: "8px 10px",
+                                borderRadius: 999,
+                                border: "1px solid #d1d5db",
+                                fontSize: 13,
+                                textAlign: "right",
+                                background: !canEditHistory ? "#f3f4f6" : "#fff",
+                              }}
+                            />
+                          </td>
+
+                          <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                            <input
+                              type="number"
+                              step="1"
+                              disabled={!canEditHistory || padLoading}
+                              value={String(l.unitPrice ?? "")}
+                              onChange={(e) =>
+                                updateDraftLine(l._key, { unitPrice: e.target.value })
+                              }
+                              style={{
+                                width: 130,
+                                padding: "8px 10px",
+                                borderRadius: 999,
+                                border: "1px solid #d1d5db",
+                                fontSize: 13,
+                                textAlign: "right",
+                                background: !canEditHistory ? "#f3f4f6" : "#fff",
+                              }}
+                            />
+                          </td>
+
+                          <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 900 }}>
+                            {formatMoney(lineTotal)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+
+                <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
+                  Note: Editing history changes totals and stock, so keep it Owner/Manager only.
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
