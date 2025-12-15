@@ -332,6 +332,7 @@ export default function SalesPOS() {
       }
 
       // ✅ If we are not on Current Sale, remove workDate from URL (keeps behavior clean)
+      // (closure navigation always clears it)
       if (key !== "current") {
         sp.delete("workDate");
       }
@@ -377,11 +378,12 @@ export default function SalesPOS() {
         sp.delete("closureDate");
       }
 
-      // ✅ For current tab, keep workDate only if explicitly set (and allowed); otherwise remove it.
-      if (key === "current") {
+      // ✅ Keep workDate for Current + Today tabs (so My Sales Today can match the working date)
+      if (key === "current" || key === "today") {
         let wd = workDate || todayDateString();
         // cashier/non-allowed roles are forced to today
         if (!canEditPastSales) wd = todayDateString();
+
         if (wd !== todayDateString()) sp.set("workDate", wd);
         else sp.delete("workDate");
       } else {
@@ -449,7 +451,7 @@ export default function SalesPOS() {
     const dateFromUrl =
       search.get("closureDate") || search.get("date") || search.get("day");
 
-    // ✅ NEW: work date (current tab) – we avoid "date" to not conflict with closure behavior
+    // ✅ NEW: work date (current/today tab)
     const workDateFromUrl = search.get("workDate") || search.get("saleDate");
 
     const editFromUrl = search.get("editSaleId");
@@ -467,9 +469,9 @@ export default function SalesPOS() {
     }
     setClosureDate(resolvedClosureDate);
 
-    // Resolve work date from URL ONLY when current tab is requested
+    // ✅ Resolve work date from URL when current OR today tab is requested
     let resolvedWorkDate = todayDateString();
-    if (tabFromUrl === "current" && workDateFromUrl) {
+    if ((tabFromUrl === "current" || tabFromUrl === "today") && workDateFromUrl) {
       resolvedWorkDate = workDateFromUrl;
     }
     if (!canEditPastSales) {
@@ -857,6 +859,8 @@ export default function SalesPOS() {
           setMessage={setMessage}
           clearAlerts={clearAlerts}
           onEditSale={startEditSale}
+          // ✅ NEW: pass workDate so Today tab can show same date as Current Sale
+          workDate={workDate}
         />
       ) : null}
 
