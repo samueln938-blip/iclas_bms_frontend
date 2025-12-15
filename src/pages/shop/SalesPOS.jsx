@@ -1,3 +1,4 @@
+// src/pages/shop/SalesPOS.jsx
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext.jsx";
@@ -221,6 +222,9 @@ export default function SalesPOS() {
   // ✅ Higher roles can work on past-day closures (cashier is today-only)
   const canEditPastClosures = isOwner || isManager || isAdmin;
 
+  // ✅ Higher roles can also work on past-day sales (for "add missing sale")
+  const canEditPastSales = isOwner || isManager || isAdmin;
+
   // ✅ allow workspace link for Admin/Owner/Manager only
   const canGoWorkspace = isAdmin || isManager || isOwner;
 
@@ -266,6 +270,10 @@ export default function SalesPOS() {
 
   // ✅ This date controls which day's closure we are viewing/editing
   const [closureDate, setClosureDate] = useState(todayDateString());
+
+  // ✅ NEW: this date controls which day Current Sale is working on (opt-in via URL)
+  // - default is today (NO behavior change for normal cashier flow)
+  const [workDate, setWorkDate] = useState(todayDateString());
 
   // ✅ Sale edit handoff (from Today tab → Current tab)
   const [editSaleId, setEditSaleId] = useState(null);
@@ -316,6 +324,11 @@ export default function SalesPOS() {
         sp.delete("closureDate");
       }
 
+      // ✅ If we are not on Current Sale, remove workDate from URL (keeps behavior clean)
+      if (key !== "current") {
+        sp.delete("workDate");
+      }
+
       if (key !== "current") {
         sp.delete("editSaleId");
         setEditSaleId(null);
@@ -324,10 +337,16 @@ export default function SalesPOS() {
       navigateWithSearch(sp);
       setActiveTab(key);
     },
-    [activeTab, allowedTabKeys, canEditPastClosures, location.search, navigateWithSearch]
+    [
+      activeTab,
+      allowedTabKeys,
+      canEditPastClosures,
+      location.search,
+      navigateWithSearch,
+    ]
   );
 
-  // URL sync (?tab=... & ?closureDate=... & ?editSaleId=...)
+  // URL sync (?tab=... & ?closureDate=... & ?editSaleId=... & ?workDate=...)
   const setTabAndUrl = useCallback(
     (tabKey) => {
       const key = allowedTabKeys.has(tabKey) ? tabKey : "current";
@@ -351,6 +370,17 @@ export default function SalesPOS() {
         sp.delete("closureDate");
       }
 
+      // ✅ For current tab, keep workDate only if explicitly set (and allowed); otherwise remove it.
+      if (key === "current") {
+        let wd = workDate || todayDateString();
+        // cashier/non-allowed roles are forced to today
+        if (!canEditPastSales) wd = todayDateString();
+        if (wd !== todayDateString()) sp.set("workDate", wd);
+        else sp.delete("workDate");
+      } else {
+        sp.delete("workDate");
+      }
+
       // ✅ Leaving Current tab clears editSaleId
       if (key !== "current") {
         sp.delete("editSaleId");
@@ -359,7 +389,15 @@ export default function SalesPOS() {
 
       navigateWithSearch(sp);
     },
-    [allowedTabKeys, location.search, closureDate, canEditPastClosures, navigateWithSearch]
+    [
+      allowedTabKeys,
+      location.search,
+      closureDate,
+      canEditPastClosures,
+      workDate,
+      canEditPastSales,
+      navigateWithSearch,
+    ]
   );
 
   // ✅ Called by MySalesTodayTab when user clicks an item/receipt
@@ -376,6 +414,10 @@ export default function SalesPOS() {
       const sp = new URLSearchParams(location.search);
       sp.set("tab", "current");
       sp.set("editSaleId", sId);
+
+      // ✅ When editing an existing sale, do NOT keep a past-workDate in URL (prevents wrong-day saves)
+      sp.delete("workDate");
+
       sp.delete("closureDate");
       navigateWithSearch(sp);
     },
@@ -395,9 +437,14 @@ export default function SalesPOS() {
   useEffect(() => {
     const search = new URLSearchParams(location.search);
     const tabFromUrl = search.get("tab");
-    // ✅ NEW: support both ?closureDate= and legacy ?date=/ ?day=
+
+    // ✅ closure date (closure tab)
     const dateFromUrl =
       search.get("closureDate") || search.get("date") || search.get("day");
+
+    // ✅ NEW: work date (current tab) – we avoid "date" to not conflict with closure behavior
+    const workDateFromUrl = search.get("workDate") || search.get("saleDate");
+
     const editFromUrl = search.get("editSaleId");
 
     if (tabFromUrl && allowedTabKeys.has(tabFromUrl)) {
@@ -407,18 +454,26 @@ export default function SalesPOS() {
     }
 
     // Resolve closure date from URL:
-    //  - Owner/Manager/Admin: use the requested date (or today by default)
-    //  - Other roles (cashier): always force "today"
-    let resolvedDate = dateFromUrl || todayDateString();
+    let resolvedClosureDate = dateFromUrl || todayDateString();
     if (!canEditPastClosures) {
-      resolvedDate = todayDateString();
+      resolvedClosureDate = todayDateString();
     }
-    setClosureDate(resolvedDate);
+    setClosureDate(resolvedClosureDate);
+
+    // Resolve work date from URL ONLY when current tab is requested
+    let resolvedWorkDate = todayDateString();
+    if (tabFromUrl === "current" && workDateFromUrl) {
+      resolvedWorkDate = workDateFromUrl;
+    }
+    if (!canEditPastSales) {
+      resolvedWorkDate = todayDateString();
+    }
+    setWorkDate(resolvedWorkDate);
 
     // ✅ Only allow editSaleId when current tab
     if (tabFromUrl === "current" && editFromUrl) setEditSaleId(String(editFromUrl));
     else setEditSaleId(null);
-  }, [location.search, allowedTabKeys, canEditPastClosures]);
+  }, [location.search, allowedTabKeys, canEditPastClosures, canEditPastSales]);
 
   useEffect(() => {
     if (!allowedTabKeys.has(activeTab)) setActiveTab("current");
@@ -440,10 +495,19 @@ export default function SalesPOS() {
     }
     sp.set("closureDate", cd);
 
+    // ✅ If we're on closure, remove workDate (so it doesn't leak into current sale unexpectedly)
+    sp.delete("workDate");
+
     sp.delete("editSaleId");
 
     navigateWithSearch(sp);
-  }, [activeTab, closureDate, canEditPastClosures, location.search, navigateWithSearch]);
+  }, [
+    activeTab,
+    closureDate,
+    canEditPastClosures,
+    location.search,
+    navigateWithSearch,
+  ]);
 
   // -------------------- Shop + stock --------------------
   const [shop, setShop] = useState(null);
@@ -547,6 +611,12 @@ export default function SalesPOS() {
     setCalcOpen(true);
   }, []);
 
+  const showWorkingDateBadge =
+    activeTab === "current" &&
+    canEditPastSales &&
+    String(workDate || "") &&
+    workDate !== todayDateString();
+
   return (
     <div style={{ padding: "18px 18px 28px" }}>
       {/* ✅ Responsive tab wrapping (2 per row on mobile/tablet) */}
@@ -635,6 +705,27 @@ export default function SalesPOS() {
               · {shopName}
             </span>
           </div>
+
+          {showWorkingDateBadge ? (
+            <div style={{ marginTop: 6 }}>
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  background: "#fff7ed",
+                  border: "1px solid #fed7aa",
+                  color: "#9a3412",
+                  fontSize: 12,
+                  fontWeight: 900,
+                }}
+              >
+                Working date (Current Sale): {workDate} (past day)
+              </span>
+            </div>
+          ) : null}
         </div>
 
         {/* ✅ Tabs: 1 row on desktop, 2 rows on tablet/mobile */}
@@ -720,6 +811,9 @@ export default function SalesPOS() {
           clearAlerts={clearAlerts}
           editSaleId={editSaleId}
           onEditDone={clearEditSale}
+          // ✅ NEW: pass work date to CurrentSaleTab (today by default)
+          workDate={workDate}
+          saleDate={workDate}
         />
       ) : null}
 
