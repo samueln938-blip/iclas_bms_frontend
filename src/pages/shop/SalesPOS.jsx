@@ -8,6 +8,9 @@ import ExpensesTodayTab from "./tabs/ExpensesTodayTab.jsx";
 import MySalesTodayTab from "./tabs/MySalesTodayTab.jsx";
 import DailyClosureTab from "./tabs/DailyClosureTab.jsx";
 
+// ✅ NEW: Sales History tab
+import SalesHistoryTab from "./tabs/SalesHistoryTab.jsx";
+
 import { todayDateString, readExpenses, writeExpenses } from "./posUtils.js";
 
 // ✅ Single source of truth for API base (VITE_API_BASE / prod fallback)
@@ -254,12 +257,14 @@ export default function SalesPOS() {
       { key: "current", label: "Current Sale" },
       { key: "expenses", label: "Today Expenses" },
       { key: "today", label: "My Sales Today" },
+      // ✅ NEW
+      { key: "history", label: "Sales History" },
       { key: "closure", label: "Daily Closure" },
     ],
     []
   );
 
-  // ✅ IMPORTANT: no filtering of tabs (all roles see same 4 tabs)
+  // ✅ IMPORTANT: no filtering of tabs (all roles see same tabs)
   const allowedTabs = useMemo(() => baseTabs, [baseTabs]);
   const allowedTabKeys = useMemo(
     () => new Set(allowedTabs.map((t) => t.key)),
@@ -498,9 +503,7 @@ export default function SalesPOS() {
       state?.iclas_pos_desired_tab || getLS("iclas_pos_desired_tab") || "";
 
     const desiredDate =
-      state?.iclas_pos_desired_date ||
-      getLS("iclas_pos_desired_date") ||
-      "";
+      state?.iclas_pos_desired_date || getLS("iclas_pos_desired_date") || "";
 
     const desiredEditSaleId =
       state?.iclas_edit_sale_id || getLS("iclas_edit_sale_id") || "";
@@ -1008,6 +1011,28 @@ export default function SalesPOS() {
           setMessage={setMessage}
           clearAlerts={clearAlerts}
           onEditSale={startEditSale}
+        />
+      ) : null}
+
+      {/* ✅ NEW: Sales History tab */}
+      {!loading && activeTab === "history" ? (
+        <SalesHistoryTab
+          API_BASE={API_BASE}
+          shopId={shopId}
+          isCashier={isCashier}
+          isAdmin={isAdmin}
+          isManager={isManager}
+          isOwner={isOwner}
+          canEditPastSales={canEditPastSales}
+          stockByItemId={stockByItemId}
+          authHeaders={authHeaders}
+          authHeadersNoJson={authHeadersNoJson}
+          onRefreshStock={reloadShopAndStock}
+          setError={setError}
+          setMessage={setMessage}
+          clearAlerts={clearAlerts}
+          onEditSale={startEditSale}
+          onAddMissingItemForDate={(dateStr) => openCurrentSaleForDate(dateStr)}
         />
       ) : null}
 
