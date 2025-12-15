@@ -18,6 +18,18 @@ function formatQty(value) {
   });
 }
 
+function isValidYMD(s) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(s || "").trim());
+}
+
+function mapPayToBucket(paymentType) {
+  const p = String(paymentType || "").trim().toLowerCase();
+  if (p === "cash") return "cash";
+  if (p === "mobile") return "mobile";
+  if (p === "card") return "card";
+  return null;
+}
+
 export default function MySalesTodayTab({
   API_BASE,
   shopId,
@@ -31,6 +43,9 @@ export default function MySalesTodayTab({
   setError,
   setMessage,
   clearAlerts,
+
+  // ✅ NEW: optional work date passed from SalesPOS/Current sale (YYYY-MM-DD)
+  workDate,
 
   // ✅ Parent handler: switch to Current sale tab and start editing a sale (SalesPOS passes this)
   onEditSale,
@@ -47,7 +62,8 @@ export default function MySalesTodayTab({
 
   const [todaySystemTotals, setTodaySystemTotals] = useState(null);
 
-  // ✅ New: canonical summary from /sales/today/ (keeps in sync with Daily Closure)
+  // ✅ canonical summary from /sales/today/ (keeps in sync with Daily Closure)
+  // NOTE: /sales/today/ is ONLY "today" on backend, so we only use it when effectiveDate is today
   const [todayCanonicalSummary, setTodayCanonicalSummary] = useState(null);
   const [loadingCanonicalSummary, setLoadingCanonicalSummary] = useState(false);
 
@@ -74,6 +90,21 @@ export default function MySalesTodayTab({
       else mq.removeListener(onChange);
     };
   }, []);
+
+  // ============================================================
+  // ✅ Effective date:
+  // - Cashier is ALWAYS today (security/business rule)
+  // - Owner/Manager can pass workDate (YYYY-MM-DD); fallback today
+  // ============================================================
+  const todayStr = useMemo(() => todayDateString(), []);
+  const effectiveDate = useMemo(() => {
+    if (isCashier) return todayDateString();
+    const d = String(workDate || "").trim();
+    if (isValidYMD(d)) return d;
+    return todayDateString();
+  }, [workDate, isCashier]);
+
+  const isViewingToday = effectiveDate === todayStr;
 
   // ============================================================
   // EDIT HANDOFF: click item -> open Current sale tab to edit
@@ -113,26 +144,37 @@ export default function MySalesTodayTab({
     }
   };
 
-  const loadSalesToday = async () => {
+  const loadSalesForDate = async (ymd) => {
     setLoadingSalesToday(true);
     try {
-      const today = todayDateString();
-      const url = `${API_BASE}/sales/?shop_id=${shopId}&date_from=${today}&date_to=${today}`;
+      const date = String(ymd || "").trim();
+      if (!date) return;
+
+      const url = `${API_BASE}/sales/?shop_id=${shopId}&date_from=${date}&date_to=${date}`;
       const res = await fetch(url, { headers: authHeadersNoJson });
       if (!res.ok) return;
+
       const data = await res.json();
-      setSalesToday(data || []);
+      const list = Array.isArray(data)
+        ? data
+        : Array.isArray(data?.sales)
+        ? data.sales
+        : [];
+
+      setSalesToday(list || []);
     } catch (err) {
-      console.error("Error loading today's sales:", err);
+      console.error("Error loading sales:", err);
     } finally {
       setLoadingSalesToday(false);
     }
   };
 
-  const loadTodaySystemTotals = async () => {
+  const loadSystemTotalsForDate = async (ymd) => {
     try {
-      const today = todayDateString();
-      const totalsUrl = `${API_BASE}/daily-closures/system-totals?shop_id=${shopId}&closure_date=${today}`;
+      const date = String(ymd || "").trim();
+      if (!date) return;
+
+      const totalsUrl = `${API_BASE}/daily-closures/system-totals?shop_id=${shopId}&closure_date=${date}`;
       const res = await fetch(totalsUrl, { headers: authHeadersNoJson });
       if (!res.ok) {
         setTodaySystemTotals(null);
@@ -141,12 +183,12 @@ export default function MySalesTodayTab({
       const data = await res.json();
       setTodaySystemTotals(data);
     } catch (err) {
-      console.error("Error loading today system totals:", err);
+      console.error("Error loading system totals:", err);
       setTodaySystemTotals(null);
     }
   };
 
-  // ✅ NEW: canonical summary from /sales/today/ (same logic as Daily Closure cards)
+  // ✅ Canonical summary from /sales/today/ (today only)
   const loadTodayCanonicalSummary = async () => {
     setLoadingCanonicalSummary(true);
     try {
@@ -168,11 +210,16 @@ export default function MySalesTodayTab({
 
   useEffect(() => {
     if (!shopId) return;
-    loadSalesToday();
-    loadTodaySystemTotals();
-    loadTodayCanonicalSummary();
+
+    loadSalesForDate(effectiveDate);
+    loadSystemTotalsForDate(effectiveDate);
+
+    // /sales/today/ is only correct for today
+    if (isViewingToday) loadTodayCanonicalSummary();
+    else setTodayCanonicalSummary(null);
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shopId]);
+  }, [shopId, effectiveDate, isViewingToday]);
 
   const todayCreditPayers = Number(
     todaySystemTotals?.credit_payers_count_today ??
@@ -222,10 +269,9 @@ export default function MySalesTodayTab({
   }, [salesToday]);
 
   // ============================================================
-  // ✅ TODAY SUMMARY: 3 cards driven by canonical summary
-  // /sales/today/ → summary.sales_collected_by_type, summary.credit_paid_by_type, summary.collected_by_type
-  // each: { cash, momo, pos, other }
-  // We convert momo→mobile, pos→card for UI.
+  // ✅ Summary cards (Current sale / Credit / Total)
+  // - If viewing TODAY and canonical summary is available, use it.
+  // - Otherwise compute from sales list for the selected date.
   // ============================================================
   function bucketsToUi(b) {
     if (!b) b = {};
@@ -236,8 +282,48 @@ export default function MySalesTodayTab({
     };
   }
 
+  function computeBucketsFromSales(list) {
+    const current = { cash: 0, mobile: 0, card: 0 };
+    const creditPayments = { cash: 0, mobile: 0, card: 0 };
+
+    for (const sale of list || []) {
+      const isCredit = !!sale.is_credit_sale;
+
+      const payRaw = normalizePaymentType(sale.payment_type);
+      const bucket = mapPayToBucket(payRaw);
+
+      // non-credit: treat as full collected now
+      if (!isCredit) {
+        const amt = Number(sale.total_sale_amount || 0);
+        if (bucket) current[bucket] += amt;
+        continue;
+      }
+
+      // credit sale: amount collected now (at creation time)
+      const paidNow = Number(sale.amount_collected_now || 0);
+      if (bucket) creditPayments[bucket] += paidNow;
+    }
+
+    const total = {
+      cash: current.cash + creditPayments.cash,
+      mobile: current.mobile + creditPayments.mobile,
+      card: current.card + creditPayments.card,
+    };
+
+    return {
+      current,
+      creditPayments,
+      total,
+      sums: {
+        current: current.cash + current.mobile + current.card,
+        credit: creditPayments.cash + creditPayments.mobile + creditPayments.card,
+        total: total.cash + total.mobile + total.card,
+      },
+    };
+  }
+
   const todayByPayment = useMemo(() => {
-    if (todayCanonicalSummary) {
+    if (isViewingToday && todayCanonicalSummary) {
       const s = todayCanonicalSummary;
 
       const current = bucketsToUi(s.sales_collected_by_type);
@@ -256,15 +342,9 @@ export default function MySalesTodayTab({
       };
     }
 
-    // Fallback: if canonical summary is missing, show zeros instead of lying.
-    const zero = { cash: 0, mobile: 0, card: 0 };
-    return {
-      current: zero,
-      creditPayments: zero,
-      total: zero,
-      sums: { current: 0, credit: 0, total: 0 },
-    };
-  }, [todayCanonicalSummary]);
+    // For past dates (or if canonical missing), compute from sales list
+    return computeBucketsFromSales(salesToday);
+  }, [isViewingToday, todayCanonicalSummary, salesToday]);
 
   const SummaryCard = ({ title, big, rows }) => (
     <div
@@ -273,7 +353,7 @@ export default function MySalesTodayTab({
         borderRadius: "18px",
         padding: isNarrow ? "10px 12px" : "12px 14px",
         background: "#ffffff",
-        opacity: loadingCanonicalSummary ? 0.6 : 1,
+        opacity: loadingCanonicalSummary && isViewingToday ? 0.6 : 1,
         minWidth: 0,
       }}
     >
@@ -298,7 +378,6 @@ export default function MySalesTodayTab({
           {title}
         </div>
 
-        {/* ✅ slightly smaller on mobile/tablet so it fits cleanly */}
         <div
           style={{
             fontSize: isNarrow ? "16px" : "18px",
@@ -741,9 +820,11 @@ export default function MySalesTodayTab({
       await res.json();
       setMessage?.("Item cancelled and stock updated.");
 
-      await loadSalesToday();
-      await loadTodaySystemTotals();
-      await loadTodayCanonicalSummary();
+      await loadSalesForDate(effectiveDate);
+      await loadSystemTotalsForDate(effectiveDate);
+      if (isViewingToday) await loadTodayCanonicalSummary();
+      else setTodayCanonicalSummary(null);
+
       await onRefreshStock?.();
     } catch (err) {
       console.error(err);
@@ -773,7 +854,7 @@ export default function MySalesTodayTab({
         >
           <div>
             <div style={{ fontSize: "14px", fontWeight: 700, marginBottom: "6px" }}>
-              Today summary
+              {isViewingToday ? "Today summary" : `Summary (${effectiveDate})`}
             </div>
             <div
               style={{
@@ -784,7 +865,9 @@ export default function MySalesTodayTab({
                 marginBottom: "8px",
               }}
             >
-              All sales made today in this shop
+              {isViewingToday
+                ? "All sales made today in this shop"
+                : "All sales made on this date in this shop"}
             </div>
           </div>
 
@@ -806,15 +889,17 @@ export default function MySalesTodayTab({
                 fontSize: "12px",
                 fontWeight: 700,
               }}
+              title={isViewingToday ? "Credit payers (today)" : "Credit payers (for this date)"}
             >
               Credit payers: {formatMoney(todayCreditPayers)}
             </span>
             <button
               type="button"
               onClick={() => {
-                loadSalesToday();
-                loadTodaySystemTotals();
-                loadTodayCanonicalSummary();
+                loadSalesForDate(effectiveDate);
+                loadSystemTotalsForDate(effectiveDate);
+                if (isViewingToday) loadTodayCanonicalSummary();
+                else setTodayCanonicalSummary(null);
               }}
               style={{
                 border: "1px solid #e5e7eb",
@@ -831,10 +916,6 @@ export default function MySalesTodayTab({
           </div>
         </div>
 
-        {/* ✅ Summary cards:
-            - Mobile/Tablet: stack vertically (Current -> Credit -> Total)
-            - Desktop: 3 columns
-        */}
         <div
           style={{
             display: "grid",
@@ -874,7 +955,6 @@ export default function MySalesTodayTab({
           />
         </div>
 
-        {/* Existing overall stats */}
         <div
           style={{
             display: "grid",
@@ -893,13 +973,15 @@ export default function MySalesTodayTab({
           </div>
 
           <div>
-            <div style={{ color: "#6b7280" }}>Profit (realized today)</div>
+            <div style={{ color: "#6b7280" }}>
+              Profit ({isViewingToday ? "realized today" : "realized"})
+            </div>
             <div style={{ fontSize: "16px", fontWeight: 700, color: "#16a34a" }}>
               {formatMoney(totalProfitRealizedToday)}
             </div>
             <div
               style={{ fontSize: "11px", color: "#9ca3af" }}
-              title="This includes profit from credit payments made today"
+              title="Created profit from receipts on this date"
             >
               Created: {formatMoney(summaryToday.totalProfitCreated)}
             </div>
@@ -1051,12 +1133,12 @@ export default function MySalesTodayTab({
       >
         {loadingSalesToday ? (
           <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
-            Loading today&apos;s sales...
+            Loading sales...
           </div>
         ) : todayView === "items" ? (
           filteredItemsToday.length === 0 ? (
             <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
-              No sales recorded today for this filter.
+              No sales recorded for this date for this filter.
             </div>
           ) : (
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
@@ -1118,7 +1200,6 @@ export default function MySalesTodayTab({
                     <tr key={row.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
                       <td style={{ padding: "8px 4px" }}>{formatTimeHM(row.time)}</td>
 
-                      {/* ✅ Click item = Edit receipt in Current Sale */}
                       <td style={{ padding: "8px 4px" }}>
                         <div
                           role="button"
@@ -1225,7 +1306,7 @@ export default function MySalesTodayTab({
         ) : todayView === "receipts" ? (
           receiptsToday.length === 0 ? (
             <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
-              No receipts today.
+              No receipts for this date.
             </div>
           ) : (
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
@@ -1311,7 +1392,7 @@ export default function MySalesTodayTab({
           )
         ) : customersTodayRollup.length === 0 ? (
           <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
-            No customers today.
+            No customers for this date.
           </div>
         ) : (
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
