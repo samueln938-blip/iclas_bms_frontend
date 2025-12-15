@@ -214,10 +214,12 @@ export default function SalesPOS() {
     user?.role ?? user?.user_role ?? user?.userRole ?? user?.type ?? "";
   const role = String(rawRole).trim().toLowerCase();
 
-  const isAdmin = role === "admin";
+  // ✅ Align with App.jsx canonicalization:
+  // App treats OWNER as "admin" for routing permissions.
+  const isOwner = role === "owner" || role === "admin";
+  const isAdmin = role === "admin" || role === "owner";
   const isManager = role === "manager";
   const isCashier = role === "cashier";
-  const isOwner = role === "owner";
 
   // ✅ Higher roles can work on past-day closures (cashier is today-only)
   const canEditPastClosures = isOwner || isManager || isAdmin;
@@ -228,12 +230,17 @@ export default function SalesPOS() {
   // ✅ allow workspace link for Admin/Owner/Manager only
   const canGoWorkspace = isAdmin || isManager || isOwner;
 
-  // ✅ best-effort workspace path (keeps your existing /shop/:id route)
+  // ✅ Workspace path must match your real routes:
+  // App.jsx uses /shops/:shopId and /shops/:shopId/workspace
   const workspacePath = useMemo(() => {
     const p = (location?.pathname || "").replace(/\/+$/g, "");
+
+    // If we are under /shops/:shopId/pos (or /sales-pos), strip the last segment.
     const trimmed = p.replace(/\/(salespos|sales-pos|pos)$/i, "");
     if (trimmed && trimmed !== p) return trimmed;
-    return `/shop/${shopId}`;
+
+    // Fallback: use /shops (NOT /shop)
+    return `/shops/${shopId}`;
   }, [location?.pathname, shopId]);
 
   const authHeaders = useMemo(() => {
@@ -868,7 +875,7 @@ export default function SalesPOS() {
           isCashier={isCashier}
           isManager={isManager}
           isOwner={isOwner}
-          isAdmin={isAdmin} // ✅ NEW: pass admin flag to closure tab
+          isAdmin={isAdmin} // ✅ pass admin flag to closure tab
         />
       ) : null}
 
