@@ -237,9 +237,7 @@ export default function SalesHistoryPage() {
 
   const auth = useAuth();
 
-  // -------------------------
-  // ✅ Stabilize auth headers to prevent infinite fetch loops
-  // -------------------------
+  // ✅ Stabilize auth headers (prevents infinite fetch loops)
   const rawAuthHeaders = auth?.authHeadersNoJson || auth?.authHeaders || {};
   const authHeaderKey =
     rawAuthHeaders?.Authorization ||
@@ -247,9 +245,7 @@ export default function SalesHistoryPage() {
     rawAuthHeaders?.["AUTHORIZATION"] ||
     "";
 
-  // Keep a stable reference as long as the auth token doesn't change
   const authHeadersNoJson = useMemo(() => rawAuthHeaders, [authHeaderKey]);
-
   const user = auth?.user || null;
 
   // Roles
@@ -260,9 +256,7 @@ export default function SalesHistoryPage() {
   const isCashier = role === "cashier";
   const canEditHistory = isOwner || isManager;
 
-  const headersReady = useMemo(() => {
-    return !!String(authHeaderKey || "").trim();
-  }, [authHeaderKey]);
+  const headersReady = useMemo(() => !!String(authHeaderKey || "").trim(), [authHeaderKey]);
 
   const [shop, setShop] = useState(null);
   const [loadingShop, setLoadingShop] = useState(true);
@@ -291,6 +285,10 @@ export default function SalesHistoryPage() {
   // Stock rows to get item names
   const [stockRows, setStockRows] = useState([]);
   const [loadingStock, setLoadingStock] = useState(false);
+
+  // Range sales for date summaries (dates screen)
+  const [rangeSales, setRangeSales] = useState([]);
+  const [loadingRangeSales, setLoadingRangeSales] = useState(false);
 
   const shopName = shop?.name || `Shop ${shopId}`;
 
@@ -338,7 +336,7 @@ export default function SalesHistoryPage() {
 
     if (shopAbortRef.current) shopAbortRef.current.abort();
     const controller = new AbortController();
-    shopAbortRef june = controller;
+    shopAbortRef.current = controller;
 
     const reqId = ++shopReqIdRef.current;
 
@@ -446,11 +444,8 @@ export default function SalesHistoryPage() {
   }, [stockRows]);
 
   // -------------------------
-  // ✅ Dates screen: load range sales once and build per-date summaries
+  // Date list (last 31 days)
   // -------------------------
-  const [rangeSales, setRangeSales] = useState([]);
-  const [loadingRangeSales, setLoadingRangeSales] = useState(false);
-
   const historyDates = useMemo(() => {
     if (!canEditHistory) return [todayStr];
     return getRecentDatesList(31);
@@ -461,6 +456,9 @@ export default function SalesHistoryPage() {
     return list.length ? list[list.length - 1] : todayStr;
   }, [historyDates, todayStr]);
 
+  // -------------------------
+  // Load sales range ONCE for date summaries (Dates screen)
+  // -------------------------
   const loadRangeSales = useCallback(async () => {
     if (!shopId) return;
     if (!headersReady) return;
@@ -478,6 +476,7 @@ export default function SalesHistoryPage() {
     try {
       const url = `${API_BASE}/sales/?shop_id=${shopId}&date_from=${oldestDate}&date_to=${todayStr}`;
       const json = await fetchJson(url, authHeadersNoJson, controller.signal);
+
       const list = Array.isArray(json)
         ? json
         : Array.isArray(json?.sales)
@@ -494,7 +493,7 @@ export default function SalesHistoryPage() {
     } finally {
       if (reqId === rangeReqIdRef.current) setLoadingRangeSales(false);
     }
-  }, [shopId, headersReady, canEditHistory, pageMode, API_BASE, oldestDate, todayStr, fetchJson, authHeadersNoJson]);
+  }, [shopId, headersReady, canEditHistory, pageMode, oldestDate, todayStr, fetchJson, authHeadersNoJson]);
 
   useEffect(() => {
     loadRangeSales();
@@ -504,7 +503,13 @@ export default function SalesHistoryPage() {
     const map = new Map(); // ymd -> { totalSales, totalProfit, receipts }
     for (const s of rangeSales || []) {
       const ymd =
-        saleToYMD(s?.sale_date ?? s?.date ?? s?.created_at ?? s?.createdAt ?? s?.timestamp) || "";
+        saleToYMD(
+          s?.sale_date ??
+            s?.date ??
+            s?.created_at ??
+            s?.createdAt ??
+            s?.timestamp
+        ) || "";
       if (!ymd) continue;
 
       const total = Number(
@@ -522,7 +527,8 @@ export default function SalesHistoryPage() {
   }, [rangeSales]);
 
   // -------------------------
-  // Load sales for selected date (DETAILS)
+  // Load sales for selected date
+  // ✅ Only in DETAILS view (for Owner/Manager browsing)
   // -------------------------
   const loadSalesForDate = useCallback(
     async (ymd) => {
@@ -799,7 +805,6 @@ export default function SalesHistoryPage() {
       const slid = saleLineId != null ? Number(saleLineId) : null;
       if (!sid) return;
 
-      // same handoff keys used elsewhere
       try {
         localStorage.setItem("iclas_edit_sale_id", String(sid));
         if (slid != null) localStorage.setItem("iclas_edit_sale_line_id", String(slid));
@@ -1057,8 +1062,7 @@ export default function SalesHistoryPage() {
   };
 
   // =========================
-  // UI: Dates-only screen (FULL WIDTH)
-  // ✅ Your request: Date + Total sales + Total profit + Total receipts
+  // UI: Dates-only screen (FULL WIDTH TABLE)
   // =========================
   const renderDatesOnly = () => {
     return (
@@ -1091,7 +1095,7 @@ export default function SalesHistoryPage() {
             </div>
 
             <div style={{ marginTop: 6, color: "#6b7280", fontSize: 13 }}>
-              Click a date row to open details.
+              Click a date to view details.
             </div>
           </div>
 
@@ -1140,6 +1144,7 @@ export default function SalesHistoryPage() {
             borderRadius: 20,
             padding: 12,
             boxShadow: "0 10px 30px rgba(15,37,128,0.06)",
+            width: "100%",
           }}
         >
           <div style={{ fontSize: 12, fontWeight: 950, color: "#111827", marginBottom: 10 }}>
@@ -1239,7 +1244,7 @@ export default function SalesHistoryPage() {
   };
 
   // =========================
-  // UI: Details screen
+  // UI: Details screen (UNCHANGED features)
   // =========================
   const renderDetails = () => {
     return (
@@ -1409,15 +1414,6 @@ export default function SalesHistoryPage() {
           </div>
         </div>
 
-        {/* --- The rest of your Details UI stays exactly as you had it --- */}
-        {/* (No feature removed) */}
-
-        {/* Your existing Details view code continues unchanged below */}
-        {/* NOTE: I did not remove any of your Items/Receipts/Customers code. */}
-        {/* To keep this message readable, everything below here is unchanged from your original. */}
-
-        {/* ---------- Your original Details view UI block ---------- */}
-        {/* BEGIN unchanged section */}
         <div
           style={{
             marginTop: 12,
@@ -1691,18 +1687,143 @@ export default function SalesHistoryPage() {
                 No receipts for this date.
               </div>
             ) : (
-              /* (your receipts table and customers table remain as-is in your original file) */
-              <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280", fontWeight: 800 }}>
-                (Receipts/Customers tables unchanged — keep your existing code here)
-              </div>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+                <thead>
+                  <tr
+                    style={{
+                      textAlign: "left",
+                      borderBottom: "1px solid #e5e7eb",
+                      fontSize: "11px",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.08em",
+                      color: "#6b7280",
+                      fontWeight: 900,
+                    }}
+                  >
+                    <th style={{ padding: "10px 6px" }}>Time</th>
+                    <th style={{ padding: "10px 6px" }}>Receipt</th>
+                    <th style={{ padding: "10px 6px" }}>Customer</th>
+                    <th style={{ padding: "10px 6px" }}>Payment</th>
+                    <th style={{ padding: "10px 6px", textAlign: "right" }}>Total</th>
+                    <th style={{ padding: "10px 6px", textAlign: "right" }}>Profit</th>
+                    <th style={{ padding: "10px 6px", textAlign: "right" }}>Balance</th>
+                    <th style={{ padding: "10px 6px" }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {receiptsForDay.map((r) => {
+                    const customerLabel = r.customerName
+                      ? `${r.customerName}${r.customerPhone ? ` (${r.customerPhone})` : ""}`
+                      : "-";
+                    const paymentLabel = r.isCredit
+                      ? "Credit"
+                      : r.payment === "cash"
+                      ? "Cash"
+                      : r.payment === "card"
+                      ? "POS"
+                      : r.payment === "mobile"
+                      ? "MoMo"
+                      : r.payment;
+
+                    return (
+                      <tr key={r.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
+                        <td style={{ padding: "12px 6px", fontWeight: 800 }}>{formatTimeHM(r.time)}</td>
+                        <td style={{ padding: "12px 6px", fontWeight: 950 }}>#{r.id}</td>
+                        <td style={{ padding: "12px 6px" }}>{customerLabel}</td>
+                        <td style={{ padding: "12px 6px", fontWeight: 800 }}>{paymentLabel}</td>
+                        <td style={{ padding: "12px 6px", textAlign: "right", fontWeight: 950 }}>
+                          {formatMoney(r.total)}
+                        </td>
+                        <td style={{ padding: "12px 6px", textAlign: "right", color: "#16a34a", fontWeight: 950 }}>
+                          {formatMoney(r.profit)}
+                        </td>
+                        <td
+                          style={{
+                            padding: "12px 6px",
+                            textAlign: "right",
+                            color: r.balance > 0 ? "#b91c1c" : "#166534",
+                            fontWeight: 950,
+                          }}
+                        >
+                          {formatMoney(r.balance)}
+                        </td>
+                        <td style={{ padding: "12px 6px", textAlign: "right" }}>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedSaleId(r.id)}
+                            style={{
+                              padding: "7px 12px",
+                              borderRadius: "999px",
+                              border: "1px solid #e5e7eb",
+                              backgroundColor: "#fff",
+                              cursor: "pointer",
+                              fontSize: "12px",
+                              fontWeight: 900,
+                            }}
+                          >
+                            View
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             )
-          ) : (
+          ) : customersRollup.length === 0 ? (
             <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280", fontWeight: 800 }}>
-              (Customers table unchanged — keep your existing code here)
+              No customers for this date.
             </div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+              <thead>
+                <tr
+                  style={{
+                    textAlign: "left",
+                    borderBottom: "1px solid #e5e7eb",
+                    fontSize: "11px",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.08em",
+                    color: "#6b7280",
+                    fontWeight: 900,
+                  }}
+                >
+                  <th style={{ padding: "10px 6px" }}>Customer</th>
+                  <th style={{ padding: "10px 6px", textAlign: "right" }}>Receipts</th>
+                  <th style={{ padding: "10px 6px", textAlign: "right" }}>Total bought</th>
+                  <th style={{ padding: "10px 6px", textAlign: "right" }}>Collected</th>
+                  <th style={{ padding: "10px 6px", textAlign: "right" }}>Credit balance</th>
+                </tr>
+              </thead>
+              <tbody>
+                {customersRollup.map((c) => (
+                  <tr key={c.key} style={{ borderBottom: "1px solid #f3f4f6" }}>
+                    <td style={{ padding: "12px 6px", fontWeight: 950 }}>{c.label}</td>
+                    <td style={{ padding: "12px 6px", textAlign: "right", fontWeight: 900 }}>
+                      {formatMoney(c.receipts)}
+                    </td>
+                    <td style={{ padding: "12px 6px", textAlign: "right", fontWeight: 950 }}>
+                      {formatMoney(c.totalBought)}
+                    </td>
+                    <td style={{ padding: "12px 6px", textAlign: "right", fontWeight: 900 }}>
+                      {formatMoney(c.collectedToday)}
+                    </td>
+                    <td
+                      style={{
+                        padding: "12px 6px",
+                        textAlign: "right",
+                        fontWeight: 950,
+                        color: c.creditBalance > 0 ? "#b91c1c" : "#166534",
+                      }}
+                    >
+                      {formatMoney(c.creditBalance)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </div>
-        {/* END unchanged section */}
       </div>
     );
   };
