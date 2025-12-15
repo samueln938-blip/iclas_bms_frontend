@@ -190,9 +190,7 @@ function extractLineFields(line) {
   );
 
   const total =
-    line?.line_sale_amount != null
-      ? Number(line.line_sale_amount)
-      : qty * unitPrice;
+    line?.line_sale_amount != null ? Number(line.line_sale_amount) : qty * unitPrice;
 
   const profit = line?.line_profit != null ? Number(line.line_profit) : 0;
   const lineId = line?.id ?? line?.line_id ?? null;
@@ -226,7 +224,7 @@ function getRecentDatesList(daysBack = 31) {
   return out;
 }
 
-function SalesHistoryPage() {
+export default function SalesHistoryPage() {
   const { shopId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
@@ -235,35 +233,13 @@ function SalesHistoryPage() {
   const authHeadersNoJson = auth?.authHeadersNoJson || auth?.authHeaders || {};
   const user = auth?.user || null;
 
-  // Roles (same spirit as SalesPOS)
-  const rawRole =
-    user?.role ?? user?.user_role ?? user?.userRole ?? user?.type ?? "";
+  // Roles
+  const rawRole = user?.role ?? user?.user_role ?? user?.userRole ?? user?.type ?? "";
   const role = String(rawRole || "").trim().toLowerCase();
-
   const isOwner = role === "owner" || role === "admin";
   const isManager = role === "manager";
   const isCashier = role === "cashier";
-  const canEditHistory = isOwner || isManager; // ✅ Owner/Manager only
-
-  // Route guessing (works whether your app uses /shop/ or /shops/)
-  const basePrefix = useMemo(() => {
-    const p = String(location?.pathname || "");
-    if (p.startsWith("/shops/")) return "/shops";
-    if (p.startsWith("/shop/")) return "/shop";
-    // fallback
-    return "/shops";
-  }, [location?.pathname]);
-
-  const workspacePath = useMemo(() => `${basePrefix}/${shopId}`, [basePrefix, shopId]);
-
-  const salesPosPath = useMemo(() => {
-    const p = String(location?.pathname || "").replace(/\/+$/g, "");
-    // If current path contains sales-history, replace it to keep same parent route
-    if (/sales-history/i.test(p)) return p.replace(/sales-history/gi, "salespos");
-    if (/saleshistory/i.test(p)) return p.replace(/saleshistory/gi, "salespos");
-    if (/sales_history/i.test(p)) return p.replace(/sales_history/gi, "salespos");
-    return `${basePrefix}/${shopId}/salespos`;
-  }, [location?.pathname, basePrefix, shopId]);
+  const canEditHistory = isOwner || isManager;
 
   const headersReady = useMemo(() => {
     return (
@@ -280,7 +256,8 @@ function SalesHistoryPage() {
   const todayStr = todayDateString();
   const [selectedDate, setSelectedDate] = useState(todayStr);
 
-  // ✅ lock non-owner/manager to today only (cashier + any other role)
+  // IMPORTANT: your App.jsx already blocks cashier from this route,
+  // but we still keep a safe guard (in case you later allow cashier read-only).
   useEffect(() => {
     if (!canEditHistory && selectedDate !== todayStr) {
       setSelectedDate(todayStr);
@@ -299,7 +276,7 @@ function SalesHistoryPage() {
   const shopName = shop?.name || `Shop ${shopId}`;
 
   // -------------------------
-  // Safe JSON fetch helper (no cache + abortable)
+  // Safe JSON fetch helper
   // -------------------------
   const fetchJson = useCallback(async (url, headers, signal) => {
     const res = await fetch(url, { headers, signal, cache: "no-store" });
@@ -498,7 +475,7 @@ function SalesHistoryPage() {
   }, [headersReady, selectedDate, loadSalesForDate]);
 
   // -------------------------
-  // ✅ Consistent view state (like MySalesTodayTab)
+  // ✅ View state (Items | Receipts | Customers)
   // -------------------------
   const [historyView, setHistoryView] = useState("items"); // items|receipts|customers
   const [filterPaidCredit, setFilterPaidCredit] = useState("all"); // all|paid|credit
@@ -506,12 +483,11 @@ function SalesHistoryPage() {
   const [selectedSaleId, setSelectedSaleId] = useState(null);
 
   useEffect(() => {
-    // Switching date should close receipt details
     setSelectedSaleId(null);
   }, [selectedDate]);
 
   // -------------------------
-  // Build receipts + items + customers (same model as MySalesTodayTab)
+  // Build receipts + items + customers
   // -------------------------
   const receiptsForDay = useMemo(() => {
     return (sales || []).map((sale) => {
@@ -567,8 +543,7 @@ function SalesHistoryPage() {
   const flattenedItems = useMemo(() => {
     const rows = [];
     for (const r of receiptsForDay || []) {
-      const lines = r.lines || [];
-      for (const line of lines) {
+      for (const line of r.lines || []) {
         const f = extractLineFields(line);
         const stockRow = f.itemId != null ? stockByItemId[f.itemId] : null;
         const itemName =
@@ -588,7 +563,7 @@ function SalesHistoryPage() {
           unitPrice: f.unitPrice,
           total: f.total,
           profit: f.profit,
-          paymentType: r.payment, // cash|mobile|card|credit|...
+          paymentType: r.payment,
           isCreditSale: r.isCredit,
           creditBalance: r.balance,
           customerName: r.customerName,
@@ -598,7 +573,6 @@ function SalesHistoryPage() {
       }
     }
 
-    // Newest first
     rows.sort((a, b) => {
       const ta = parseDateAssumeKigali(a.time)?.getTime?.() || 0;
       const tb = parseDateAssumeKigali(b.time)?.getTime?.() || 0;
@@ -623,7 +597,6 @@ function SalesHistoryPage() {
           label,
           receipts: 0,
           totalBought: 0,
-          creditCreated: 0,
           creditBalance: 0,
           collectedToday: 0,
         });
@@ -632,12 +605,9 @@ function SalesHistoryPage() {
       agg.receipts += 1;
       agg.totalBought += Number(r.total || 0);
       agg.collectedToday += Number(r.collected || 0);
-
-      if (r.isCredit) {
-        agg.creditCreated += Number(r.total || 0);
-        agg.creditBalance += Number(r.balance || 0);
-      }
+      if (r.isCredit) agg.creditBalance += Number(r.balance || 0);
     }
+
     return Array.from(map.values()).sort(
       (a, b) => (b.totalBought || 0) - (a.totalBought || 0)
     );
@@ -659,13 +629,11 @@ function SalesHistoryPage() {
 
   const selectedReceipt = useMemo(() => {
     if (!selectedSaleId) return null;
-    return (
-      receiptsForDay.find((r) => Number(r.id) === Number(selectedSaleId)) || null
-    );
+    return receiptsForDay.find((r) => Number(r.id) === Number(selectedSaleId)) || null;
   }, [selectedSaleId, receiptsForDay]);
 
   // -------------------------
-  // Summary (same 4 stats idea)
+  // Summary
   // -------------------------
   const summary = useMemo(() => {
     let totalSales = 0;
@@ -689,8 +657,20 @@ function SalesHistoryPage() {
   }, [receiptsForDay, flattenedItems]);
 
   // -------------------------
-  // ✅ Navigation to SalesPOS Current Sale (edit handoff)
+  // ✅ Navigation targets based on your App.jsx routes
   // -------------------------
+  const basePrefix = useMemo(() => {
+    const p = String(location?.pathname || "");
+    if (p.startsWith("/shops/")) return "/shops";
+    if (p.startsWith("/shop/")) return "/shop";
+    return "/shops";
+  }, [location?.pathname]);
+
+  const workspacePath = useMemo(() => `${basePrefix}/${shopId}`, [basePrefix, shopId]);
+
+  // ✅ FIX: SalesPOS is /pos (and /sales-pos alias)
+  const salesPosPath = useMemo(() => `${basePrefix}/${shopId}/pos`, [basePrefix, shopId]);
+
   const goToSalesPOS = useCallback(
     (paramsObj) => {
       const sp = new URLSearchParams();
@@ -698,7 +678,6 @@ function SalesHistoryPage() {
         if (v === undefined || v === null || String(v).trim() === "") return;
         sp.set(k, String(v));
       });
-
       const url = sp.toString() ? `${salesPosPath}?${sp.toString()}` : salesPosPath;
       navigate(url);
     },
@@ -711,32 +690,27 @@ function SalesHistoryPage() {
       const slid = saleLineId != null ? Number(saleLineId) : null;
       if (!sid) return;
 
-      // ✅ Keep EXACT same behavior as MySalesTodayTab (handoff hints)
+      // same handoff keys used elsewhere
       try {
         localStorage.setItem("iclas_edit_sale_id", String(sid));
         if (slid != null) localStorage.setItem("iclas_edit_sale_line_id", String(slid));
         else localStorage.removeItem("iclas_edit_sale_line_id");
-      } catch {
-        // ignore
-      }
+      } catch {}
 
-      // ✅ SalesPOS already understands editSaleId in URL
       goToSalesPOS({ tab: "current", editSaleId: sid });
     },
     [goToSalesPOS]
   );
 
   const openAddMissingSaleForDate = useCallback(() => {
-    // Owner/Manager only: open Current sale tab on past workDate
     if (!canEditHistory) return;
     goToSalesPOS({ tab: "current", workDate: selectedDate });
   }, [canEditHistory, goToSalesPOS, selectedDate]);
 
   // -------------------------
-  // Date list (like Daily Closure history)
+  // Date list (like closures history)
   // -------------------------
   const historyDates = useMemo(() => {
-    // Owner/Manager: last 31 days; others: only today
     if (!canEditHistory) return [todayStr];
     return getRecentDatesList(31);
   }, [canEditHistory, todayStr]);
@@ -842,17 +816,14 @@ function SalesHistoryPage() {
           <div>
             <div style={{ fontSize: "14px", fontWeight: 900 }}>Sale details</div>
             <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "2px" }}>
-              Receipt #{selectedReceipt.id} · {formatTimeHM(selectedReceipt.time)} ·{" "}
-              {paymentLabel}
+              Receipt #{selectedReceipt.id} · {formatTimeHM(selectedReceipt.time)} · {paymentLabel}
             </div>
             <div style={{ fontSize: "12px", color: "#6b7280" }}>
               Customer: <strong>{customerLabel}</strong>
-              {selectedReceipt.dueDate
-                ? ` · Due: ${String(selectedReceipt.dueDate).slice(0, 10)}`
-                : ""}
+              {selectedReceipt.dueDate ? ` · Due: ${String(selectedReceipt.dueDate).slice(0, 10)}` : ""}
             </div>
             <div style={{ fontSize: "12px", color: "#9ca3af", marginTop: "4px" }}>
-              Tip: click a line below to edit that receipt in <strong>Current sale</strong>.
+              Tip: click a line below to edit the receipt in <strong>SalesPOS → Current sale</strong>.
             </div>
           </div>
 
@@ -882,9 +853,7 @@ function SalesHistoryPage() {
         >
           <div>
             <div style={{ fontSize: "12px", color: "#6b7280" }}>Total</div>
-            <div style={{ fontSize: "18px", fontWeight: 900 }}>
-              {formatMoney(selectedReceipt.total)}
-            </div>
+            <div style={{ fontSize: "18px", fontWeight: 900 }}>{formatMoney(selectedReceipt.total)}</div>
           </div>
           <div>
             <div style={{ fontSize: "12px", color: "#6b7280" }}>Profit</div>
@@ -936,9 +905,7 @@ function SalesHistoryPage() {
               {(selectedReceipt.lines || []).map((line) => {
                 const f = extractLineFields(line);
                 const itemName =
-                  line.item_name ||
-                  stockByItemId[f.itemId]?.item_name ||
-                  `Item #${f.itemId}`;
+                  line.item_name || stockByItemId[f.itemId]?.item_name || `Item #${f.itemId}`;
 
                 return (
                   <tr
@@ -953,18 +920,12 @@ function SalesHistoryPage() {
                     <td style={{ padding: "8px 4px", color: "#2563eb", fontWeight: 700 }}>
                       {itemName}
                     </td>
-                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                      {formatQty(f.qty)}
-                    </td>
-                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                      {formatMoney(f.unitPrice)}
-                    </td>
+                    <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatQty(f.qty)}</td>
+                    <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(f.unitPrice)}</td>
                     <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 700 }}>
                       {formatMoney(f.total)}
                     </td>
-                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                      {formatMoney(f.profit)}
-                    </td>
+                    <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(f.profit)}</td>
                   </tr>
                 );
               })}
@@ -1109,7 +1070,6 @@ function SalesHistoryPage() {
         </div>
       </div>
 
-      {/* Errors */}
       {error && shop && (
         <div
           style={{
@@ -1127,7 +1087,6 @@ function SalesHistoryPage() {
         </div>
       )}
 
-      {/* ✅ Layout: Date list (left) + Content (right) */}
       <div
         style={{
           marginTop: 12,
@@ -1137,7 +1096,6 @@ function SalesHistoryPage() {
           alignItems: "start",
         }}
       >
-        {/* Date list */}
         {canEditHistory ? (
           <div
             style={{
@@ -1171,7 +1129,6 @@ function SalesHistoryPage() {
                       fontWeight: isActive ? 900 : 800,
                       color: "#111827",
                     }}
-                    title="Click to open items for this date"
                   >
                     <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
                       <span>{formatDateLabel(d)}</span>
@@ -1200,9 +1157,7 @@ function SalesHistoryPage() {
           </div>
         ) : null}
 
-        {/* Main content */}
         <div>
-          {/* Summary card */}
           <div
             style={{
               marginBottom: "12px",
@@ -1213,9 +1168,7 @@ function SalesHistoryPage() {
               fontSize: "12px",
             }}
           >
-            <div style={{ fontSize: "14px", fontWeight: 800, marginBottom: "6px" }}>
-              Summary
-            </div>
+            <div style={{ fontSize: "14px", fontWeight: 800, marginBottom: "6px" }}>Summary</div>
             <div
               style={{
                 display: "grid",
@@ -1240,9 +1193,7 @@ function SalesHistoryPage() {
 
               <div>
                 <div style={{ color: "#6b7280" }}>Pieces sold</div>
-                <div style={{ fontSize: "16px", fontWeight: 800 }}>
-                  {formatQty(summary.piecesSold)}
-                </div>
+                <div style={{ fontSize: "16px", fontWeight: 800 }}>{formatQty(summary.piecesSold)}</div>
               </div>
 
               <div>
@@ -1254,7 +1205,6 @@ function SalesHistoryPage() {
             </div>
           </div>
 
-          {/* View switch + filters (same pattern as MySalesTodayTab) */}
           <div
             style={{
               marginBottom: "10px",
@@ -1353,7 +1303,6 @@ function SalesHistoryPage() {
                   backgroundColor: "#fff",
                   fontSize: "12px",
                 }}
-                title="Payment filter"
               >
                 <option value="all">Payment: All</option>
                 <option value="cash">Cash</option>
@@ -1364,10 +1313,8 @@ function SalesHistoryPage() {
             </div>
           </div>
 
-          {/* Receipts-only details */}
           {renderReceiptDetails()}
 
-          {/* Main list card */}
           <div
             style={{
               backgroundColor: "#ffffff",
@@ -1388,7 +1335,7 @@ function SalesHistoryPage() {
               ) : (
                 <>
                   <div style={{ marginBottom: 8, fontSize: 12, color: "#6b7280" }}>
-                    Tip: click an item to edit that receipt in <strong>SalesPOS → Current sale</strong>.
+                    Tip: click an item to edit the receipt in <strong>SalesPOS → Current sale</strong>.
                   </div>
 
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
@@ -1418,14 +1365,7 @@ function SalesHistoryPage() {
                     <tbody>
                       {filteredItems.map((row) => {
                         const isOpenCredit = row.isCreditSale && Number(row.creditBalance || 0) > 0;
-                        const isSettledCredit = row.isCreditSale && !isOpenCredit;
-
-                        const statusLabel = isOpenCredit
-                          ? "Credit (Open)"
-                          : isSettledCredit
-                          ? "Paid (Credit settled)"
-                          : "Paid";
-
+                        const statusLabel = isOpenCredit ? "Credit (Open)" : row.isCreditSale ? "Paid (Credit settled)" : "Paid";
                         const statusBg = isOpenCredit ? "#fef2f2" : "#ecfdf3";
                         const statusBorder = isOpenCredit ? "#fecaca" : "#bbf7d0";
                         const statusColor = isOpenCredit ? "#b91c1c" : "#166534";
@@ -1453,22 +1393,14 @@ function SalesHistoryPage() {
                               <div
                                 role="button"
                                 tabIndex={0}
-                                title={`Click to edit receipt #${row.saleId}`}
                                 onClick={() => startEditReceipt(row.saleId, row.saleLineId)}
                                 onKeyDown={(e) => {
-                                  if (e.key === "Enter" || e.key === " ")
-                                    startEditReceipt(row.saleId, row.saleLineId);
+                                  if (e.key === "Enter" || e.key === " ") startEditReceipt(row.saleId, row.saleLineId);
                                 }}
-                                style={{
-                                  cursor: "pointer",
-                                  userSelect: "none",
-                                  display: "inline-block",
-                                  maxWidth: "100%",
-                                }}
+                                style={{ cursor: "pointer", userSelect: "none", display: "inline-block" }}
+                                title={`Click to edit receipt #${row.saleId}`}
                               >
-                                <span style={{ color: "#2563eb", fontWeight: 700 }}>
-                                  {row.itemName}
-                                </span>
+                                <span style={{ color: "#2563eb", fontWeight: 700 }}>{row.itemName}</span>
                                 <div style={{ fontSize: "12px", color: "#9ca3af", marginTop: "2px" }}>
                                   Receipt #{row.saleId}
                                 </div>
@@ -1478,18 +1410,10 @@ function SalesHistoryPage() {
                             <td style={{ padding: "8px 4px" }}>{customerLabel}</td>
                             <td style={{ padding: "8px 4px" }}>{dueLabel}</td>
 
-                            <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                              {formatQty(row.qtyPieces)}
-                            </td>
-                            <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                              {formatMoney(row.unitPrice)}
-                            </td>
-                            <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600 }}>
-                              {formatMoney(row.total)}
-                            </td>
-                            <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                              {formatMoney(row.profit)}
-                            </td>
+                            <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatQty(row.qtyPieces)}</td>
+                            <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(row.unitPrice)}</td>
+                            <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600 }}>{formatMoney(row.total)}</td>
+                            <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(row.profit)}</td>
 
                             <td style={{ padding: "8px 4px" }}>
                               <span
@@ -1645,15 +1569,11 @@ function SalesHistoryPage() {
                   {customersRollup.map((c) => (
                     <tr key={c.key} style={{ borderBottom: "1px solid #f3f4f6" }}>
                       <td style={{ padding: "8px 4px", fontWeight: 800 }}>{c.label}</td>
-                      <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                        {formatMoney(c.receipts)}
-                      </td>
+                      <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(c.receipts)}</td>
                       <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 800 }}>
                         {formatMoney(c.totalBought)}
                       </td>
-                      <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                        {formatMoney(c.collectedToday)}
-                      </td>
+                      <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(c.collectedToday)}</td>
                       <td
                         style={{
                           padding: "8px 4px",
@@ -1675,5 +1595,3 @@ function SalesHistoryPage() {
     </div>
   );
 }
-
-export default SalesHistoryPage;
