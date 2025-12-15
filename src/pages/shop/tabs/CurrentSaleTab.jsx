@@ -285,6 +285,13 @@ export default function CurrentSaleTab({
     }
   };
 
+  // ✅ (change #3) cleanup flash timer on unmount
+  useEffect(() => {
+    return () => {
+      if (flashTimerRef.current) window.clearTimeout(flashTimerRef.current);
+    };
+  }, []);
+
   // -------------- Helpers for reset / cancel edit --------------
   const clearEditHandoffStorage = () => {
     try {
@@ -1098,10 +1105,10 @@ export default function CurrentSaleTab({
     } finally {
       setSaving(false);
 
-      // ✅ Always go to My Sales Today after successful save
+      // ✅ (change #1) IMPORTANT FIX: call onEditDone FIRST, then onGoToday
       if (savedOk) {
-        onGoToday?.();
         onEditDone?.();
+        onGoToday?.();
       }
     }
   };
@@ -1744,7 +1751,7 @@ export default function CurrentSaleTab({
             }}
           >
             <div>
-              Pieces / unit: <strong>{formatMoney(padPiecesPerUnit)}</strong>
+              Pieces / unit: <strong>{formatPlainNumber(padPiecesPerUnit)}</strong>
             </div>
             <div>
               Remaining pieces: <strong>{formatQty(padRemainingPieces)}</strong>
