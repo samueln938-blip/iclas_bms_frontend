@@ -40,7 +40,8 @@ function _hasTZInfo(s) {
 /**
  * Parse backend timestamps safely:
  * - If it has timezone (Z or +02:00), normal Date parsing is fine.
- * - If it's "naive" (no timezone), assume Kigali local time (UTC+2).
+ * - If it's "naive" (no timezone), we assume it represents Kigali local time (UTC+2),
+ *   and convert it to a real Date object consistently.
  */
 function parseDateAssumeKigali(raw) {
   if (!raw) return null;
@@ -49,25 +50,32 @@ function parseDateAssumeKigali(raw) {
   const s0 = String(raw).trim();
   if (!s0) return null;
 
+  // normalize "YYYY-MM-DD HH:mm:ss" -> "YYYY-MM-DDTHH:mm:ss"
   const s = s0.includes("T") ? s0 : s0.replace(" ", "T");
 
+  // timezone-aware string: trust it
   if (_hasTZInfo(s)) {
     const d = new Date(s);
     return Number.isNaN(d.getTime()) ? null : d;
   }
 
+  // date-only: "YYYY-MM-DD"
   const mDate = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
   if (mDate) {
     const y = Number(mDate[1]);
     const mo = Number(mDate[2]);
     const da = Number(mDate[3]);
     if (!y || !mo || !da) return null;
+
     // Kigali midnight -> UTC is minus 2 hours
     return new Date(Date.UTC(y, mo - 1, da, -2, 0, 0, 0));
   }
 
+  // datetime without tz: "YYYY-MM-DDTHH:mm(:ss(.ms)?)?"
   const mDT =
-    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/.exec(s);
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/.exec(
+      s
+    );
 
   if (mDT) {
     const y = Number(mDT[1]);
@@ -79,14 +87,17 @@ function parseDateAssumeKigali(raw) {
     const ms = Number(mDT[7] || 0);
     if (!y || !mo || !da) return null;
 
+    // Assume input is Kigali local time (UTC+2) => UTC = local - 2h
     return new Date(Date.UTC(y, mo - 1, da, hh - 2, mi, ss, ms));
   }
 
+  // fallback (best effort)
   const d = new Date(s);
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
 function todayDateString() {
+  // ✅ Kigali date (even if device timezone is wrong)
   return (
     _fmtPartsYMD(new Date()) ||
     (() => {
@@ -107,6 +118,7 @@ function addDaysYMD(ymd, deltaDays) {
   const da = Number(m[3]);
   if (!y || !mo || !da) return "";
 
+  // Do date math in UTC to avoid timezone drift
   const base = Date.UTC(y, mo - 1, da);
   const d = new Date(base + deltaDays * 86400000);
   const yy = d.getUTCFullYear();
@@ -166,7 +178,7 @@ function formatMoney(value) {
 
 /**
  * ✅ IMPORTANT:
- * A sale is "open credit" ONLY when credit_balance > 0.
+ * A sale is considered "open credit" ONLY when credit_balance > 0.
  */
 function isOpenCreditSale(sale) {
   const creditBalance = Number(sale?.credit_balance ?? sale?.creditBalance ?? 0);
@@ -201,7 +213,8 @@ function pickLines(sale) {
 }
 
 function extractLineFields(line) {
-  const itemId = line?.item_id ?? line?.itemId ?? line?.item ?? line?.itemID ?? null;
+  const itemId =
+    line?.item_id ?? line?.itemId ?? line?.item ?? line?.itemID ?? null;
 
   const qty = Number(
     line?.quantity_pieces ??
@@ -283,6 +296,7 @@ function SalesHistoryPage() {
   const { shopId } = useParams();
   const navigate = useNavigate();
 
+  // ✅ Use the same auth headers as Sales & POS
   const auth = useAuth();
   const authHeadersNoJson = auth?.authHeadersNoJson || auth?.authHeaders || {};
 
@@ -290,40 +304,53 @@ function SalesHistoryPage() {
   const [loadingShop, setLoadingShop] = useState(true);
   const [error, setError] = useState("");
 
+  // ✅ NEW: Default is All history (not just today)
   const [tab, setTab] = useState("history"); // history | today | range | month | credits | search
+
+  // View mode: items (detail) OR receipts (summary)
   const [viewMode, setViewMode] = useState("items");
+
+  // Payment filter: all / cash / card / mobile / credit
   const [paymentFilter, setPaymentFilter] = useState("all");
 
+  // ✅ NEW: All-history days back + draft input
   const [historyDaysBack, setHistoryDaysBack] = useState(30);
   const [historyDaysBackDraft, setHistoryDaysBackDraft] = useState("30");
 
+  // Today
   const [selectedDate, setSelectedDate] = useState(todayDateString());
 
-  const [rangeFrom, setRangeFrom] = useState(addDaysYMD(todayDateString(), -6));
+  // Range
+  const [rangeFrom, setRangeFrom] = useState(addDaysYMD(todayDateString(), -6)); // last 7 days by default
   const [rangeTo, setRangeTo] = useState(todayDateString());
 
-  const [selectedMonth, setSelectedMonth] = useState(todayDateString().slice(0, 7));
+  // Month
+  const [selectedMonth, setSelectedMonth] = useState(
+    todayDateString().slice(0, 7)
+  ); // YYYY-MM
 
+  // Credits tab (range)
   const [creditFrom, setCreditFrom] = useState(addDaysYMD(todayDateString(), -30));
   const [creditTo, setCreditTo] = useState(todayDateString());
 
+  // Search tab
   const [searchDaysBack, setSearchDaysBack] = useState(30);
   const [searchQuery, setSearchQuery] = useState("");
 
+  // Sales + loading
   const [sales, setSales] = useState([]);
   const [loadingSales, setLoadingSales] = useState(false);
 
+  // Stock rows to get REAL item names
   const [stockRows, setStockRows] = useState([]);
   const [loadingStock, setLoadingStock] = useState(false);
 
+  // Auto refresh (Today tab only)
   const [autoRefreshToday, setAutoRefreshToday] = useState(true);
   const autoTimerRef = useRef(null);
 
+  // Last sync info
   const [lastSalesSyncAt, setLastSalesSyncAt] = useState(null);
-
-  // ✅ NEW: selected day (for day items list panel)
-  const [selectedDay, setSelectedDay] = useState(null);
-  const dayPanelRef = useRef(null);
 
   const shopName = shop?.name || `Shop ${shopId}`;
 
@@ -335,17 +362,7 @@ function SalesHistoryPage() {
     );
   }, [authHeadersNoJson]);
 
-  // ✅ Navigate to SalesPOS Current sale for a given receipt
-  const goToSaleEdit = useCallback(
-    (saleId) => {
-      if (!saleId) return;
-      navigate(
-        `/shops/${shopId}/sales-pos?tab=current&saleId=${encodeURIComponent(saleId)}`
-      );
-    },
-    [navigate, shopId]
-  );
-
+  // ✅ IMPORTANT: avoid infinite "Loading session..."
   useEffect(() => {
     if (!headersReady) {
       setLoadingShop(false);
@@ -360,7 +377,7 @@ function SalesHistoryPage() {
   }, [headersReady]);
 
   // -------------------------
-  // Decide active date range
+  // Decide active date range based on tab
   // -------------------------
   const activeDateFrom = useMemo(() => {
     if (tab === "history") {
@@ -403,7 +420,7 @@ function SalesHistoryPage() {
       const y = Number(yStr);
       const m = Number(mStr);
       if (!y || !m) return todayDateString();
-      const last = new Date(Date.UTC(y, m, 0));
+      const last = new Date(Date.UTC(y, m, 0)); // last day of month in UTC-safe way
       const yy = last.getUTCFullYear();
       const mm = String(last.getUTCMonth() + 1).padStart(2, "0");
       const dd = String(last.getUTCDate()).padStart(2, "0");
@@ -413,7 +430,7 @@ function SalesHistoryPage() {
   }, [tab, selectedDate, rangeTo, creditTo, selectedMonth]);
 
   // -------------------------
-  // Safe JSON fetch helper
+  // Safe JSON fetch helper (no cache + abortable)
   // -------------------------
   const fetchJson = useCallback(async (url, headers, signal) => {
     const res = await fetch(url, { headers, signal, cache: "no-store" });
@@ -430,6 +447,7 @@ function SalesHistoryPage() {
     return res.json();
   }, []);
 
+  // Abort + latest-wins guards
   const shopAbortRef = useRef(null);
   const stockAbortRef = useRef(null);
   const salesAbortRef = useRef(null);
@@ -468,10 +486,7 @@ function SalesHistoryPage() {
       ];
 
       const tasks = candidates.map((url) =>
-        fetchJson(url, authHeadersNoJson, controller.signal).then((json) => ({
-          url,
-          json,
-        }))
+        fetchJson(url, authHeadersNoJson, controller.signal).then((json) => ({ url, json }))
       );
 
       let winner = null;
@@ -505,7 +520,7 @@ function SalesHistoryPage() {
   }, [loadShop]);
 
   // -------------------------
-  // Load stock map (AUTH)
+  // Load stock to map item_id -> item_name (AUTH)
   // -------------------------
   const loadStock = useCallback(async () => {
     if (!shopId) return;
@@ -527,10 +542,7 @@ function SalesHistoryPage() {
       ];
 
       const tasks = candidates.map((url) =>
-        fetchJson(url, authHeadersNoJson, controller.signal).then((json) => ({
-          url,
-          json,
-        }))
+        fetchJson(url, authHeadersNoJson, controller.signal).then((json) => ({ url, json }))
       );
 
       let winner = null;
@@ -570,6 +582,7 @@ function SalesHistoryPage() {
 
   // -------------------------
   // Load sales helper (AUTH)
+  // mode: "replace" | "append"
   // -------------------------
   const loadSales = useCallback(
     async ({ dateFrom, dateTo, mode = "replace" } = {}) => {
@@ -628,15 +641,18 @@ function SalesHistoryPage() {
     [shopId, headersReady, activeDateFrom, activeDateTo, fetchJson, authHeadersNoJson]
   );
 
+  // ✅ Auto-load sales for NON-history tabs (history is manual/controlled)
   useEffect(() => {
     if (tab === "history") return;
     loadSales({ mode: "replace" });
   }, [tab, loadSales]);
 
+  // ✅ History initial load when entering tab / shop changes
   useEffect(() => {
     if (tab !== "history") return;
     if (!headersReady || !shopId) return;
 
+    // sync draft UI with actual value
     setHistoryDaysBackDraft(String(historyDaysBack));
 
     const to = todayDateString();
@@ -692,16 +708,18 @@ function SalesHistoryPage() {
     const next = clampDaysBack(cur + HISTORY_STEP_DAYS);
 
     const to = todayDateString();
-    const curFrom = addDaysYMD(to, -cur + 1);
-    const nextFrom = addDaysYMD(to, -next + 1);
-    const extraTo = addDaysYMD(curFrom, -1);
+    const curFrom = addDaysYMD(to, -cur + 1); // current earliest day
+    const nextFrom = addDaysYMD(to, -next + 1); // new earliest day
+    const extraTo = addDaysYMD(curFrom, -1); // day before current range
 
+    // If ranges overlap or invalid, just expand without fetching
     if (!nextFrom || !extraTo || extraTo < nextFrom) {
       setHistoryDaysBack(next);
       setHistoryDaysBackDraft(String(next));
       return;
     }
 
+    // Fetch only the additional older slice and APPEND
     await loadSales({ dateFrom: nextFrom, dateTo: extraTo, mode: "append" });
 
     setHistoryDaysBack(next);
@@ -709,7 +727,31 @@ function SalesHistoryPage() {
   }, [historyDaysBack, loadSales]);
 
   // -------------------------
-  // Filtered sales
+  // ✅ NEW: Open a receipt/line in Shop workspace (Current Sale edit mode)
+  // -------------------------
+  const openInCurrentSaleFromHistory = useCallback(
+    (saleId, saleLineId = null) => {
+      if (!saleId) return;
+
+      try {
+        localStorage.setItem("iclas_edit_sale_id", String(saleId));
+        if (saleLineId != null) localStorage.setItem("iclas_edit_sale_line_id", String(saleLineId));
+        else localStorage.removeItem("iclas_edit_sale_line_id");
+
+        // Hint for SalesPOS (we'll wire this next on SalesPOS side)
+        localStorage.setItem("iclas_pos_desired_tab", "current");
+      } catch {}
+
+      // Also pass state (extra safety if you later read location.state)
+      navigate(`/shops/${shopId}`, {
+        state: { iclas_edit_sale_id: saleId, iclas_edit_sale_line_id: saleLineId },
+      });
+    },
+    [navigate, shopId]
+  );
+
+  // -------------------------
+  // Filter by payment / credit (normalized)
   // -------------------------
   const filteredSales = useMemo(() => {
     const q = String(searchQuery || "").trim().toLowerCase();
@@ -723,8 +765,7 @@ function SalesHistoryPage() {
       if (effectivePaymentFilter === "credit") return creditOpen;
       if (effectivePaymentFilter === "cash") return !creditOpen && paymentType === "cash";
       if (effectivePaymentFilter === "card") return !creditOpen && paymentType === "card";
-      if (effectivePaymentFilter === "mobile")
-        return !creditOpen && paymentType === "mobile";
+      if (effectivePaymentFilter === "mobile") return !creditOpen && paymentType === "mobile";
 
       if (tab === "search" && q) {
         const idHit = String(sale?.id ?? "").toLowerCase().includes(q);
@@ -754,7 +795,7 @@ function SalesHistoryPage() {
   }, [sales, paymentFilter, tab, searchQuery, stockByItemId]);
 
   // -------------------------
-  // Build items rows
+  // Build items rows for a given sales list (FIXED: day-specific support)
   // -------------------------
   const buildItemsRows = useCallback(
     (salesList) => {
@@ -797,10 +838,7 @@ function SalesHistoryPage() {
     [stockByItemId]
   );
 
-  const allItemsRows = useMemo(
-    () => buildItemsRows(filteredSales),
-    [filteredSales, buildItemsRows]
-  );
+  const allItemsRows = useMemo(() => buildItemsRows(filteredSales), [filteredSales, buildItemsRows]);
 
   // -------------------------
   // Summary for active range
@@ -834,7 +872,7 @@ function SalesHistoryPage() {
   }, [filteredSales, allItemsRows]);
 
   // -------------------------
-  // Group by day
+  // Group by day (for non-today tabs, including history)
   // -------------------------
   const groupedByDay = useMemo(() => {
     const map = new Map();
@@ -868,28 +906,21 @@ function SalesHistoryPage() {
     return rows;
   }, [groupedByDay]);
 
-  // ✅ When selectedDay changes, scroll to Day panel
-  useEffect(() => {
-    if (!selectedDay) return;
-    const el = dayPanelRef.current;
-    if (!el) return;
-    try {
-      el.scrollIntoView({ behavior: "smooth", block: "start" });
-    } catch {}
-  }, [selectedDay]);
+  // -------------------------
+  // UI states
+  // -------------------------
+  const [openDays, setOpenDays] = useState({});
 
-  // -------------------------
-  // Inline edit states
-  // -------------------------
+  // ✅ Edit pad state (items view)
   const [editRowId, setEditRowId] = useState(null);
   const [editDraft, setEditDraft] = useState({ qtyPieces: "", unitPrice: "" });
   const [savingEdit, setSavingEdit] = useState(false);
   const [editError, setEditError] = useState("");
 
   useEffect(() => {
+    setOpenDays({});
     setEditRowId(null);
     setEditError("");
-    // keep selectedDay as-is (user intentionally selected a day)
   }, [tab, activeDateFrom, activeDateTo]);
 
   const startEditRow = useCallback((row) => {
@@ -1014,7 +1045,7 @@ function SalesHistoryPage() {
 
         await putRes.json();
 
-        // 4) Reload sales + stock
+        // 4) Reload sales + stock to keep everything consistent
         await loadSales({ mode: "replace" });
         await loadStock();
 
@@ -1120,8 +1151,7 @@ function SalesHistoryPage() {
               padding: "10px 14px",
               borderRadius: 999,
               border: "1px dashed #d1d5db",
-              background:
-                "linear-gradient(135deg, #f9fafb 0%, #f3f4ff 40%, #eef2ff 100%)",
+              background: "linear-gradient(135deg, #f9fafb 0%, #f3f4ff 40%, #eef2ff 100%)",
             }}
           >
             <div
@@ -1157,6 +1187,25 @@ function SalesHistoryPage() {
                   }}
                 >
                   Sale #{currentRow.saleId} • {currentRow.itemName}
+                </div>
+                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>
+                  Inline edit is optional. You can also{" "}
+                  <button
+                    type="button"
+                    onClick={() => openInCurrentSaleFromHistory(currentRow.saleId, currentRow.lineId)}
+                    style={{
+                      border: "none",
+                      background: "transparent",
+                      color: "#2563eb",
+                      cursor: "pointer",
+                      fontWeight: 800,
+                      padding: 0,
+                      textDecoration: "underline",
+                    }}
+                  >
+                    open in Current Sale
+                  </button>{" "}
+                  to add more items.
                 </div>
               </div>
 
@@ -1304,7 +1353,8 @@ function SalesHistoryPage() {
           </div>
         ) : (
           <div style={{ marginBottom: 6, fontSize: 12, color: "#6b7280" }}>
-            Tip: click an item row to open it in <b>SalesPOS → Current sale</b>.
+            Tip: click any row to open inline edit pad — or click the{" "}
+            <span style={{ fontWeight: 800, color: "#2563eb" }}>item name</span> to open it in Current Sale and add new items.
           </div>
         )}
 
@@ -1357,38 +1407,35 @@ function SalesHistoryPage() {
                     cursor: "pointer",
                     backgroundColor: isEditing ? "#fefce8" : undefined,
                   }}
-                  onClick={() => goToSaleEdit(row.saleId)}
-                  title={`Open Sale #${row.saleId} in Current sale`}
+                  onClick={() => startEditRow(row)} // ✅ keep your inline edit feature
                 >
                   <td style={{ padding: "8px 4px" }}>{formatTimeHM(row.time)}</td>
 
                   <td style={{ padding: "8px 4px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                      <span style={{ color: "#2563eb", fontWeight: 600 }}>{row.itemName}</span>
+                    {/* ✅ NEW: clicking item name opens Shop workspace -> Current Sale edit */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openInCurrentSaleFromHistory(row.saleId, row.lineId);
+                      }}
+                      style={{
+                        border: "none",
+                        background: "transparent",
+                        padding: 0,
+                        color: "#2563eb",
+                        fontWeight: 700,
+                        cursor: "pointer",
+                        textDecoration: "underline",
+                      }}
+                      title="Open this receipt in Current Sale to edit & add items"
+                    >
+                      {row.itemName}
+                    </button>
 
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          startEditRow(row);
-                        }}
-                        style={{
-                          padding: "3px 10px",
-                          borderRadius: 999,
-                          border: "1px solid #e5e7eb",
-                          background: "#fff",
-                          cursor: "pointer",
-                          fontSize: 11,
-                          fontWeight: 800,
-                          color: "#111827",
-                        }}
-                        title="Edit this line here (inline)"
-                      >
-                        Edit here
-                      </button>
-                    </div>
                     <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>
                       Receipt #{row.saleId}
+                      {row.lineId != null ? ` • Line ${row.lineId}` : ""}
                     </div>
                   </td>
 
@@ -1475,6 +1522,7 @@ function SalesHistoryPage() {
           >
             <th style={{ padding: "6px 4px" }}>Date &amp; time</th>
             <th style={{ padding: "6px 4px" }}>Customer</th>
+            <th style={{ padding: "6px 4px", textAlign: "right" }}>Items</th>
             <th style={{ padding: "6px 4px", textAlign: "right" }}>Total</th>
             <th style={{ padding: "6px 4px", textAlign: "right" }}>Profit</th>
             <th style={{ padding: "6px 4px" }}>Payment</th>
@@ -1483,8 +1531,15 @@ function SalesHistoryPage() {
         </thead>
         <tbody>
           {salesList.map((sale) => {
+            const lines = pickLines(sale);
+            const piecesCount = lines.reduce(
+              (sum, l) => sum + Number(extractLineFields(l).qty || 0),
+              0
+            );
+
             const paymentType = normalizePaymentType(sale.payment_type);
             const { total, profit } = getSaleTotals(sale);
+
             const creditOpen = isOpenCreditSale(sale);
 
             const paymentLabel =
@@ -1502,23 +1557,76 @@ function SalesHistoryPage() {
             const statusColor = creditOpen ? "#b91c1c" : "#166534";
 
             return (
-              <tr
-                key={sale.id}
-                style={{ borderBottom: "1px solid #f3f4f6", cursor: "pointer" }}
-                onClick={() => goToSaleEdit(sale.id)}
-                title={`Open Sale #${sale.id} in Current sale`}
-              >
+              <tr key={sale.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
                 <td style={{ padding: "8px 4px" }}>{formatDateTime(sale.sale_date)}</td>
+
                 <td style={{ padding: "8px 4px" }}>
-                  <div style={{ color: "#111827", fontWeight: 700 }}>
-                    {sale.customer_name || "Walk-in"}
-                  </div>
-                  <div style={{ fontSize: 11, color: "#9ca3af" }}>Receipt #{sale.id}</div>
+                  {sale.customer_name ? (
+                    <>
+                      <span style={{ color: "#2563eb", fontWeight: 600 }}>
+                        {sale.customer_name}
+                      </span>
+                      {sale.customer_phone && (
+                        <span style={{ display: "block", fontSize: "11px", color: "#6b7280" }}>
+                          {sale.customer_phone}
+                        </span>
+                      )}
+
+                      {/* ✅ NEW: clicking receipt opens Current Sale edit */}
+                      <button
+                        type="button"
+                        onClick={() => openInCurrentSaleFromHistory(sale.id, null)}
+                        style={{
+                          display: "block",
+                          border: "none",
+                          background: "transparent",
+                          padding: 0,
+                          fontSize: "11px",
+                          color: "#2563eb",
+                          cursor: "pointer",
+                          fontWeight: 800,
+                          textDecoration: "underline",
+                          marginTop: 2,
+                        }}
+                        title="Open this receipt in Current Sale to edit & add items"
+                      >
+                        Receipt #{sale.id}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <span style={{ color: "#6b7280" }}>Walk-in</span>
+
+                      <button
+                        type="button"
+                        onClick={() => openInCurrentSaleFromHistory(sale.id, null)}
+                        style={{
+                          display: "block",
+                          border: "none",
+                          background: "transparent",
+                          padding: 0,
+                          fontSize: "11px",
+                          color: "#2563eb",
+                          cursor: "pointer",
+                          fontWeight: 800,
+                          textDecoration: "underline",
+                          marginTop: 2,
+                        }}
+                        title="Open this receipt in Current Sale to edit & add items"
+                      >
+                        Receipt #{sale.id}
+                      </button>
+                    </>
+                  )}
                 </td>
-                <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 800 }}>
+
+                <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                  {formatMoney(piecesCount)}
+                </td>
+                <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600 }}>
                   {formatMoney(total)}
                 </td>
-                <td style={{ padding: "8px 4px", textAlign: "right", color: "#16a34a", fontWeight: 800 }}>
+                <td style={{ padding: "8px 4px", textAlign: "right" }}>
                   {formatMoney(profit)}
                 </td>
                 <td style={{ padding: "8px 4px" }}>
@@ -1560,6 +1668,9 @@ function SalesHistoryPage() {
     );
   };
 
+  // -------------------------
+  // Page layout
+  // -------------------------
   const title =
     tab === "history"
       ? "Sales History — All history"
@@ -1572,12 +1683,6 @@ function SalesHistoryPage() {
       : tab === "credits"
       ? "Sales History — Open Credits"
       : "Sales History — Search";
-
-  // ✅ Day sales for selected day
-  const selectedDaySales = useMemo(() => {
-    if (!selectedDay) return [];
-    return groupedByDay.map.get(selectedDay) || [];
-  }, [groupedByDay, selectedDay]);
 
   return (
     <div style={{ padding: "16px 24px 24px" }}>
@@ -1606,7 +1711,14 @@ function SalesHistoryPage() {
         }}
       >
         <div>
-          <h1 style={{ fontSize: "28px", fontWeight: 800, letterSpacing: "0.02em", margin: 0 }}>
+          <h1
+            style={{
+              fontSize: "28px",
+              fontWeight: 800,
+              letterSpacing: "0.02em",
+              margin: 0,
+            }}
+          >
             {title}
           </h1>
           <p style={{ color: "#6b7280", marginTop: "0.5rem" }}>
@@ -1622,7 +1734,15 @@ function SalesHistoryPage() {
 
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           {tab === "today" && (
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "#374151" }}>
+            <label
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                fontSize: 12,
+                color: "#374151",
+              }}
+            >
               <input
                 type="checkbox"
                 checked={autoRefreshToday}
@@ -1690,10 +1810,10 @@ function SalesHistoryPage() {
                 if (t.key === "credits") setPaymentFilter("credit");
                 if (t.key !== "credits" && paymentFilter === "credit") setPaymentFilter("all");
 
-                if (t.key === "history") setHistoryDaysBackDraft(String(historyDaysBack));
-
-                // ✅ Clear day selection when changing tab
-                setSelectedDay(null);
+                if (t.key === "history") {
+                  // sync draft value for UI
+                  setHistoryDaysBackDraft(String(historyDaysBack));
+                }
               }}
               style={{
                 border: "none",
@@ -1714,9 +1834,26 @@ function SalesHistoryPage() {
       </div>
 
       {/* Controls row */}
-      <div style={{ marginTop: 14, display: "flex", flexWrap: "wrap", gap: "10px 16px", alignItems: "center" }}>
+      <div
+        style={{
+          marginTop: 14,
+          display: "flex",
+          flexWrap: "wrap",
+          gap: "10px 16px",
+          alignItems: "center",
+        }}
+      >
         {tab === "history" && (
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", color: "#6b7280", fontSize: 13 }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
+              alignItems: "center",
+              flexWrap: "wrap",
+              color: "#6b7280",
+              fontSize: 13,
+            }}
+          >
             <span style={{ fontWeight: 800, color: "#111827" }}>All history:</span>
             <span>Show last</span>
             <input
@@ -1725,21 +1862,107 @@ function SalesHistoryPage() {
               step="1"
               value={historyDaysBackDraft}
               onChange={(e) => setHistoryDaysBackDraft(e.target.value)}
-              style={{ width: 90, padding: "6px 10px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13 }}
+              style={{
+                width: 90,
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: "1px solid #d1d5db",
+                fontSize: 13,
+              }}
             />
             <span>days</span>
             <button
               type="button"
               onClick={applyHistoryDays}
-              style={{ padding: "6px 10px", borderRadius: 999, border: "1px solid #e5e7eb", background: "#fff", cursor: "pointer", fontSize: 12, fontWeight: 800 }}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: 800,
+              }}
             >
               Apply
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setHistoryDaysBack(30);
+                setHistoryDaysBackDraft("30");
+                const to = todayDateString();
+                const from = addDaysYMD(to, -30 + 1);
+                loadSales({ dateFrom: from, dateTo: to, mode: "replace" });
+              }}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: 700,
+              }}
+            >
+              30d
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setHistoryDaysBack(90);
+                setHistoryDaysBackDraft("90");
+                const to = todayDateString();
+                const from = addDaysYMD(to, -90 + 1);
+                loadSales({ dateFrom: from, dateTo: to, mode: "replace" });
+              }}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: 700,
+              }}
+            >
+              90d
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setHistoryDaysBack(365);
+                setHistoryDaysBackDraft("365");
+                const to = todayDateString();
+                const from = addDaysYMD(to, -365 + 1);
+                loadSales({ dateFrom: from, dateTo: to, mode: "replace" });
+              }}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: 700,
+              }}
+            >
+              1 year
             </button>
 
             <button
               type="button"
               onClick={loadOlderHistory}
-              style={{ padding: "6px 10px", borderRadius: 999, border: "1px solid #111827", background: "#111827", color: "#fff", cursor: "pointer", fontSize: 12, fontWeight: 900 }}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: "1px solid #111827",
+                background: "#111827",
+                color: "#fff",
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: 900,
+              }}
               title={`Fetch older sales (+${HISTORY_STEP_DAYS} days) and append`}
             >
               Load older +{HISTORY_STEP_DAYS}d
@@ -1754,12 +1977,26 @@ function SalesHistoryPage() {
               type="date"
               value={selectedDate}
               onChange={(e) => setSelectedDate(e.target.value)}
-              style={{ padding: "6px 10px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px" }}
+              style={{
+                padding: "6px 10px",
+                borderRadius: "999px",
+                border: "1px solid #d1d5db",
+                fontSize: "13px",
+              }}
             />
             <button
               type="button"
               onClick={() => setSelectedDate(todayDateString())}
-              style={{ marginLeft: 8, padding: "6px 10px", borderRadius: 999, border: "1px solid #e5e7eb", background: "#fff", cursor: "pointer", fontSize: 12, fontWeight: 700 }}
+              style={{
+                marginLeft: 8,
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: 700,
+              }}
             >
               Today
             </button>
@@ -1767,14 +2004,28 @@ function SalesHistoryPage() {
         )}
 
         {tab === "range" && (
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", color: "#6b7280", fontSize: 13 }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
+              alignItems: "center",
+              flexWrap: "wrap",
+              color: "#6b7280",
+              fontSize: 13,
+            }}
+          >
             <div>
               From:&nbsp;
               <input
                 type="date"
                 value={rangeFrom}
                 onChange={(e) => setRangeFrom(e.target.value)}
-                style={{ padding: "6px 10px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13 }}
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  border: "1px solid #d1d5db",
+                  fontSize: 13,
+                }}
               />
             </div>
             <div>
@@ -1783,9 +2034,50 @@ function SalesHistoryPage() {
                 type="date"
                 value={rangeTo}
                 onChange={(e) => setRangeTo(e.target.value)}
-                style={{ padding: "6px 10px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13 }}
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  border: "1px solid #d1d5db",
+                  fontSize: 13,
+                }}
               />
             </div>
+            <button
+              type="button"
+              onClick={() => {
+                setRangeFrom(addDaysYMD(todayDateString(), -6));
+                setRangeTo(todayDateString());
+              }}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: 700,
+              }}
+            >
+              Last 7 days
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setRangeFrom(addDaysYMD(todayDateString(), -29));
+                setRangeTo(todayDateString());
+              }}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: 700,
+              }}
+            >
+              Last 30 days
+            </button>
           </div>
         )}
 
@@ -1796,20 +2088,39 @@ function SalesHistoryPage() {
               type="month"
               value={selectedMonth}
               onChange={(e) => setSelectedMonth(e.target.value)}
-              style={{ padding: "6px 10px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13 }}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 999,
+                border: "1px solid #d1d5db",
+                fontSize: 13,
+              }}
             />
           </div>
         )}
 
         {tab === "credits" && (
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", color: "#6b7280", fontSize: 13 }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
+              alignItems: "center",
+              flexWrap: "wrap",
+              color: "#6b7280",
+              fontSize: 13,
+            }}
+          >
             <div>
               From:&nbsp;
               <input
                 type="date"
                 value={creditFrom}
                 onChange={(e) => setCreditFrom(e.target.value)}
-                style={{ padding: "6px 10px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13 }}
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  border: "1px solid #d1d5db",
+                  fontSize: 13,
+                }}
               />
             </div>
             <div>
@@ -1818,7 +2129,12 @@ function SalesHistoryPage() {
                 type="date"
                 value={creditTo}
                 onChange={(e) => setCreditTo(e.target.value)}
-                style={{ padding: "6px 10px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13 }}
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  border: "1px solid #d1d5db",
+                  fontSize: 13,
+                }}
               />
             </div>
             <span style={{ fontSize: 12, color: "#b91c1c", fontWeight: 800 }}>
@@ -1837,7 +2153,13 @@ function SalesHistoryPage() {
                 step="1"
                 value={searchDaysBack}
                 onChange={(e) => setSearchDaysBack(e.target.value)}
-                style={{ width: 80, padding: "6px 10px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13 }}
+                style={{
+                  width: 80,
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  border: "1px solid #d1d5db",
+                  fontSize: 13,
+                }}
               />
               &nbsp;days
             </div>
@@ -1845,13 +2167,27 @@ function SalesHistoryPage() {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search: receipt #, phone, customer, item..."
-              style={{ minWidth: 260, padding: "8px 12px", borderRadius: 999, border: "1px solid #d1d5db", fontSize: 13, background: "#fff" }}
+              style={{
+                minWidth: 260,
+                padding: "8px 12px",
+                borderRadius: 999,
+                border: "1px solid #d1d5db",
+                fontSize: 13,
+                background: "#fff",
+              }}
             />
           </div>
         )}
 
         {/* Payment filter */}
-        <div style={{ display: "inline-flex", backgroundColor: "#e5e7eb", borderRadius: "999px", padding: "2px" }}>
+        <div
+          style={{
+            display: "inline-flex",
+            backgroundColor: "#e5e7eb",
+            borderRadius: "999px",
+            padding: "2px",
+          }}
+        >
           {[
             { key: "all", label: "All" },
             { key: "cash", label: "Cash" },
@@ -1877,6 +2213,7 @@ function SalesHistoryPage() {
                   boxShadow: isActive ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
                   opacity: tab === "credits" ? 0.6 : 1,
                 }}
+                title={tab === "credits" ? "Credits tab always shows Credit" : ""}
               >
                 {opt.label}
               </button>
@@ -1885,7 +2222,15 @@ function SalesHistoryPage() {
         </div>
 
         {/* View mode */}
-        <div style={{ marginLeft: "auto", display: "inline-flex", backgroundColor: "#e5e7eb", borderRadius: "999px", padding: "2px" }}>
+        <div
+          style={{
+            marginLeft: "auto",
+            display: "inline-flex",
+            backgroundColor: "#e5e7eb",
+            borderRadius: "999px",
+            padding: "2px",
+          }}
+        >
           {[
             { key: "items", label: "Items" },
             { key: "receipts", label: "Receipts" },
@@ -1915,50 +2260,117 @@ function SalesHistoryPage() {
         </div>
       </div>
 
+      {/* Errors */}
       {error && shop && (
-        <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 14, background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", fontWeight: 700, fontSize: 13 }}>
+        <div
+          style={{
+            marginTop: 12,
+            padding: "10px 12px",
+            borderRadius: 14,
+            background: "#fef2f2",
+            border: "1px solid #fecaca",
+            color: "#b91c1c",
+            fontWeight: 700,
+            fontSize: 13,
+          }}
+        >
           {error}
         </div>
       )}
 
-      {/* Summary */}
-      <div style={{ marginTop: 12, marginBottom: "12px", backgroundColor: "#ffffff", borderRadius: "18px", boxShadow: "0 10px 30px rgba(15,37,128,0.06)", padding: "14px 18px 14px", fontSize: "12px" }}>
+      {/* Summary card */}
+      <div
+        style={{
+          marginTop: 12,
+          marginBottom: "12px",
+          backgroundColor: "#ffffff",
+          borderRadius: "18px",
+          boxShadow: "0 10px 30px rgba(15,37,128,0.06)",
+          padding: "14px 18px 14px",
+          fontSize: "12px",
+        }}
+      >
         <div style={{ fontSize: "14px", fontWeight: 800, marginBottom: "6px" }}>Summary</div>
-        <div style={{ fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.12em", color: "#9ca3af", marginBottom: "8px" }}>
+        <div
+          style={{
+            fontSize: "11px",
+            textTransform: "uppercase",
+            letterSpacing: "0.12em",
+            color: "#9ca3af",
+            marginBottom: "8px",
+          }}
+        >
           {activeDateFrom} → {activeDateTo}
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", rowGap: "8px", columnGap: "16px" }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
+            rowGap: "8px",
+            columnGap: "16px",
+          }}
+        >
           <div>
             <div style={{ color: "#6b7280" }}>Total sales</div>
-            <div style={{ fontSize: "18px", fontWeight: 900 }}>{formatMoney(rangeSummary.totalSales)}</div>
+            <div style={{ fontSize: "18px", fontWeight: 900 }}>
+              {formatMoney(rangeSummary.totalSales)}
+            </div>
           </div>
+
           <div>
             <div style={{ color: "#6b7280" }}>Total profit</div>
-            <div style={{ fontSize: "16px", fontWeight: 800, color: "#16a34a" }}>{formatMoney(rangeSummary.totalProfit)}</div>
+            <div style={{ fontSize: "16px", fontWeight: 800, color: "#16a34a" }}>
+              {formatMoney(rangeSummary.totalProfit)}
+            </div>
           </div>
+
           <div>
             <div style={{ color: "#6b7280" }}>Pieces sold</div>
-            <div style={{ fontSize: "16px", fontWeight: 800 }}>{formatMoney(rangeSummary.piecesSold)}</div>
+            <div style={{ fontSize: "16px", fontWeight: 800 }}>
+              {formatMoney(rangeSummary.piecesSold)}
+            </div>
           </div>
+
           <div>
             <div style={{ color: "#6b7280" }}>Receipts</div>
-            <div style={{ fontSize: "16px", fontWeight: 800 }}>{formatMoney(rangeSummary.receiptsCount)}</div>
+            <div style={{ fontSize: "16px", fontWeight: 800 }}>
+              {formatMoney(rangeSummary.receiptsCount)}
+            </div>
           </div>
+
           <div>
             <div style={{ color: "#6b7280" }}>Open credit</div>
-            <div style={{ fontWeight: 900, color: "#b91c1c" }}>{formatMoney(rangeSummary.openCredit)}</div>
+            <div style={{ fontWeight: 900, color: "#b91c1c" }}>
+              {formatMoney(rangeSummary.openCredit)}
+            </div>
           </div>
         </div>
       </div>
 
-      {/* ✅ Daily totals list (all tabs except Today) */}
+      {/* Daily totals list (all tabs except Today) */}
       {tab !== "today" && (
-        <div style={{ backgroundColor: "#ffffff", borderRadius: "18px", boxShadow: "0 6px 18px rgba(15,37,128,0.04)", padding: "10px 12px 12px", marginBottom: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+        <div
+          style={{
+            backgroundColor: "#ffffff",
+            borderRadius: "18px",
+            boxShadow: "0 6px 18px rgba(15,37,128,0.04)",
+            padding: "10px 12px 12px",
+            marginBottom: 12,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "baseline",
+              gap: 12,
+              flexWrap: "wrap",
+            }}
+          >
             <div style={{ fontWeight: 900, fontSize: 13 }}>Daily totals</div>
             <div style={{ fontSize: 12, color: "#6b7280" }}>
-              Click a <b>date</b> to open the <b>Day items list</b>
+              Tip: click a day to expand receipts (then click item/receipt to edit in Current Sale)
             </div>
           </div>
 
@@ -1971,52 +2383,121 @@ function SalesHistoryPage() {
               No data in this range.
             </div>
           ) : (
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginTop: 8 }}>
+            <table
+              style={{
+                width: "100%",
+                borderCollapse: "collapse",
+                fontSize: 13,
+                marginTop: 8,
+              }}
+            >
               <thead>
-                <tr style={{ textAlign: "left", borderBottom: "1px solid #e5e7eb", fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.08em", color: "#6b7280" }}>
+                <tr
+                  style={{
+                    textAlign: "left",
+                    borderBottom: "1px solid #e5e7eb",
+                    fontSize: "11px",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.08em",
+                    color: "#6b7280",
+                  }}
+                >
                   <th style={{ padding: "6px 4px" }}>Day</th>
                   <th style={{ padding: "6px 4px", textAlign: "right" }}>Receipts</th>
                   <th style={{ padding: "6px 4px", textAlign: "right" }}>Total</th>
                   <th style={{ padding: "6px 4px", textAlign: "right" }}>Profit</th>
                   <th style={{ padding: "6px 4px", textAlign: "right" }}>Open credit</th>
+                  <th style={{ padding: "6px 4px" }}></th>
                 </tr>
               </thead>
               <tbody>
                 {dailyTotalsTable.map((r) => {
-                  const isSelected = selectedDay === r.day;
+                  const open = !!openDays[r.day];
+                  const daySales = groupedByDay.map.get(r.day) || [];
+
                   return (
-                    <tr
-                      key={r.day}
-                      style={{
-                        borderBottom: "1px solid #f3f4f6",
-                        background: isSelected ? "#f5f5ff" : "transparent",
-                      }}
-                    >
-                      <td style={{ padding: "8px 4px", fontWeight: 900 }}>
-                        <button
-                          type="button"
-                          onClick={() => setSelectedDay(r.day)}
+                    <React.Fragment key={r.day}>
+                      <tr
+                        style={{ borderBottom: "1px solid #f3f4f6", cursor: "pointer" }}
+                        onClick={() =>
+                          setOpenDays((prev) => ({
+                            ...prev,
+                            [r.day]: !prev[r.day],
+                          }))
+                        }
+                        title="Click to expand/collapse"
+                      >
+                        <td style={{ padding: "8px 4px", fontWeight: 800 }}>{r.day}</td>
+                        <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                          {formatMoney(r.receipts)}
+                        </td>
+                        <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 800 }}>
+                          {formatMoney(r.total)}
+                        </td>
+                        <td
                           style={{
-                            border: "none",
-                            background: "transparent",
-                            padding: 0,
-                            margin: 0,
-                            cursor: "pointer",
-                            color: "#2563eb",
-                            textDecoration: "underline",
-                            fontSize: 13,
+                            padding: "8px 4px",
+                            textAlign: "right",
+                            color: "#16a34a",
+                            fontWeight: 800,
+                          }}
+                        >
+                          {formatMoney(r.profit)}
+                        </td>
+                        <td
+                          style={{
+                            padding: "8px 4px",
+                            textAlign: "right",
+                            color: "#b91c1c",
                             fontWeight: 900,
                           }}
-                          title="Open Day items list"
                         >
-                          {r.day}
-                        </button>
-                      </td>
-                      <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(r.receipts)}</td>
-                      <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 800 }}>{formatMoney(r.total)}</td>
-                      <td style={{ padding: "8px 4px", textAlign: "right", color: "#16a34a", fontWeight: 800 }}>{formatMoney(r.profit)}</td>
-                      <td style={{ padding: "8px 4px", textAlign: "right", color: "#b91c1c", fontWeight: 900 }}>{formatMoney(r.openCredit)}</td>
-                    </tr>
+                          {formatMoney(r.openCredit)}
+                        </td>
+                        <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOpenDays((prev) => ({
+                                ...prev,
+                                [r.day]: !prev[r.day],
+                              }));
+                            }}
+                            style={{
+                              padding: "6px 10px",
+                              borderRadius: 999,
+                              border: "1px solid #e5e7eb",
+                              background: "#fff",
+                              cursor: "pointer",
+                              fontSize: 12,
+                              fontWeight: 800,
+                            }}
+                          >
+                            {open ? "Hide" : "View"}
+                          </button>
+                        </td>
+                      </tr>
+
+                      {open && (
+                        <tr>
+                          <td colSpan={6} style={{ padding: "10px 4px" }}>
+                            <div
+                              style={{
+                                borderRadius: 14,
+                                border: "1px solid #e5e7eb",
+                                background: "#fafafa",
+                                padding: 10,
+                              }}
+                            >
+                              {viewMode === "items"
+                                ? renderItemsTable(daySales)
+                                : renderReceiptsTable(daySales)}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
@@ -2025,58 +2506,17 @@ function SalesHistoryPage() {
         </div>
       )}
 
-      {/* ✅ Day items list panel (opens when user clicks a date) */}
-      {tab !== "today" && selectedDay && (
+      {/* Today tab main table */}
+      {tab === "today" && (
         <div
-          ref={dayPanelRef}
           style={{
             backgroundColor: "#ffffff",
             borderRadius: "18px",
-            boxShadow: "0 6px 18px rgba(15,37,128,0.06)",
-            padding: "12px 12px 12px",
-            marginBottom: 12,
-            border: "1px solid #eef2ff",
+            boxShadow: "0 6px 18px rgba(15,37,128,0.04)",
+            padding: "10px 12px 10px",
           }}
         >
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-            <div>
-              <div style={{ fontSize: 14, fontWeight: 900 }}>Day items list</div>
-              <div style={{ fontSize: 12, color: "#6b7280" }}>
-                {selectedDay} • Receipts: <b>{formatMoney(selectedDaySales.length)}</b>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setSelectedDay(null)}
-              style={{
-                padding: "8px 12px",
-                borderRadius: 999,
-                border: "1px solid #e5e7eb",
-                background: "#fff",
-                cursor: "pointer",
-                fontWeight: 900,
-                fontSize: 12,
-              }}
-            >
-              Close
-            </button>
-          </div>
-
-          <div style={{ marginTop: 10 }}>
-            {viewMode === "items"
-              ? renderItemsTable(selectedDaySales)
-              : renderReceiptsTable(selectedDaySales)}
-          </div>
-        </div>
-      )}
-
-      {/* Today tab main table */}
-      {tab === "today" && (
-        <div style={{ backgroundColor: "#ffffff", borderRadius: "18px", boxShadow: "0 6px 18px rgba(15,37,128,0.04)", padding: "10px 12px 10px" }}>
-          {viewMode === "items"
-            ? renderItemsTable(filteredSales)
-            : renderReceiptsTable(filteredSales)}
+          {viewMode === "items" ? renderItemsTable(filteredSales) : renderReceiptsTable(filteredSales)}
         </div>
       )}
     </div>
