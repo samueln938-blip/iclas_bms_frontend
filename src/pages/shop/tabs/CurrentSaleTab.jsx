@@ -185,6 +185,9 @@ export default function CurrentSaleTab({
   // If not provided, behavior remains the same as before.
   workDate,
 
+  // ✅ NEW: optional alias for workDate (some callers pass saleDate)
+  saleDate,
+
   // ✅ optional legacy prop
   editSaleId,
   onEditDone,
@@ -203,11 +206,12 @@ export default function CurrentSaleTab({
     });
   };
 
-  // ✅ Resolve work date safely
+  // ✅ Resolve work date safely (prefer saleDate if provided)
   const effectiveWorkDate = useMemo(() => {
+    if (isValidYmd(saleDate)) return String(saleDate);
     if (isValidYmd(workDate)) return String(workDate);
     return ymdTodayLocal();
-  }, [workDate]);
+  }, [workDate, saleDate]);
 
   const isPastWorkDate = useMemo(() => {
     // Lexicographic comparison works for YYYY-MM-DD
