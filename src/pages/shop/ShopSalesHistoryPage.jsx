@@ -1,6 +1,6 @@
 // src/pages/shop/ShopSalesHistoryPage.jsx
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext.jsx";
 
 // ✅ Single source of truth for API base (env or prod fallback)
@@ -114,25 +114,24 @@ function formatTimeHM(iso) {
   }
 }
 
-function formatDateTime(iso) {
-  const d = parseDateAssumeKigali(iso);
-  if (!d) return "";
+function formatDateLabel(ymd) {
+  const d = parseDateAssumeKigali(ymd);
+  if (!d) return String(ymd || "");
   try {
     return new Intl.DateTimeFormat("en-RW", {
       timeZone: KIGALI_TZ,
+      weekday: "short",
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
     }).format(d);
   } catch {
-    return "";
+    return String(ymd || "");
   }
 }
 
 // =========================
-// Money helpers
+// Money + Qty helpers
 // =========================
 function formatMoney(value) {
   if (value === null || value === undefined || value === "") return "0";
@@ -143,17 +142,25 @@ function formatMoney(value) {
   });
 }
 
-function getSaleTotals(sale) {
-  const total =
-    Number(
-      sale?.total_sale_amount ??
-        sale?.total_amount ??
-        sale?.sale_amount ??
-        sale?.total ??
-        0
-    ) || 0;
-  const profit = Number(sale?.total_profit ?? sale?.profit ?? 0) || 0;
-  return { total, profit };
+// ✅ Qty/Pieces formatter (keeps decimals like 0.5, 1.25, 49.5)
+function formatQty(value) {
+  const n = Number(value ?? 0);
+  const safe = Number.isFinite(n) ? n : 0;
+  return safe.toLocaleString("en-RW", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 3,
+  });
+}
+
+function normalizePaymentType(raw) {
+  const s = String(raw || "").trim().toLowerCase();
+  if (!s) return "";
+  if (s === "momo" || s === "mobile" || s === "mobilemoney" || s === "mobile_money")
+    return "mobile";
+  if (s === "pos" || s === "card" || s === "bankcard") return "card";
+  if (s === "cash") return "cash";
+  if (s === "credit") return "credit";
+  return s;
 }
 
 function pickLines(sale) {
@@ -162,8 +169,7 @@ function pickLines(sale) {
 }
 
 function extractLineFields(line) {
-  const itemId =
-    line?.item_id ?? line?.itemId ?? line?.item ?? line?.itemID ?? null;
+  const itemId = line?.item_id ?? line?.itemId ?? line?.item ?? line?.itemID ?? null;
 
   const qty = Number(
     line?.quantity_pieces ??
@@ -175,8 +181,8 @@ function extractLineFields(line) {
   );
 
   const unitPrice = Number(
-    line?.sale_price_per_piece ??
-      line?.unit_sale_price ??
+    line?.unit_sale_price ??
+      line?.sale_price_per_piece ??
       line?.unit_price ??
       line?.unitPrice ??
       line?.price ??
@@ -186,19 +192,9 @@ function extractLineFields(line) {
   const total =
     line?.line_sale_amount != null
       ? Number(line.line_sale_amount)
-      : line?.line_total != null
-      ? Number(line.line_total)
-      : line?.total != null
-      ? Number(line.total)
       : qty * unitPrice;
 
-  const profit =
-    line?.line_profit != null
-      ? Number(line.line_profit)
-      : line?.profit != null
-      ? Number(line.profit)
-      : 0;
-
+  const profit = line?.line_profit != null ? Number(line.line_profit) : 0;
   const lineId = line?.id ?? line?.line_id ?? null;
 
   return {
@@ -211,20 +207,63 @@ function extractLineFields(line) {
   };
 }
 
+function getRecentDatesList(daysBack = 31) {
+  const t = todayDateString();
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(t);
+  if (!m) return [t];
+
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const da = Number(m[3]);
+  const base = new Date(Date.UTC(y, mo - 1, da, 0, 0, 0));
+
+  const out = [];
+  for (let i = 0; i < daysBack; i++) {
+    const d = new Date(base.getTime() - i * 86400000);
+    const ymd = _fmtPartsYMD(d);
+    if (ymd) out.push(ymd);
+  }
+  return out;
+}
+
 function SalesHistoryPage() {
   const { shopId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const auth = useAuth();
   const authHeadersNoJson = auth?.authHeadersNoJson || auth?.authHeaders || {};
   const user = auth?.user || null;
 
-  // Roles
-  const role = String(user?.role || "").toLowerCase();
+  // Roles (same spirit as SalesPOS)
+  const rawRole =
+    user?.role ?? user?.user_role ?? user?.userRole ?? user?.type ?? "";
+  const role = String(rawRole || "").trim().toLowerCase();
+
   const isOwner = role === "owner" || role === "admin";
   const isManager = role === "manager";
   const isCashier = role === "cashier";
-  const canEditHistory = isOwner || isManager;
+  const canEditHistory = isOwner || isManager; // ✅ Owner/Manager only
+
+  // Route guessing (works whether your app uses /shop/ or /shops/)
+  const basePrefix = useMemo(() => {
+    const p = String(location?.pathname || "");
+    if (p.startsWith("/shops/")) return "/shops";
+    if (p.startsWith("/shop/")) return "/shop";
+    // fallback
+    return "/shops";
+  }, [location?.pathname]);
+
+  const workspacePath = useMemo(() => `${basePrefix}/${shopId}`, [basePrefix, shopId]);
+
+  const salesPosPath = useMemo(() => {
+    const p = String(location?.pathname || "").replace(/\/+$/g, "");
+    // If current path contains sales-history, replace it to keep same parent route
+    if (/sales-history/i.test(p)) return p.replace(/sales-history/gi, "salespos");
+    if (/saleshistory/i.test(p)) return p.replace(/saleshistory/gi, "salespos");
+    if (/sales_history/i.test(p)) return p.replace(/sales_history/gi, "salespos");
+    return `${basePrefix}/${shopId}/salespos`;
+  }, [location?.pathname, basePrefix, shopId]);
 
   const headersReady = useMemo(() => {
     return (
@@ -238,32 +277,26 @@ function SalesHistoryPage() {
   const [loadingShop, setLoadingShop] = useState(true);
   const [error, setError] = useState("");
 
-  const [selectedDate, setSelectedDate] = useState(todayDateString());
+  const todayStr = todayDateString();
+  const [selectedDate, setSelectedDate] = useState(todayStr);
+
+  // ✅ lock non-owner/manager to today only (cashier + any other role)
+  useEffect(() => {
+    if (!canEditHistory && selectedDate !== todayStr) {
+      setSelectedDate(todayStr);
+    }
+  }, [canEditHistory, selectedDate, todayStr]);
 
   // Sales + loading
   const [sales, setSales] = useState([]);
   const [loadingSales, setLoadingSales] = useState(false);
   const [lastSalesSyncAt, setLastSalesSyncAt] = useState(null);
 
-  // Stock rows to get REAL item names
+  // Stock rows to get item names
   const [stockRows, setStockRows] = useState([]);
   const [loadingStock, setLoadingStock] = useState(false);
 
   const shopName = shop?.name || `Shop ${shopId}`;
-
-  // ✅ IMPORTANT: avoid infinite "Loading session..."
-  useEffect(() => {
-    if (!headersReady) {
-      setLoadingShop(false);
-      setShop(null);
-      setError("Session not ready. Please refresh the page or login again.");
-    } else {
-      if (error === "Session not ready. Please refresh the page or login again.") {
-        setError("");
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [headersReady]);
 
   // -------------------------
   // Safe JSON fetch helper (no cache + abortable)
@@ -315,10 +348,7 @@ function SalesHistoryPage() {
     setError("");
 
     try {
-      const candidates = [
-        `${API_BASE}/shops/${shopId}`,
-        `${API_BASE}/shops/${shopId}/`,
-      ];
+      const candidates = [`${API_BASE}/shops/${shopId}`, `${API_BASE}/shops/${shopId}/`];
 
       const tasks = candidates.map((url) =>
         fetchJson(url, authHeadersNoJson, controller.signal).then((json) => ({ url, json }))
@@ -335,14 +365,12 @@ function SalesHistoryPage() {
       const data = winner.json?.shop || winner.json;
 
       if (reqId !== shopReqIdRef.current) return;
-
       setShop(data);
     } catch (err) {
       if (err?.name === "AbortError") return;
       console.error(err);
 
       if (reqId !== shopReqIdRef.current) return;
-
       setShop(null);
       setError(err.message || "Failed to load shop.");
     } finally {
@@ -391,14 +419,12 @@ function SalesHistoryPage() {
       const data = Array.isArray(json) ? json : json?.stock || json?.rows || null;
 
       if (reqId !== stockReqIdRef.current) return;
-
       setStockRows(Array.isArray(data) ? data : []);
     } catch (err) {
       if (err?.name === "AbortError") return;
       console.error("Error loading stock for history page:", err);
 
       if (reqId !== stockReqIdRef.current) return;
-
       setStockRows([]);
     } finally {
       if (reqId === stockReqIdRef.current) setLoadingStock(false);
@@ -411,7 +437,10 @@ function SalesHistoryPage() {
 
   const stockByItemId = useMemo(() => {
     const map = {};
-    for (const row of stockRows || []) map[row.item_id] = row;
+    for (const row of stockRows || []) {
+      const id = Number(row?.item_id);
+      if (Number.isFinite(id)) map[id] = row;
+    }
     return map;
   }, [stockRows]);
 
@@ -422,6 +451,7 @@ function SalesHistoryPage() {
     async (ymd) => {
       if (!shopId) return;
       if (!headersReady) return;
+
       const date = String(ymd || "").trim();
       if (!date) return;
 
@@ -462,72 +492,191 @@ function SalesHistoryPage() {
     [shopId, headersReady, fetchJson, authHeadersNoJson]
   );
 
-  // Load when date changes
   useEffect(() => {
     if (!headersReady) return;
     loadSalesForDate(selectedDate);
   }, [headersReady, selectedDate, loadSalesForDate]);
 
   // -------------------------
-  // Build "clean items list" rows for this date
+  // ✅ Consistent view state (like MySalesTodayTab)
   // -------------------------
-  const itemsRows = useMemo(() => {
-    const rows = [];
-    for (const sale of sales || []) {
-      const saleTime = sale?.sale_date;
-      const lines = pickLines(sale);
-      for (const line of lines) {
-        const { lineId, itemId, qty, unitPrice, total, profit } = extractLineFields(line);
+  const [historyView, setHistoryView] = useState("items"); // items|receipts|customers
+  const [filterPaidCredit, setFilterPaidCredit] = useState("all"); // all|paid|credit
+  const [paymentFilter, setPaymentFilter] = useState("all"); // all|cash|card|mobile|credit
+  const [selectedSaleId, setSelectedSaleId] = useState(null);
 
-        const stockRow = itemId ? stockByItemId[itemId] : null;
+  useEffect(() => {
+    // Switching date should close receipt details
+    setSelectedSaleId(null);
+  }, [selectedDate]);
+
+  // -------------------------
+  // Build receipts + items + customers (same model as MySalesTodayTab)
+  // -------------------------
+  const receiptsForDay = useMemo(() => {
+    return (sales || []).map((sale) => {
+      const total = Number(
+        sale?.total_sale_amount ??
+          sale?.total_amount ??
+          sale?.sale_amount ??
+          sale?.total ??
+          0
+      );
+      const profit = Number(sale?.total_profit ?? sale?.profit ?? 0);
+
+      const isCredit = !!(sale?.is_credit_sale ?? sale?.isCreditSale);
+      const payment = isCredit ? "credit" : normalizePaymentType(sale?.payment_type);
+
+      const collected = Number(
+        sale?.amount_collected_now ??
+          sale?.collected_now ??
+          sale?.collected ??
+          (isCredit ? 0 : total)
+      );
+
+      const balance = Number(
+        sale?.credit_balance ??
+          sale?.balance ??
+          (isCredit ? Math.max(0, total - collected) : 0)
+      );
+
+      const dueDate =
+        sale?.due_date ||
+        sale?.credit_due_date ||
+        sale?.customer_due_date ||
+        sale?.dueDate ||
+        null;
+
+      return {
+        id: sale?.id,
+        time: sale?.sale_date,
+        customerName: sale?.customer_name || "",
+        customerPhone: sale?.customer_phone || "",
+        isCredit,
+        payment,
+        total: Number.isFinite(total) ? total : 0,
+        profit: Number.isFinite(profit) ? profit : 0,
+        collected: Number.isFinite(collected) ? collected : 0,
+        balance: Number.isFinite(balance) ? balance : 0,
+        dueDate,
+        lines: pickLines(sale),
+      };
+    });
+  }, [sales]);
+
+  const flattenedItems = useMemo(() => {
+    const rows = [];
+    for (const r of receiptsForDay || []) {
+      const lines = r.lines || [];
+      for (const line of lines) {
+        const f = extractLineFields(line);
+        const stockRow = f.itemId != null ? stockByItemId[f.itemId] : null;
         const itemName =
+          line?.item_name ||
           stockRow?.item_name ||
           stockRow?.item?.name ||
-          line?.item_name ||
-          line?.name ||
-          (itemId != null ? `Item #${itemId}` : "Unknown item");
+          (f.itemId != null ? `Item #${f.itemId}` : "Unknown item");
 
         rows.push({
-          id: `${sale.id}-${lineId ?? Math.random().toString(16).slice(2)}`,
-          saleId: sale.id,
-          saleDate: sale?.sale_date,
-          lineId: lineId ?? null,
-          itemId,
+          id: `${r.id}-${f.lineId ?? Math.random().toString(16).slice(2)}`,
+          saleId: r.id,
+          saleLineId: f.lineId ?? null,
+          time: r.time,
+          itemId: f.itemId,
           itemName,
-          qtyPieces: qty,
-          unitPrice,
-          total,
-          profit,
+          qtyPieces: f.qty,
+          unitPrice: f.unitPrice,
+          total: f.total,
+          profit: f.profit,
+          paymentType: r.payment, // cash|mobile|card|credit|...
+          isCreditSale: r.isCredit,
+          creditBalance: r.balance,
+          customerName: r.customerName,
+          customerPhone: r.customerPhone,
+          dueDate: r.dueDate,
         });
       }
     }
 
-    // Newest first (by sale time)
+    // Newest first
     rows.sort((a, b) => {
-      const ta = parseDateAssumeKigali(a.saleDate)?.getTime?.() || 0;
-      const tb = parseDateAssumeKigali(b.saleDate)?.getTime?.() || 0;
+      const ta = parseDateAssumeKigali(a.time)?.getTime?.() || 0;
+      const tb = parseDateAssumeKigali(b.time)?.getTime?.() || 0;
       if (tb !== ta) return tb - ta;
       return Number(b.saleId || 0) - Number(a.saleId || 0);
     });
 
     return rows;
-  }, [sales, stockByItemId]);
+  }, [receiptsForDay, stockByItemId]);
+
+  const customersRollup = useMemo(() => {
+    const map = new Map();
+    for (const r of receiptsForDay || []) {
+      const key = `${(r.customerName || "").trim()}||${(r.customerPhone || "").trim()}`.trim();
+      const label = r.customerName
+        ? `${r.customerName}${r.customerPhone ? ` (${r.customerPhone})` : ""}`
+        : "Unknown customer";
+
+      if (!map.has(key))
+        map.set(key, {
+          key,
+          label,
+          receipts: 0,
+          totalBought: 0,
+          creditCreated: 0,
+          creditBalance: 0,
+          collectedToday: 0,
+        });
+
+      const agg = map.get(key);
+      agg.receipts += 1;
+      agg.totalBought += Number(r.total || 0);
+      agg.collectedToday += Number(r.collected || 0);
+
+      if (r.isCredit) {
+        agg.creditCreated += Number(r.total || 0);
+        agg.creditBalance += Number(r.balance || 0);
+      }
+    }
+    return Array.from(map.values()).sort(
+      (a, b) => (b.totalBought || 0) - (a.totalBought || 0)
+    );
+  }, [receiptsForDay]);
+
+  const filteredItems = useMemo(() => {
+    let rows = flattenedItems;
+
+    if (filterPaidCredit === "credit") rows = rows.filter((row) => row.isCreditSale);
+    else if (filterPaidCredit === "paid") rows = rows.filter((row) => !row.isCreditSale);
+
+    if (paymentFilter !== "all") {
+      if (paymentFilter === "credit") rows = rows.filter((r) => r.isCreditSale);
+      else rows = rows.filter((r) => !r.isCreditSale && (r.paymentType || "") === paymentFilter);
+    }
+
+    return rows;
+  }, [flattenedItems, filterPaidCredit, paymentFilter]);
+
+  const selectedReceipt = useMemo(() => {
+    if (!selectedSaleId) return null;
+    return (
+      receiptsForDay.find((r) => Number(r.id) === Number(selectedSaleId)) || null
+    );
+  }, [selectedSaleId, receiptsForDay]);
 
   // -------------------------
-  // Summary
+  // Summary (same 4 stats idea)
   // -------------------------
   const summary = useMemo(() => {
     let totalSales = 0;
     let totalProfit = 0;
     let piecesSold = 0;
 
-    for (const sale of sales || []) {
-      const { total, profit } = getSaleTotals(sale);
-      totalSales += total;
-      totalProfit += profit;
+    for (const r of receiptsForDay || []) {
+      totalSales += Number(r.total || 0);
+      totalProfit += Number(r.profit || 0);
     }
-
-    for (const row of itemsRows || []) {
+    for (const row of flattenedItems || []) {
       piecesSold += Number(row.qtyPieces || 0);
     }
 
@@ -535,328 +684,72 @@ function SalesHistoryPage() {
       totalSales,
       totalProfit,
       piecesSold,
-      receiptsCount: (sales || []).length,
+      receiptsCount: (receiptsForDay || []).length,
     };
-  }, [sales, itemsRows]);
+  }, [receiptsForDay, flattenedItems]);
 
-  // =========================
-  // Receipt Item Pad (modal)
-  // =========================
-  const [padOpen, setPadOpen] = useState(false);
-  const [padSaleId, setPadSaleId] = useState(null);
+  // -------------------------
+  // ✅ Navigation to SalesPOS Current Sale (edit handoff)
+  // -------------------------
+  const goToSalesPOS = useCallback(
+    (paramsObj) => {
+      const sp = new URLSearchParams();
+      Object.entries(paramsObj || {}).forEach(([k, v]) => {
+        if (v === undefined || v === null || String(v).trim() === "") return;
+        sp.set(k, String(v));
+      });
 
-  const [padLoading, setPadLoading] = useState(false);
-  const [padError, setPadError] = useState("");
+      const url = sp.toString() ? `${salesPosPath}?${sp.toString()}` : salesPosPath;
+      navigate(url);
+    },
+    [navigate, salesPosPath]
+  );
 
-  const [padSale, setPadSale] = useState(null); // full sale object (with lines)
-  const [padDraftLines, setPadDraftLines] = useState([]); // editable lines
+  const startEditReceipt = useCallback(
+    (saleId, saleLineId) => {
+      const sid = saleId != null ? Number(saleId) : null;
+      const slid = saleLineId != null ? Number(saleLineId) : null;
+      if (!sid) return;
 
-  // Add-item sub-panel
-  const [addMode, setAddMode] = useState(false);
-  const [addSearch, setAddSearch] = useState("");
-  const [addItemId, setAddItemId] = useState("");
-  const [addQty, setAddQty] = useState("");
-  const [addPrice, setAddPrice] = useState("");
-
-  const closePad = useCallback(() => {
-    setPadOpen(false);
-    setPadSaleId(null);
-    setPadSale(null);
-    setPadDraftLines([]);
-    setPadError("");
-    setAddMode(false);
-    setAddSearch("");
-    setAddItemId("");
-    setAddQty("");
-    setAddPrice("");
-  }, []);
-
-  // ESC closes
-  useEffect(() => {
-    if (!padOpen) return;
-    const onKey = (e) => {
-      if (e.key === "Escape") closePad();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [padOpen, closePad]);
-
-  const openPadForSale = useCallback(
-    async (saleId) => {
-      if (!saleId) return;
-      setPadOpen(true);
-      setPadSaleId(saleId);
-      setPadSale(null);
-      setPadDraftLines([]);
-      setPadError("");
-      setAddMode(false);
-
+      // ✅ Keep EXACT same behavior as MySalesTodayTab (handoff hints)
       try {
-        setPadLoading(true);
-
-        const res = await fetch(`${API_BASE}/sales/${saleId}`, {
-          headers: authHeadersNoJson,
-          cache: "no-store",
-        });
-
-        if (!res.ok) {
-          let detail = `Failed to load receipt #${saleId} (status ${res.status}).`;
-          try {
-            const j = await res.json();
-            if (j?.detail) {
-              detail = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
-            }
-          } catch {}
-          throw new Error(detail);
-        }
-
-        const fullSale = await res.json();
-        const lines = pickLines(fullSale);
-
-        setPadSale(fullSale);
-        // Normalize into editable lines
-        setPadDraftLines(
-          lines.map((ln) => {
-            const f = extractLineFields(ln);
-            return {
-              _key: String(f.lineId ?? Math.random().toString(16).slice(2)),
-              lineId: f.lineId ?? null,
-              itemId: f.itemId ?? null,
-              qtyPieces: f.qty ?? 0,
-              unitPrice: f.unitPrice ?? 0,
-            };
-          })
-        );
-      } catch (err) {
-        console.error(err);
-        setPadError(err.message || "Failed to load receipt.");
-      } finally {
-        setPadLoading(false);
+        localStorage.setItem("iclas_edit_sale_id", String(sid));
+        if (slid != null) localStorage.setItem("iclas_edit_sale_line_id", String(slid));
+        else localStorage.removeItem("iclas_edit_sale_line_id");
+      } catch {
+        // ignore
       }
+
+      // ✅ SalesPOS already understands editSaleId in URL
+      goToSalesPOS({ tab: "current", editSaleId: sid });
     },
-    [authHeadersNoJson]
+    [goToSalesPOS]
   );
 
-  const updateDraftLine = useCallback((key, patch) => {
-    setPadDraftLines((prev) =>
-      (prev || []).map((l) => (l._key === key ? { ...l, ...patch } : l))
-    );
-  }, []);
+  const openAddMissingSaleForDate = useCallback(() => {
+    // Owner/Manager only: open Current sale tab on past workDate
+    if (!canEditHistory) return;
+    goToSalesPOS({ tab: "current", workDate: selectedDate });
+  }, [canEditHistory, goToSalesPOS, selectedDate]);
 
-  const itemsForAddPicker = useMemo(() => {
-    const q = String(addSearch || "").trim().toLowerCase();
-    const list = (stockRows || []).map((r) => {
-      const id = r?.item_id;
-      const nm = r?.item_name || r?.item?.name || `Item #${id}`;
-      return { id, name: nm };
-    });
+  // -------------------------
+  // Date list (like Daily Closure history)
+  // -------------------------
+  const historyDates = useMemo(() => {
+    // Owner/Manager: last 31 days; others: only today
+    if (!canEditHistory) return [todayStr];
+    return getRecentDatesList(31);
+  }, [canEditHistory, todayStr]);
 
-    if (!q) return list.slice(0, 200);
-    return list
-      .filter((x) => String(x.name).toLowerCase().includes(q) || String(x.id).includes(q))
-      .slice(0, 200);
-  }, [stockRows, addSearch]);
-
-  const buildPutPayloadFromDraft = useCallback(
-    (saleObj, draftLines) => {
-      const sale = saleObj || {};
-      const linesPayload = (draftLines || []).map((l) => {
-        return {
-          item_id: l.itemId,
-          quantity_pieces: Number(l.qtyPieces),
-          sale_price_per_piece: Number(l.unitPrice),
-        };
-      });
-
-      return {
-        shop_id: sale.shop_id ?? sale.shopId,
-        payment_type: sale.payment_type ?? sale.paymentType ?? null,
-        is_credit_sale: sale.is_credit_sale ?? sale.isCreditSale ?? false,
-        customer_name: sale.customer_name ?? sale.customerName ?? null,
-        customer_phone: sale.customer_phone ?? sale.customerPhone ?? null,
-        lines: linesPayload,
-      };
+  const onPickDate = useCallback(
+    (ymd) => {
+      const d = String(ymd || "").trim();
+      if (!d) return;
+      if (!canEditHistory && d !== todayStr) return;
+      setSelectedDate(d);
     },
-    []
+    [canEditHistory, todayStr]
   );
-
-  const savePadChanges = useCallback(async () => {
-    if (!padSaleId) return;
-    if (!padSale) return;
-
-    // Permission guard
-    if (!canEditHistory) {
-      setPadError("Only Owner/Manager can edit past sales.");
-      return;
-    }
-
-    // Validate lines
-    for (const l of padDraftLines || []) {
-      const qty = Number(l.qtyPieces);
-      const price = Number(l.unitPrice);
-      if (!Number.isFinite(qty) || qty <= 0) {
-        setPadError("Each line quantity must be greater than 0.");
-        return;
-      }
-      if (!Number.isFinite(price) || price <= 0) {
-        setPadError("Each line price must be greater than 0.");
-        return;
-      }
-      if (!l.itemId) {
-        setPadError("Each line must have an item.");
-        return;
-      }
-    }
-
-    try {
-      setPadLoading(true);
-      setPadError("");
-
-      const payload = buildPutPayloadFromDraft(padSale, padDraftLines);
-
-      const putRes = await fetch(`${API_BASE}/sales/${padSaleId}`, {
-        method: "PUT",
-        headers: {
-          ...authHeadersNoJson,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
-
-      if (!putRes.ok) {
-        let detail = `Failed to update receipt (status ${putRes.status}).`;
-        try {
-          const j = await putRes.json();
-          if (j?.detail) {
-            detail = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
-          }
-        } catch {}
-        throw new Error(detail);
-      }
-
-      await putRes.json();
-
-      // Reload day + stock to keep UI consistent
-      await loadSalesForDate(selectedDate);
-      await loadStock();
-
-      // Reload pad with fresh sale
-      await openPadForSale(padSaleId);
-    } catch (err) {
-      console.error(err);
-      setPadError(err.message || "Failed to update receipt.");
-    } finally {
-      setPadLoading(false);
-    }
-  }, [
-    padSaleId,
-    padSale,
-    padDraftLines,
-    authHeadersNoJson,
-    canEditHistory,
-    buildPutPayloadFromDraft,
-    loadSalesForDate,
-    selectedDate,
-    loadStock,
-    openPadForSale,
-  ]);
-
-  const addNewItemToReceipt = useCallback(async () => {
-    if (!padSaleId || !padSale) return;
-
-    if (!canEditHistory) {
-      setPadError("Only Owner/Manager can add items to past sales.");
-      return;
-    }
-
-    const itemIdNum = Number(addItemId);
-    const qtyNum = Number(addQty);
-    const priceNum = Number(addPrice);
-
-    if (!Number.isFinite(itemIdNum) || itemIdNum <= 0) {
-      setPadError("Choose an item to add.");
-      return;
-    }
-    if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
-      setPadError("Quantity must be greater than 0.");
-      return;
-    }
-    if (!Number.isFinite(priceNum) || priceNum <= 0) {
-      setPadError("Unit price must be greater than 0.");
-      return;
-    }
-
-    try {
-      setPadLoading(true);
-      setPadError("");
-
-      const nextDraft = [
-        ...(padDraftLines || []),
-        {
-          _key: `new-${Date.now()}`,
-          lineId: null,
-          itemId: itemIdNum,
-          qtyPieces: qtyNum,
-          unitPrice: priceNum,
-        },
-      ];
-
-      const payload = buildPutPayloadFromDraft(padSale, nextDraft);
-
-      const putRes = await fetch(`${API_BASE}/sales/${padSaleId}`, {
-        method: "PUT",
-        headers: {
-          ...authHeadersNoJson,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
-
-      if (!putRes.ok) {
-        let detail = `Failed to add item (status ${putRes.status}).`;
-        try {
-          const j = await putRes.json();
-          if (j?.detail) {
-            detail = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
-          }
-        } catch {}
-        throw new Error(detail);
-      }
-
-      await putRes.json();
-
-      // reload day + stock, then reload pad
-      await loadSalesForDate(selectedDate);
-      await loadStock();
-      await openPadForSale(padSaleId);
-
-      // reset add form
-      setAddMode(false);
-      setAddSearch("");
-      setAddItemId("");
-      setAddQty("");
-      setAddPrice("");
-    } catch (err) {
-      console.error(err);
-      setPadError(err.message || "Failed to add item.");
-    } finally {
-      setPadLoading(false);
-    }
-  }, [
-    padSaleId,
-    padSale,
-    padDraftLines,
-    addItemId,
-    addQty,
-    addPrice,
-    authHeadersNoJson,
-    canEditHistory,
-    buildPutPayloadFromDraft,
-    loadSalesForDate,
-    selectedDate,
-    loadStock,
-    openPadForSale,
-  ]);
 
   // -------------------------
   // Guards
@@ -906,12 +799,186 @@ function SalesHistoryPage() {
     );
   }
 
-  const isViewingToday = selectedDate === todayDateString();
+  const isViewingToday = selectedDate === todayStr;
+
+  const renderReceiptDetails = () => {
+    if (historyView !== "receipts") return null;
+    if (!selectedReceipt) return null;
+
+    const customerLabel = selectedReceipt.customerName
+      ? `${selectedReceipt.customerName}${
+          selectedReceipt.customerPhone ? ` (${selectedReceipt.customerPhone})` : ""
+        }`
+      : "-";
+
+    const paymentLabel = selectedReceipt.isCredit
+      ? "Credit"
+      : selectedReceipt.payment === "cash"
+      ? "Cash"
+      : selectedReceipt.payment === "card"
+      ? "POS"
+      : selectedReceipt.payment === "mobile"
+      ? "MoMo"
+      : selectedReceipt.payment;
+
+    return (
+      <div
+        style={{
+          marginBottom: "14px",
+          backgroundColor: "#ffffff",
+          borderRadius: "18px",
+          boxShadow: "0 10px 30px rgba(15,37,128,0.06)",
+          padding: "14px 18px 14px",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "10px",
+          }}
+        >
+          <div>
+            <div style={{ fontSize: "14px", fontWeight: 900 }}>Sale details</div>
+            <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "2px" }}>
+              Receipt #{selectedReceipt.id} · {formatTimeHM(selectedReceipt.time)} ·{" "}
+              {paymentLabel}
+            </div>
+            <div style={{ fontSize: "12px", color: "#6b7280" }}>
+              Customer: <strong>{customerLabel}</strong>
+              {selectedReceipt.dueDate
+                ? ` · Due: ${String(selectedReceipt.dueDate).slice(0, 10)}`
+                : ""}
+            </div>
+            <div style={{ fontSize: "12px", color: "#9ca3af", marginTop: "4px" }}>
+              Tip: click a line below to edit that receipt in <strong>Current sale</strong>.
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setSelectedSaleId(null)}
+            style={{
+              border: "1px solid #e5e7eb",
+              background: "#ffffff",
+              borderRadius: "999px",
+              padding: "6px 10px",
+              fontSize: "12px",
+              cursor: "pointer",
+            }}
+          >
+            Close ✕
+          </button>
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(4, 1fr)",
+            gap: "12px",
+            marginTop: "12px",
+          }}
+        >
+          <div>
+            <div style={{ fontSize: "12px", color: "#6b7280" }}>Total</div>
+            <div style={{ fontSize: "18px", fontWeight: 900 }}>
+              {formatMoney(selectedReceipt.total)}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: "12px", color: "#6b7280" }}>Profit</div>
+            <div style={{ fontSize: "16px", fontWeight: 800, color: "#16a34a" }}>
+              {formatMoney(selectedReceipt.profit)}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: "12px", color: "#6b7280" }}>Collected now</div>
+            <div style={{ fontSize: "16px", fontWeight: 800 }}>
+              {formatMoney(selectedReceipt.collected)}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: "12px", color: "#6b7280" }}>Credit balance</div>
+            <div
+              style={{
+                fontSize: "16px",
+                fontWeight: 900,
+                color: selectedReceipt.balance > 0 ? "#b91c1c" : "#166534",
+              }}
+            >
+              {formatMoney(selectedReceipt.balance)}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ marginTop: "12px" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+            <thead>
+              <tr
+                style={{
+                  textAlign: "left",
+                  borderBottom: "1px solid #e5e7eb",
+                  fontSize: "11px",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.08em",
+                  color: "#6b7280",
+                }}
+              >
+                <th style={{ padding: "6px 4px" }}>Item</th>
+                <th style={{ padding: "6px 4px", textAlign: "right" }}>Qty</th>
+                <th style={{ padding: "6px 4px", textAlign: "right" }}>Unit</th>
+                <th style={{ padding: "6px 4px", textAlign: "right" }}>Total</th>
+                <th style={{ padding: "6px 4px", textAlign: "right" }}>Profit</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(selectedReceipt.lines || []).map((line) => {
+                const f = extractLineFields(line);
+                const itemName =
+                  line.item_name ||
+                  stockByItemId[f.itemId]?.item_name ||
+                  `Item #${f.itemId}`;
+
+                return (
+                  <tr
+                    key={line.id || `${selectedReceipt.id}-${f.itemId}`}
+                    style={{ borderBottom: "1px solid #f3f4f6", cursor: "pointer" }}
+                    title="Click to edit this receipt in Current sale"
+                    onClick={() => {
+                      setSelectedSaleId(null);
+                      startEditReceipt(selectedReceipt.id, f.lineId ?? null);
+                    }}
+                  >
+                    <td style={{ padding: "8px 4px", color: "#2563eb", fontWeight: 700 }}>
+                      {itemName}
+                    </td>
+                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                      {formatQty(f.qty)}
+                    </td>
+                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                      {formatMoney(f.unitPrice)}
+                    </td>
+                    <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 700 }}>
+                      {formatMoney(f.total)}
+                    </td>
+                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                      {formatMoney(f.profit)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div style={{ padding: "16px 24px 24px" }}>
       <button
-        onClick={() => navigate(`/shops/${shopId}`)}
+        onClick={() => navigate(workspacePath)}
         style={{
           border: "none",
           background: "transparent",
@@ -935,14 +1002,7 @@ function SalesHistoryPage() {
         }}
       >
         <div>
-          <h1
-            style={{
-              fontSize: "28px",
-              fontWeight: 800,
-              letterSpacing: "0.02em",
-              margin: 0,
-            }}
-          >
+          <h1 style={{ fontSize: "28px", fontWeight: 800, letterSpacing: "0.02em", margin: 0 }}>
             Sales History
           </h1>
           <p style={{ color: "#6b7280", marginTop: "0.5rem" }}>
@@ -953,21 +1013,20 @@ function SalesHistoryPage() {
               </span>
             )}
           </p>
+
           {isCashier && (
             <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 800 }}>
-              Cashier view is read-only here. Use SalesPOS for today’s selling.
+              Cashier can view <strong>Today only</strong>. Use SalesPOS for selling.
             </div>
           )}
           {!canEditHistory && !isCashier && (
             <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 800 }}>
-              You do not have permission to edit history. Only Owner/Manager can edit past
-              sales.
+              Only Owner/Manager can open past-day history.
             </div>
           )}
           {canEditHistory && !isViewingToday && (
             <div style={{ fontSize: 12, color: "#374151", fontWeight: 700 }}>
-              You’re editing history for <strong>{selectedDate}</strong>. Changes affect stock
-              and totals.
+              Viewing history for <strong>{selectedDate}</strong>.
             </div>
           )}
         </div>
@@ -978,17 +1037,20 @@ function SalesHistoryPage() {
             <input
               type="date"
               value={selectedDate}
+              disabled={!canEditHistory}
               onChange={(e) => setSelectedDate(e.target.value)}
               style={{
                 padding: "6px 10px",
                 borderRadius: "999px",
                 border: "1px solid #d1d5db",
                 fontSize: "13px",
+                background: canEditHistory ? "#fff" : "#f3f4f6",
               }}
+              title={canEditHistory ? "Pick a date" : "Owner/Manager only"}
             />
             <button
               type="button"
-              onClick={() => setSelectedDate(todayDateString())}
+              onClick={() => setSelectedDate(todayStr)}
               style={{
                 marginLeft: 8,
                 padding: "6px 10px",
@@ -1003,6 +1065,27 @@ function SalesHistoryPage() {
               Today
             </button>
           </div>
+
+          {canEditHistory && !isViewingToday ? (
+            <button
+              type="button"
+              onClick={openAddMissingSaleForDate}
+              style={{
+                padding: "8px 12px",
+                borderRadius: 999,
+                border: "none",
+                background: "linear-gradient(135deg, #2563eb, #1d4ed8)",
+                color: "#fff",
+                cursor: "pointer",
+                fontWeight: 900,
+                fontSize: 12,
+                boxShadow: "0 4px 14px rgba(37, 99, 235, 0.35)",
+              }}
+              title="Open SalesPOS Current Sale for this date (add missing sale)"
+            >
+              + Add missing sale (this date)
+            </button>
+          ) : null}
 
           <button
             type="button"
@@ -1044,422 +1127,416 @@ function SalesHistoryPage() {
         </div>
       )}
 
-      {/* Summary card */}
+      {/* ✅ Layout: Date list (left) + Content (right) */}
       <div
         style={{
           marginTop: 12,
-          marginBottom: "12px",
-          backgroundColor: "#ffffff",
-          borderRadius: "18px",
-          boxShadow: "0 10px 30px rgba(15,37,128,0.06)",
-          padding: "14px 18px 14px",
-          fontSize: "12px",
+          display: "grid",
+          gridTemplateColumns: canEditHistory ? "260px 1fr" : "1fr",
+          gap: 12,
+          alignItems: "start",
         }}
       >
-        <div style={{ fontSize: "14px", fontWeight: 800, marginBottom: "6px" }}>Summary</div>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
-            rowGap: "8px",
-            columnGap: "16px",
-          }}
-        >
-          <div>
-            <div style={{ color: "#6b7280" }}>Total sales</div>
-            <div style={{ fontSize: "18px", fontWeight: 900 }}>
-              {formatMoney(summary.totalSales)}
-            </div>
-          </div>
-
-          <div>
-            <div style={{ color: "#6b7280" }}>Total profit</div>
-            <div style={{ fontSize: "16px", fontWeight: 800, color: "#16a34a" }}>
-              {formatMoney(summary.totalProfit)}
-            </div>
-          </div>
-
-          <div>
-            <div style={{ color: "#6b7280" }}>Pieces sold</div>
-            <div style={{ fontSize: "16px", fontWeight: 800 }}>
-              {formatMoney(summary.piecesSold)}
-            </div>
-          </div>
-
-          <div>
-            <div style={{ color: "#6b7280" }}>Receipts</div>
-            <div style={{ fontSize: "16px", fontWeight: 800 }}>
-              {formatMoney(summary.receiptsCount)}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Clean items list */}
-      <div
-        style={{
-          backgroundColor: "#ffffff",
-          borderRadius: "18px",
-          boxShadow: "0 6px 18px rgba(15,37,128,0.04)",
-          padding: "10px 12px 10px",
-        }}
-      >
-        {(loadingSales || loadingStock) && (
-          <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
-            Loading items...
-          </div>
-        )}
-
-        {!loadingSales && itemsRows.length === 0 && (
-          <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
-            No sales/items found for this date.
-          </div>
-        )}
-
-        {itemsRows.length > 0 && (
-          <>
-            <div style={{ marginBottom: 8, fontSize: 12, color: "#6b7280" }}>
-              Tip: click a row to open the <strong>Receipt Item Pad</strong> and{" "}
-              <strong>add forgotten items</strong>.
-            </div>
-
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
-              <thead>
-                <tr
-                  style={{
-                    textAlign: "left",
-                    borderBottom: "1px solid #e5e7eb",
-                    fontSize: "11px",
-                    textTransform: "uppercase",
-                    letterSpacing: "0.08em",
-                    color: "#6b7280",
-                  }}
-                >
-                  <th style={{ padding: "6px 4px" }}>Time</th>
-                  <th style={{ padding: "6px 4px" }}>Item</th>
-                  <th style={{ padding: "6px 4px" }}>Receipt</th>
-                  <th style={{ padding: "6px 4px", textAlign: "right" }}>Qty</th>
-                  <th style={{ padding: "6px 4px", textAlign: "right" }}>Unit price</th>
-                  <th style={{ padding: "6px 4px", textAlign: "right" }}>Total</th>
-                  <th style={{ padding: "6px 4px", textAlign: "right" }}>Profit</th>
-                </tr>
-              </thead>
-              <tbody>
-                {itemsRows.map((row) => (
-                  <tr
-                    key={row.id}
-                    style={{
-                      borderBottom: "1px solid #f3f4f6",
-                      cursor: "pointer",
-                    }}
-                    onClick={() => openPadForSale(row.saleId)}
-                    title="Open Receipt Item Pad"
-                  >
-                    <td style={{ padding: "8px 4px" }}>{formatTimeHM(row.saleDate)}</td>
-
-                    <td style={{ padding: "8px 4px" }}>
-                      <div style={{ fontWeight: 800, color: "#111827" }}>{row.itemName}</div>
-                      <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>
-                        {formatDateTime(row.saleDate)}
-                      </div>
-                    </td>
-
-                    <td style={{ padding: "8px 4px" }}>
-                      <span style={{ fontWeight: 900, color: "#2563eb" }}>#{row.saleId}</span>
-                    </td>
-
-                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                      {formatMoney(row.qtyPieces)}
-                    </td>
-                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                      {formatMoney(row.unitPrice)}
-                    </td>
-                    <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 800 }}>
-                      {formatMoney(row.total)}
-                    </td>
-                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                      {formatMoney(row.profit)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </>
-        )}
-      </div>
-
-      {/* Receipt Item Pad Modal */}
-      {padOpen && (
-        <div
-          onClick={closePad}
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(17,24,39,0.55)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 14,
-            zIndex: 9999,
-          }}
-        >
+        {/* Date list */}
+        {canEditHistory ? (
           <div
-            onClick={(e) => e.stopPropagation()}
             style={{
-              width: "min(980px, 96vw)",
-              maxHeight: "92vh",
-              overflow: "auto",
-              background: "#ffffff",
+              background: "#fff",
+              border: "1px solid #e5e7eb",
               borderRadius: 18,
-              boxShadow: "0 20px 60px rgba(0,0,0,0.35)",
-              padding: 14,
+              padding: 10,
+              boxShadow: "0 6px 18px rgba(15,37,128,0.04)",
+            }}
+          >
+            <div style={{ fontSize: 12, fontWeight: 900, color: "#111827", marginBottom: 8 }}>
+              Dates (last 31 days)
+            </div>
+
+            <div style={{ display: "grid", gap: 6, maxHeight: "72vh", overflow: "auto" }}>
+              {historyDates.map((d) => {
+                const isActive = d === selectedDate;
+                const isToday = d === todayStr;
+                return (
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => onPickDate(d)}
+                    style={{
+                      textAlign: "left",
+                      borderRadius: 14,
+                      border: isActive ? "1px solid #2563eb" : "1px solid #e5e7eb",
+                      background: isActive ? "#eff6ff" : "#fff",
+                      padding: "8px 10px",
+                      cursor: "pointer",
+                      fontWeight: isActive ? 900 : 800,
+                      color: "#111827",
+                    }}
+                    title="Click to open items for this date"
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                      <span>{formatDateLabel(d)}</span>
+                      {isToday ? (
+                        <span
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 900,
+                            color: "#166534",
+                            background: "#ecfdf3",
+                            border: "1px solid #bbf7d0",
+                            padding: "2px 8px",
+                            borderRadius: 999,
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          Today
+                        </span>
+                      ) : null}
+                    </div>
+                    <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>{d}</div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+
+        {/* Main content */}
+        <div>
+          {/* Summary card */}
+          <div
+            style={{
+              marginBottom: "12px",
+              backgroundColor: "#ffffff",
+              borderRadius: "18px",
+              boxShadow: "0 10px 30px rgba(15,37,128,0.06)",
+              padding: "14px 18px 14px",
+              fontSize: "12px",
+            }}
+          >
+            <div style={{ fontSize: "14px", fontWeight: 800, marginBottom: "6px" }}>
+              Summary
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+                rowGap: "8px",
+                columnGap: "16px",
+              }}
+            >
+              <div>
+                <div style={{ color: "#6b7280" }}>Total sales</div>
+                <div style={{ fontSize: "18px", fontWeight: 900 }}>
+                  {formatMoney(summary.totalSales)}
+                </div>
+              </div>
+
+              <div>
+                <div style={{ color: "#6b7280" }}>Total profit</div>
+                <div style={{ fontSize: "16px", fontWeight: 800, color: "#16a34a" }}>
+                  {formatMoney(summary.totalProfit)}
+                </div>
+              </div>
+
+              <div>
+                <div style={{ color: "#6b7280" }}>Pieces sold</div>
+                <div style={{ fontSize: "16px", fontWeight: 800 }}>
+                  {formatQty(summary.piecesSold)}
+                </div>
+              </div>
+
+              <div>
+                <div style={{ color: "#6b7280" }}>Receipts</div>
+                <div style={{ fontSize: "16px", fontWeight: 800 }}>
+                  {formatMoney(summary.receiptsCount)}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* View switch + filters (same pattern as MySalesTodayTab) */}
+          <div
+            style={{
+              marginBottom: "10px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: "12px",
+              flexWrap: "wrap",
             }}
           >
             <div
               style={{
-                display: "flex",
-                justifyContent: "space-between",
-                gap: 10,
-                alignItems: "center",
-                flexWrap: "wrap",
+                display: "inline-flex",
+                backgroundColor: "#e5e7eb",
+                borderRadius: "999px",
+                padding: "2px",
               }}
             >
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 12, color: "#6b7280", fontWeight: 800 }}>
-                  Receipt Item Pad
-                </div>
-                <div
-                  style={{
-                    fontSize: 18,
-                    fontWeight: 900,
-                    color: "#111827",
-                    whiteSpace: "nowrap",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                  }}
-                >
-                  Receipt #{padSaleId} • {selectedDate}
-                </div>
-                {padSale?.sale_date && (
-                  <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>
-                    Time: {formatDateTime(padSale.sale_date)}
-                  </div>
-                )}
-              </div>
-
-              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                <button
-                  type="button"
-                  onClick={closePad}
-                  style={{
-                    padding: "8px 12px",
-                    borderRadius: 999,
-                    border: "1px solid #e5e7eb",
-                    background: "#fff",
-                    cursor: "pointer",
-                    fontWeight: 800,
-                    fontSize: 12,
-                  }}
-                >
-                  Close
-                </button>
-
-                <button
-                  type="button"
-                  disabled={padLoading || !canEditHistory}
-                  onClick={() => setAddMode((v) => !v)}
-                  style={{
-                    padding: "8px 12px",
-                    borderRadius: 999,
-                    border: "none",
-                    background: canEditHistory
-                      ? "linear-gradient(135deg, #2563eb, #1d4ed8)"
-                      : "#9ca3af",
-                    color: "#fff",
-                    cursor: canEditHistory ? "pointer" : "not-allowed",
-                    fontWeight: 900,
-                    fontSize: 12,
-                    boxShadow: canEditHistory ? "0 4px 14px rgba(37, 99, 235, 0.35)" : "none",
-                  }}
-                  title={canEditHistory ? "Add forgotten item to this receipt" : "Owner/Manager only"}
-                >
-                  + Add item
-                </button>
-
-                <button
-                  type="button"
-                  disabled={padLoading || !canEditHistory}
-                  onClick={savePadChanges}
-                  style={{
-                    padding: "8px 14px",
-                    borderRadius: 999,
-                    border: "none",
-                    background: canEditHistory
-                      ? "linear-gradient(135deg, #16a34a, #15803d)"
-                      : "#9ca3af",
-                    color: "#fff",
-                    cursor: canEditHistory ? "pointer" : "not-allowed",
-                    fontWeight: 900,
-                    fontSize: 12,
-                    boxShadow: canEditHistory ? "0 4px 14px rgba(22, 163, 74, 0.28)" : "none",
-                  }}
-                  title={canEditHistory ? "Save receipt changes" : "Owner/Manager only"}
-                >
-                  {padLoading ? "Saving..." : "Save changes"}
-                </button>
-              </div>
+              {[
+                { key: "items", label: "Items" },
+                { key: "receipts", label: "Receipts" },
+                { key: "customers", label: "Customers" },
+              ].map((opt) => {
+                const isActive = historyView === opt.key;
+                return (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => {
+                      setHistoryView(opt.key);
+                      setSelectedSaleId(null);
+                    }}
+                    style={{
+                      border: "none",
+                      cursor: "pointer",
+                      padding: "6px 12px",
+                      borderRadius: "999px",
+                      fontSize: "12px",
+                      fontWeight: 700,
+                      backgroundColor: isActive ? "#ffffff" : "transparent",
+                      color: isActive ? "#111827" : "#4b5563",
+                      boxShadow: isActive ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
             </div>
 
-            {padError && (
+            <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
               <div
                 style={{
-                  marginTop: 10,
-                  padding: "10px 12px",
-                  borderRadius: 14,
-                  background: "#fef2f2",
-                  border: "1px solid #fecaca",
-                  color: "#b91c1c",
-                  fontWeight: 800,
-                  fontSize: 12,
+                  display: "inline-flex",
+                  backgroundColor: "#e5e7eb",
+                  borderRadius: "999px",
+                  padding: "2px",
                 }}
               >
-                {padError}
+                {[
+                  { key: "all", label: "All" },
+                  { key: "paid", label: "Paid only" },
+                  { key: "credit", label: "Credit only" },
+                ].map((opt) => {
+                  const isActive = filterPaidCredit === opt.key;
+                  return (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      onClick={() => setFilterPaidCredit(opt.key)}
+                      style={{
+                        border: "none",
+                        cursor: "pointer",
+                        padding: "4px 10px",
+                        borderRadius: "999px",
+                        fontSize: "12px",
+                        fontWeight: 600,
+                        backgroundColor: isActive ? "#ffffff" : "transparent",
+                        color: isActive ? "#111827" : "#4b5563",
+                        boxShadow: isActive ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
               </div>
-            )}
 
-            {!canEditHistory && (
-              <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
-                This pad is read-only for your role. Only Owner/Manager can edit or add items.
-              </div>
-            )}
-
-            {padLoading && !padSale && (
-              <div style={{ marginTop: 12, fontSize: 13, color: "#6b7280" }}>
-                Loading receipt...
-              </div>
-            )}
-
-            {addMode && (
-              <div
+              <select
+                value={paymentFilter}
+                onChange={(e) => setPaymentFilter(e.target.value)}
                 style={{
-                  marginTop: 12,
-                  borderRadius: 16,
-                  border: "1px dashed #d1d5db",
-                  background: "linear-gradient(135deg, #f9fafb 0%, #eef2ff 100%)",
-                  padding: 12,
+                  padding: "8px 12px",
+                  borderRadius: "999px",
+                  border: "1px solid #d1d5db",
+                  backgroundColor: "#fff",
+                  fontSize: "12px",
                 }}
+                title="Payment filter"
               >
-                <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 8 }}>
-                  Add forgotten item
-                </div>
+                <option value="all">Payment: All</option>
+                <option value="cash">Cash</option>
+                <option value="mobile">MoMo</option>
+                <option value="card">POS</option>
+                <option value="credit">Credit</option>
+              </select>
+            </div>
+          </div>
 
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                  <input
-                    value={addSearch}
-                    onChange={(e) => setAddSearch(e.target.value)}
-                    placeholder="Search item name / id..."
-                    style={{
-                      minWidth: 240,
-                      flex: 1,
-                      padding: "8px 12px",
-                      borderRadius: 999,
-                      border: "1px solid #d1d5db",
-                      fontSize: 13,
-                      background: "#fff",
-                    }}
-                  />
+          {/* Receipts-only details */}
+          {renderReceiptDetails()}
 
-                  <select
-                    value={addItemId}
-                    onChange={(e) => setAddItemId(e.target.value)}
-                    style={{
-                      minWidth: 240,
-                      flex: 1,
-                      padding: "8px 12px",
-                      borderRadius: 999,
-                      border: "1px solid #d1d5db",
-                      fontSize: 13,
-                      background: "#fff",
-                    }}
-                  >
-                    <option value="">Select item…</option>
-                    {itemsForAddPicker.map((it) => (
-                      <option key={it.id} value={String(it.id)}>
-                        #{it.id} — {it.name}
-                      </option>
-                    ))}
-                  </select>
-
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={addQty}
-                    onChange={(e) => setAddQty(e.target.value)}
-                    placeholder="Qty"
-                    style={{
-                      width: 120,
-                      padding: "8px 12px",
-                      borderRadius: 999,
-                      border: "1px solid #d1d5db",
-                      fontSize: 13,
-                      textAlign: "right",
-                      background: "#fff",
-                    }}
-                  />
-
-                  <input
-                    type="number"
-                    step="1"
-                    value={addPrice}
-                    onChange={(e) => setAddPrice(e.target.value)}
-                    placeholder="Unit price"
-                    style={{
-                      width: 140,
-                      padding: "8px 12px",
-                      borderRadius: 999,
-                      border: "1px solid #d1d5db",
-                      fontSize: 13,
-                      textAlign: "right",
-                      background: "#fff",
-                    }}
-                  />
-
-                  <button
-                    type="button"
-                    disabled={padLoading || !canEditHistory}
-                    onClick={addNewItemToReceipt}
-                    style={{
-                      padding: "8px 14px",
-                      borderRadius: 999,
-                      border: "none",
-                      background: canEditHistory
-                        ? "linear-gradient(135deg, #111827, #0f172a)"
-                        : "#9ca3af",
-                      color: "#fff",
-                      cursor: canEditHistory ? "pointer" : "not-allowed",
-                      fontWeight: 900,
-                      fontSize: 12,
-                    }}
-                  >
-                    Add
-                  </button>
-                </div>
-
-                <div style={{ marginTop: 8, fontSize: 11, color: "#6b7280" }}>
-                  Tip: After adding, press <strong>Save changes</strong> if you also edited other
-                  lines.
-                </div>
+          {/* Main list card */}
+          <div
+            style={{
+              backgroundColor: "#ffffff",
+              borderRadius: "18px",
+              boxShadow: "0 6px 18px rgba(15,37,128,0.04)",
+              padding: "10px 12px 10px",
+            }}
+          >
+            {(loadingSales || loadingStock) ? (
+              <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
+                Loading…
               </div>
-            )}
-
-            {/* Lines editor */}
-            {padSale && (
-              <div style={{ marginTop: 12 }}>
-                <div style={{ fontSize: 13, fontWeight: 900, marginBottom: 8 }}>
-                  Items in this receipt
+            ) : historyView === "items" ? (
+              filteredItems.length === 0 ? (
+                <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
+                  No sales recorded for this filter on this date.
                 </div>
+              ) : (
+                <>
+                  <div style={{ marginBottom: 8, fontSize: 12, color: "#6b7280" }}>
+                    Tip: click an item to edit that receipt in <strong>SalesPOS → Current sale</strong>.
+                  </div>
 
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+                    <thead>
+                      <tr
+                        style={{
+                          textAlign: "left",
+                          borderBottom: "1px solid #e5e7eb",
+                          fontSize: "11px",
+                          textTransform: "uppercase",
+                          letterSpacing: "0.08em",
+                          color: "#6b7280",
+                        }}
+                      >
+                        <th style={{ padding: "6px 4px" }}>Time</th>
+                        <th style={{ padding: "6px 4px" }}>Item</th>
+                        <th style={{ padding: "6px 4px" }}>Customer</th>
+                        <th style={{ padding: "6px 4px" }}>Due</th>
+                        <th style={{ padding: "6px 4px", textAlign: "right" }}>Qty</th>
+                        <th style={{ padding: "6px 4px", textAlign: "right" }}>Unit price</th>
+                        <th style={{ padding: "6px 4px", textAlign: "right" }}>Total</th>
+                        <th style={{ padding: "6px 4px", textAlign: "right" }}>Profit</th>
+                        <th style={{ padding: "6px 4px" }}>Payment</th>
+                        <th style={{ padding: "6px 4px" }}>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredItems.map((row) => {
+                        const isOpenCredit = row.isCreditSale && Number(row.creditBalance || 0) > 0;
+                        const isSettledCredit = row.isCreditSale && !isOpenCredit;
+
+                        const statusLabel = isOpenCredit
+                          ? "Credit (Open)"
+                          : isSettledCredit
+                          ? "Paid (Credit settled)"
+                          : "Paid";
+
+                        const statusBg = isOpenCredit ? "#fef2f2" : "#ecfdf3";
+                        const statusBorder = isOpenCredit ? "#fecaca" : "#bbf7d0";
+                        const statusColor = isOpenCredit ? "#b91c1c" : "#166534";
+
+                        const paymentLabel = row.isCreditSale
+                          ? "Credit"
+                          : row.paymentType === "cash"
+                          ? "Cash"
+                          : row.paymentType === "card"
+                          ? "POS"
+                          : row.paymentType === "mobile"
+                          ? "MoMo"
+                          : row.paymentType || "N/A";
+
+                        const customerLabel = row.customerName
+                          ? `${row.customerName}${row.customerPhone ? ` (${row.customerPhone})` : ""}`
+                          : "-";
+                        const dueLabel = row.dueDate ? String(row.dueDate).slice(0, 10) : "-";
+
+                        return (
+                          <tr key={row.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
+                            <td style={{ padding: "8px 4px" }}>{formatTimeHM(row.time)}</td>
+
+                            <td style={{ padding: "8px 4px" }}>
+                              <div
+                                role="button"
+                                tabIndex={0}
+                                title={`Click to edit receipt #${row.saleId}`}
+                                onClick={() => startEditReceipt(row.saleId, row.saleLineId)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ")
+                                    startEditReceipt(row.saleId, row.saleLineId);
+                                }}
+                                style={{
+                                  cursor: "pointer",
+                                  userSelect: "none",
+                                  display: "inline-block",
+                                  maxWidth: "100%",
+                                }}
+                              >
+                                <span style={{ color: "#2563eb", fontWeight: 700 }}>
+                                  {row.itemName}
+                                </span>
+                                <div style={{ fontSize: "12px", color: "#9ca3af", marginTop: "2px" }}>
+                                  Receipt #{row.saleId}
+                                </div>
+                              </div>
+                            </td>
+
+                            <td style={{ padding: "8px 4px" }}>{customerLabel}</td>
+                            <td style={{ padding: "8px 4px" }}>{dueLabel}</td>
+
+                            <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                              {formatQty(row.qtyPieces)}
+                            </td>
+                            <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                              {formatMoney(row.unitPrice)}
+                            </td>
+                            <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600 }}>
+                              {formatMoney(row.total)}
+                            </td>
+                            <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                              {formatMoney(row.profit)}
+                            </td>
+
+                            <td style={{ padding: "8px 4px" }}>
+                              <span
+                                style={{
+                                  display: "inline-block",
+                                  padding: "2px 8px",
+                                  borderRadius: "999px",
+                                  backgroundColor: "#eff6ff",
+                                  color: "#1d4ed8",
+                                  fontSize: "11px",
+                                  fontWeight: 600,
+                                }}
+                              >
+                                {paymentLabel}
+                              </span>
+                            </td>
+
+                            <td style={{ padding: "8px 4px" }}>
+                              <span
+                                style={{
+                                  display: "inline-block",
+                                  padding: "2px 8px",
+                                  borderRadius: "999px",
+                                  background: statusBg,
+                                  border: `1px solid ${statusBorder}`,
+                                  color: statusColor,
+                                  fontSize: "11px",
+                                  fontWeight: 600,
+                                }}
+                              >
+                                {statusLabel}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </>
+              )
+            ) : historyView === "receipts" ? (
+              receiptsForDay.length === 0 ? (
+                <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
+                  No receipts for this date.
+                </div>
+              ) : (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
                   <thead>
                     <tr
                       style={{
@@ -1471,91 +1548,130 @@ function SalesHistoryPage() {
                         color: "#6b7280",
                       }}
                     >
-                      <th style={{ padding: "6px 4px" }}>Item</th>
-                      <th style={{ padding: "6px 4px", textAlign: "right" }}>Qty</th>
-                      <th style={{ padding: "6px 4px", textAlign: "right" }}>Unit price</th>
-                      <th style={{ padding: "6px 4px", textAlign: "right" }}>Line total</th>
+                      <th style={{ padding: "6px 4px" }}>Time</th>
+                      <th style={{ padding: "6px 4px" }}>Receipt</th>
+                      <th style={{ padding: "6px 4px" }}>Customer</th>
+                      <th style={{ padding: "6px 4px" }}>Payment</th>
+                      <th style={{ padding: "6px 4px", textAlign: "right" }}>Total</th>
+                      <th style={{ padding: "6px 4px", textAlign: "right" }}>Profit</th>
+                      <th style={{ padding: "6px 4px", textAlign: "right" }}>Balance</th>
+                      <th style={{ padding: "6px 4px" }}></th>
                     </tr>
                   </thead>
                   <tbody>
-                    {padDraftLines.map((l) => {
-                      const stockRow = l.itemId ? stockByItemId[l.itemId] : null;
-                      const nm =
-                        stockRow?.item_name ||
-                        stockRow?.item?.name ||
-                        (l.itemId != null ? `Item #${l.itemId}` : "Unknown item");
-                      const qty = Number(l.qtyPieces) || 0;
-                      const price = Number(l.unitPrice) || 0;
-                      const lineTotal = qty > 0 && price > 0 ? qty * price : 0;
+                    {receiptsForDay.map((r) => {
+                      const customerLabel = r.customerName
+                        ? `${r.customerName}${r.customerPhone ? ` (${r.customerPhone})` : ""}`
+                        : "-";
+                      const paymentLabel = r.isCredit
+                        ? "Credit"
+                        : r.payment === "cash"
+                        ? "Cash"
+                        : r.payment === "card"
+                        ? "POS"
+                        : r.payment === "mobile"
+                        ? "MoMo"
+                        : r.payment;
 
                       return (
-                        <tr key={l._key} style={{ borderBottom: "1px solid #f3f4f6" }}>
-                          <td style={{ padding: "8px 4px" }}>
-                            <div style={{ fontWeight: 800 }}>{nm}</div>
-                            <div style={{ fontSize: 11, color: "#9ca3af" }}>
-                              {l.itemId != null ? `#${l.itemId}` : "No item id"}
-                            </div>
+                        <tr key={r.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
+                          <td style={{ padding: "8px 4px" }}>{formatTimeHM(r.time)}</td>
+                          <td style={{ padding: "8px 4px", fontWeight: 800 }}>#{r.id}</td>
+                          <td style={{ padding: "8px 4px" }}>{customerLabel}</td>
+                          <td style={{ padding: "8px 4px" }}>{paymentLabel}</td>
+                          <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 800 }}>
+                            {formatMoney(r.total)}
                           </td>
-
+                          <td style={{ padding: "8px 4px", textAlign: "right", color: "#16a34a" }}>
+                            {formatMoney(r.profit)}
+                          </td>
+                          <td
+                            style={{
+                              padding: "8px 4px",
+                              textAlign: "right",
+                              color: r.balance > 0 ? "#b91c1c" : "#166534",
+                              fontWeight: 800,
+                            }}
+                          >
+                            {formatMoney(r.balance)}
+                          </td>
                           <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                            <input
-                              type="number"
-                              step="0.01"
-                              disabled={!canEditHistory || padLoading}
-                              value={String(l.qtyPieces ?? "")}
-                              onChange={(e) =>
-                                updateDraftLine(l._key, { qtyPieces: e.target.value })
-                              }
+                            <button
+                              type="button"
+                              onClick={() => setSelectedSaleId(r.id)}
                               style={{
-                                width: 110,
-                                padding: "8px 10px",
-                                borderRadius: 999,
-                                border: "1px solid #d1d5db",
-                                fontSize: 13,
-                                textAlign: "right",
-                                background: !canEditHistory ? "#f3f4f6" : "#fff",
+                                padding: "6px 10px",
+                                borderRadius: "999px",
+                                border: "1px solid #e5e7eb",
+                                backgroundColor: "#fff",
+                                cursor: "pointer",
+                                fontSize: "12px",
                               }}
-                            />
-                          </td>
-
-                          <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                            <input
-                              type="number"
-                              step="1"
-                              disabled={!canEditHistory || padLoading}
-                              value={String(l.unitPrice ?? "")}
-                              onChange={(e) =>
-                                updateDraftLine(l._key, { unitPrice: e.target.value })
-                              }
-                              style={{
-                                width: 130,
-                                padding: "8px 10px",
-                                borderRadius: 999,
-                                border: "1px solid #d1d5db",
-                                fontSize: 13,
-                                textAlign: "right",
-                                background: !canEditHistory ? "#f3f4f6" : "#fff",
-                              }}
-                            />
-                          </td>
-
-                          <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 900 }}>
-                            {formatMoney(lineTotal)}
+                            >
+                              View
+                            </button>
                           </td>
                         </tr>
                       );
                     })}
                   </tbody>
                 </table>
-
-                <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
-                  Note: Editing history changes totals and stock, so keep it Owner/Manager only.
-                </div>
+              )
+            ) : customersRollup.length === 0 ? (
+              <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
+                No customers for this date.
               </div>
+            ) : (
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+                <thead>
+                  <tr
+                    style={{
+                      textAlign: "left",
+                      borderBottom: "1px solid #e5e7eb",
+                      fontSize: "11px",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.08em",
+                      color: "#6b7280",
+                    }}
+                  >
+                    <th style={{ padding: "6px 4px" }}>Customer</th>
+                    <th style={{ padding: "6px 4px", textAlign: "right" }}>Receipts</th>
+                    <th style={{ padding: "6px 4px", textAlign: "right" }}>Total bought</th>
+                    <th style={{ padding: "6px 4px", textAlign: "right" }}>Collected</th>
+                    <th style={{ padding: "6px 4px", textAlign: "right" }}>Credit balance</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {customersRollup.map((c) => (
+                    <tr key={c.key} style={{ borderBottom: "1px solid #f3f4f6" }}>
+                      <td style={{ padding: "8px 4px", fontWeight: 800 }}>{c.label}</td>
+                      <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                        {formatMoney(c.receipts)}
+                      </td>
+                      <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 800 }}>
+                        {formatMoney(c.totalBought)}
+                      </td>
+                      <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                        {formatMoney(c.collectedToday)}
+                      </td>
+                      <td
+                        style={{
+                          padding: "8px 4px",
+                          textAlign: "right",
+                          fontWeight: 900,
+                          color: c.creditBalance > 0 ? "#b91c1c" : "#166534",
+                        }}
+                      >
+                        {formatMoney(c.creditBalance)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             )}
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }
