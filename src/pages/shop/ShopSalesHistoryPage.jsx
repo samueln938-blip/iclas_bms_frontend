@@ -165,7 +165,7 @@ function formatTimeHM(iso) {
 }
 
 // =========================
-// Money helpers
+// Money + quantity helpers
 // =========================
 function formatMoney(value) {
   if (value === null || value === undefined || value === "") return "0";
@@ -173,6 +173,17 @@ function formatMoney(value) {
   return num.toLocaleString("en-RW", {
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
+  });
+}
+
+// ✅ IMPORTANT: quantities can be 0.5, 1.25, etc.
+function formatQty(value) {
+  if (value === null || value === undefined || value === "") return "0";
+  const num = Number(value);
+  const safe = Number.isFinite(num) ? num : 0;
+  return safe.toLocaleString("en-RW", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
   });
 }
 
@@ -727,24 +738,34 @@ function SalesHistoryPage() {
   }, [historyDaysBack, loadSales]);
 
   // -------------------------
-  // ✅ NEW: Open a receipt/line in Shop workspace (Current Sale edit mode)
+  // ✅ Open receipt/line in Shop workspace -> Current Sale (and carry the sale date)
   // -------------------------
   const openInCurrentSaleFromHistory = useCallback(
-    (saleId, saleLineId = null) => {
+    (saleId, saleLineId = null, saleDateRaw = null) => {
       if (!saleId) return;
+
+      const saleYmd = saleDateRaw ? (ymdFromISO(saleDateRaw) || null) : null;
 
       try {
         localStorage.setItem("iclas_edit_sale_id", String(saleId));
+
         if (saleLineId != null) localStorage.setItem("iclas_edit_sale_line_id", String(saleLineId));
         else localStorage.removeItem("iclas_edit_sale_line_id");
 
-        // Hint for SalesPOS (we'll wire this next on SalesPOS side)
+        // tell SalesPOS to open Current Sale tab
         localStorage.setItem("iclas_pos_desired_tab", "current");
+
+        // ✅ NEW: tell SalesPOS which date this sale belongs to
+        if (saleYmd) localStorage.setItem("iclas_pos_desired_date", saleYmd);
+        else localStorage.removeItem("iclas_pos_desired_date");
       } catch {}
 
-      // Also pass state (extra safety if you later read location.state)
       navigate(`/shops/${shopId}`, {
-        state: { iclas_edit_sale_id: saleId, iclas_edit_sale_line_id: saleLineId },
+        state: {
+          iclas_edit_sale_id: saleId,
+          iclas_edit_sale_line_id: saleLineId,
+          iclas_pos_desired_date: saleYmd,
+        },
       });
     },
     [navigate, shopId]
@@ -795,7 +816,7 @@ function SalesHistoryPage() {
   }, [sales, paymentFilter, tab, searchQuery, stockByItemId]);
 
   // -------------------------
-  // Build items rows for a given sales list (FIXED: day-specific support)
+  // Build items rows (stable ids + lineIndex so inline edit always targets)
   // -------------------------
   const buildItemsRows = useCallback(
     (salesList) => {
@@ -806,7 +827,8 @@ function SalesHistoryPage() {
         const creditOpen = isOpenCreditSale(sale);
 
         const lines = pickLines(sale);
-        for (const line of lines) {
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
           const { itemId, qty, unitPrice, total, profit } = extractLineFields(line);
 
           const stockRow = itemId ? stockByItemId[itemId] : null;
@@ -817,9 +839,12 @@ function SalesHistoryPage() {
             line?.name ||
             (itemId != null ? `Item #${itemId}` : "Unknown item");
 
+          const stableLineKey = line.id ?? `idx${i}`;
+
           rows.push({
-            id: `${sale.id}-${line.id ?? Math.random().toString(16).slice(2)}`,
+            id: `${sale.id}-${stableLineKey}`, // ✅ stable (no Math.random)
             lineId: line.id ?? null,
+            lineIndex: i, // ✅ fallback targeting if lineId missing
             saleId: sale.id,
             time: saleTime,
             itemId,
@@ -982,10 +1007,14 @@ function SalesHistoryPage() {
         }
 
         // 2) Build new lines payload (only one line changed)
-        const linesPayload = linesSrc.map((ln) => {
+        const linesPayload = linesSrc.map((ln, idx) => {
           const lineId = ln.id ?? ln.line_id ?? null;
+
           const isTarget =
-            lineId != null && row.lineId != null ? String(lineId) === String(row.lineId) : false;
+            (row.lineId != null &&
+              lineId != null &&
+              String(lineId) === String(row.lineId)) ||
+            (row.lineId == null && row.lineIndex != null && idx === row.lineIndex);
 
           const itemId = ln.item_id ?? ln.itemId ?? (ln.item && ln.item.id);
 
@@ -1192,7 +1221,9 @@ function SalesHistoryPage() {
                   Inline edit is optional. You can also{" "}
                   <button
                     type="button"
-                    onClick={() => openInCurrentSaleFromHistory(currentRow.saleId, currentRow.lineId)}
+                    onClick={() =>
+                      openInCurrentSaleFromHistory(currentRow.saleId, currentRow.lineId, currentRow.time)
+                    }
                     style={{
                       border: "none",
                       background: "transparent",
@@ -1354,7 +1385,8 @@ function SalesHistoryPage() {
         ) : (
           <div style={{ marginBottom: 6, fontSize: 12, color: "#6b7280" }}>
             Tip: click any row to open inline edit pad — or click the{" "}
-            <span style={{ fontWeight: 800, color: "#2563eb" }}>item name</span> to open it in Current Sale and add new items.
+            <span style={{ fontWeight: 800, color: "#2563eb" }}>item name</span> to open it in
+            Current Sale and add new items.
           </div>
         )}
 
@@ -1407,17 +1439,17 @@ function SalesHistoryPage() {
                     cursor: "pointer",
                     backgroundColor: isEditing ? "#fefce8" : undefined,
                   }}
-                  onClick={() => startEditRow(row)} // ✅ keep your inline edit feature
+                  onClick={() => startEditRow(row)}
                 >
                   <td style={{ padding: "8px 4px" }}>{formatTimeHM(row.time)}</td>
 
                   <td style={{ padding: "8px 4px" }}>
-                    {/* ✅ NEW: clicking item name opens Shop workspace -> Current Sale edit */}
                     <button
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        openInCurrentSaleFromHistory(row.saleId, row.lineId);
+                        // ✅ includes the specific sale date
+                        openInCurrentSaleFromHistory(row.saleId, row.lineId, row.time);
                       }}
                       style={{
                         border: "none",
@@ -1428,7 +1460,7 @@ function SalesHistoryPage() {
                         cursor: "pointer",
                         textDecoration: "underline",
                       }}
-                      title="Open this receipt in Current Sale to edit & add items"
+                      title="Open this receipt in Current Sale (same date) to edit & add items"
                     >
                       {row.itemName}
                     </button>
@@ -1440,7 +1472,7 @@ function SalesHistoryPage() {
                   </td>
 
                   <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                    {formatMoney(row.qtyPieces)}
+                    {formatQty(row.qtyPieces)}
                   </td>
                   <td style={{ padding: "8px 4px", textAlign: "right" }}>
                     {formatMoney(row.unitPrice)}
@@ -1572,10 +1604,9 @@ function SalesHistoryPage() {
                         </span>
                       )}
 
-                      {/* ✅ NEW: clicking receipt opens Current Sale edit */}
                       <button
                         type="button"
-                        onClick={() => openInCurrentSaleFromHistory(sale.id, null)}
+                        onClick={() => openInCurrentSaleFromHistory(sale.id, null, sale.sale_date)}
                         style={{
                           display: "block",
                           border: "none",
@@ -1588,7 +1619,7 @@ function SalesHistoryPage() {
                           textDecoration: "underline",
                           marginTop: 2,
                         }}
-                        title="Open this receipt in Current Sale to edit & add items"
+                        title="Open this receipt in Current Sale (same date) to edit & add items"
                       >
                         Receipt #{sale.id}
                       </button>
@@ -1599,7 +1630,7 @@ function SalesHistoryPage() {
 
                       <button
                         type="button"
-                        onClick={() => openInCurrentSaleFromHistory(sale.id, null)}
+                        onClick={() => openInCurrentSaleFromHistory(sale.id, null, sale.sale_date)}
                         style={{
                           display: "block",
                           border: "none",
@@ -1612,7 +1643,7 @@ function SalesHistoryPage() {
                           textDecoration: "underline",
                           marginTop: 2,
                         }}
-                        title="Open this receipt in Current Sale to edit & add items"
+                        title="Open this receipt in Current Sale (same date) to edit & add items"
                       >
                         Receipt #{sale.id}
                       </button>
@@ -1620,15 +1651,11 @@ function SalesHistoryPage() {
                   )}
                 </td>
 
-                <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                  {formatMoney(piecesCount)}
-                </td>
+                <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatQty(piecesCount)}</td>
                 <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 600 }}>
                   {formatMoney(total)}
                 </td>
-                <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                  {formatMoney(profit)}
-                </td>
+                <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(profit)}</td>
                 <td style={{ padding: "8px 4px" }}>
                   <span
                     style={{
@@ -1811,7 +1838,6 @@ function SalesHistoryPage() {
                 if (t.key !== "credits" && paymentFilter === "credit") setPaymentFilter("all");
 
                 if (t.key === "history") {
-                  // sync draft value for UI
                   setHistoryDaysBackDraft(String(historyDaysBack));
                 }
               }}
@@ -2327,9 +2353,7 @@ function SalesHistoryPage() {
 
           <div>
             <div style={{ color: "#6b7280" }}>Pieces sold</div>
-            <div style={{ fontSize: "16px", fontWeight: 800 }}>
-              {formatMoney(rangeSummary.piecesSold)}
-            </div>
+            <div style={{ fontSize: "16px", fontWeight: 800 }}>{formatQty(rangeSummary.piecesSold)}</div>
           </div>
 
           <div>
