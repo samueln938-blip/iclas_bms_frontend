@@ -54,9 +54,7 @@ function CustomerModal({ open, onClose, onSave }) {
             alignItems: "center",
           }}
         >
-          <div style={{ fontSize: "14px", fontWeight: 800 }}>
-            Add customer
-          </div>
+          <div style={{ fontSize: "14px", fontWeight: 800 }}>Add customer</div>
           <button
             type="button"
             onClick={onClose}
@@ -168,6 +166,32 @@ function ymdToIsoMiddayUtc(ymd) {
   return `${ymd}T12:00:00.000Z`;
 }
 
+// If backend expects "date" format, send YYYY-MM-DD. If it expects date-time, send ISO.
+function buildSaleDateValue(effectiveWorkDate, expectedFormat) {
+  const ymd = isValidYmd(effectiveWorkDate) ? String(effectiveWorkDate) : ymdTodayLocal();
+  if (expectedFormat === "date") return ymd;
+  // default to date-time (safe)
+  return ymdToIsoMiddayUtc(ymd);
+}
+
+// Normalize existing sale_date into the expected format (date vs date-time)
+function normalizeExistingSaleDateForPayload(rawSaleDate, expectedFormat) {
+  const raw = String(rawSaleDate || "").trim();
+  if (!raw) return null;
+
+  // If backend expects date only, use YYYY-MM-DD
+  if (expectedFormat === "date") {
+    const ymd = raw.slice(0, 10);
+    return isValidYmd(ymd) ? ymd : null;
+  }
+
+  // If already looks ISO, keep it. If it’s only YYYY-MM-DD, upgrade it.
+  const ymd = raw.slice(0, 10);
+  if (raw.includes("T")) return raw;
+  if (isValidYmd(ymd)) return ymdToIsoMiddayUtc(ymd);
+  return null;
+}
+
 export default function CurrentSaleTab({
   API_BASE,
   shopId,
@@ -259,6 +283,10 @@ export default function CurrentSaleTab({
     dueDateKey: null,
     paymentEnum: null,
     paymentMap: { cash: "cash", card: "card", mobile: "mobile" },
+
+    // ✅ NEW: detect sale date key + expected format (date vs date-time)
+    saleDateKey: "sale_date", // fallback
+    saleDateFormat: "date-time", // fallback (safe)
   });
 
   // ✅ Edit mode state
@@ -285,7 +313,7 @@ export default function CurrentSaleTab({
     }
   };
 
-  // ✅ (change #3) cleanup flash timer on unmount
+  // ✅ cleanup flash timer on unmount
   useEffect(() => {
     return () => {
       if (flashTimerRef.current) window.clearTimeout(flashTimerRef.current);
@@ -352,10 +380,8 @@ export default function CurrentSaleTab({
   const normalizeCustomer = (c) => {
     if (!c || typeof c !== "object") return null;
     const id = c.id ?? c.customer_id ?? null;
-    const name =
-      c.name ?? c.customer_name ?? c.full_name ?? c.title ?? "";
-    const phone =
-      c.phone ?? c.customer_phone ?? c.tel ?? c.mobile ?? "";
+    const name = c.name ?? c.customer_name ?? c.full_name ?? c.title ?? "";
+    const phone = c.phone ?? c.customer_phone ?? c.tel ?? c.mobile ?? "";
     const shop_id = c.shop_id ?? c.shopId ?? null;
     return { ...c, id, name, phone, shop_id };
   };
@@ -384,12 +410,9 @@ export default function CurrentSaleTab({
         }
       }
 
-      const list = (data || [])
-        .map(normalizeCustomer)
-        .filter(Boolean);
+      const list = (data || []).map(normalizeCustomer).filter(Boolean);
       const filtered = list.filter(
-        (c) =>
-          !c.shop_id || Number(c.shop_id) === Number(shopId)
+        (c) => !c.shop_id || Number(c.shop_id) === Number(shopId)
       );
       setCustomers(filtered);
     } catch {
@@ -446,10 +469,7 @@ export default function CurrentSaleTab({
   const selectedCustomer = useMemo(() => {
     const id = selectedCustomerId ? Number(selectedCustomerId) : null;
     if (!id) return null;
-    return (
-      (customers || []).find((c) => Number(c.id) === id) ||
-      null
-    );
+    return (customers || []).find((c) => Number(c.id) === id) || null;
   }, [selectedCustomerId, customers]);
 
   useEffect(() => {
@@ -479,39 +499,66 @@ export default function CurrentSaleTab({
           path?.requestBody?.content?.["application/json"]?.schema ||
           path?.requestBody?.content?.["application/*+json"]?.schema;
 
-        const resolved =
-          resolveSchema(schema0, openapi?.components) || schema0;
+        const resolved = resolveSchema(schema0, openapi?.components) || schema0;
         const props = resolved?.properties || {};
 
-        const candidates = [
-          "due_date",
-          "credit_due_date",
-          "customer_due_date",
-        ];
-        const found =
-          candidates.find((k) =>
-            Object.prototype.hasOwnProperty.call(props, k)
-          ) || null;
+        // ---- due date key ----
+        const dueCandidates = ["due_date", "credit_due_date", "customer_due_date"];
+        const foundDue =
+          dueCandidates.find((k) => Object.prototype.hasOwnProperty.call(props, k)) ||
+          null;
 
+        // ---- payment enum ----
         let paymentEnum = null;
         try {
           const paymentSchema =
-            resolveSchema(
-              props?.payment_type,
-              openapi?.components
-            ) || props?.payment_type;
-          if (Array.isArray(paymentSchema?.enum))
-            paymentEnum = paymentSchema.enum;
+            resolveSchema(props?.payment_type, openapi?.components) ||
+            props?.payment_type;
+          if (Array.isArray(paymentSchema?.enum)) paymentEnum = paymentSchema.enum;
         } catch {}
 
         const paymentMap = buildPaymentMap(paymentEnum);
 
+        // ---- ✅ sale date key + format ----
+        const dateCandidates = [
+          "sale_date",
+          "date",
+          "sale_day",
+          "day",
+          "sold_date",
+          "sold_on",
+          "sale_datetime",
+          "sold_at",
+        ];
+
+        let saleDateKey = null;
+        for (const k of dateCandidates) {
+          if (Object.prototype.hasOwnProperty.call(props, k)) {
+            saleDateKey = k;
+            break;
+          }
+        }
+
+        let saleDateFormat = "date-time";
+        if (saleDateKey) {
+          try {
+            const saleDateSchema =
+              resolveSchema(props?.[saleDateKey], openapi?.components) ||
+              props?.[saleDateKey];
+            // Pydantic/OpenAPI commonly uses format: "date" or "date-time"
+            const fmt = String(saleDateSchema?.format || "").toLowerCase();
+            if (fmt === "date" || fmt === "date-time") saleDateFormat = fmt;
+          } catch {}
+        }
+
         if (!cancelled) {
           setSalesCaps((prev) => ({
             ...prev,
-            dueDateKey: found,
+            dueDateKey: foundDue,
             paymentEnum,
             paymentMap,
+            saleDateKey: saleDateKey || prev.saleDateKey || "sale_date",
+            saleDateFormat: saleDateFormat || prev.saleDateFormat || "date-time",
           }));
         }
       } catch {}
@@ -554,9 +601,7 @@ export default function CurrentSaleTab({
       .filter((r) => num(r?.remaining_pieces) > 0)
       .slice()
       .sort((a, b) =>
-        String(a?.item_name || "").localeCompare(
-          String(b?.item_name || "")
-        )
+        String(a?.item_name || "").localeCompare(String(b?.item_name || ""))
       );
   }, [stockRows]);
 
@@ -604,8 +649,7 @@ export default function CurrentSaleTab({
     if (!itemId) return 0;
     return saleLines.reduce(
       (sum, l) =>
-        sum +
-        (Number(l.itemId) === itemId ? num(l.qtyPieces || 0) : 0),
+        sum + (Number(l.itemId) === itemId ? num(l.qtyPieces || 0) : 0),
       0
     );
   }, [pad.itemId, saleLines]);
@@ -802,7 +846,9 @@ export default function CurrentSaleTab({
     if (editSourceSale && editingSaleId) {
       for (const ln of editSourceSale.lines || []) {
         const itemId = Number(ln.item_id ?? ln.itemId);
-        const qty = num(ln.quantity_pieces ?? ln.quantity ?? ln.qty_pieces ?? 0);
+        const qty = num(
+          ln.quantity_pieces ?? ln.quantity ?? ln.qty_pieces ?? 0
+        );
         originalByItem.set(itemId, (originalByItem.get(itemId) || 0) + qty);
       }
     }
@@ -816,7 +862,9 @@ export default function CurrentSaleTab({
         const name = stockByItemId[itemId]?.item_name || `Item #${itemId}`;
         return `Not enough stock for "${name}". You are trying to sell ${formatQty(
           newQty
-        )} pieces but maximum allowed (including original sale) is ${formatQty(maxAllowed)}.`;
+        )} pieces but maximum allowed (including original sale) is ${formatQty(
+          maxAllowed
+        )}.`;
       }
     }
     return null;
@@ -860,10 +908,16 @@ export default function CurrentSaleTab({
       const lines = (sale.lines || []).map((ln) => {
         const itemId = ln.item_id ?? ln.itemId;
         const qty = ln.quantity_pieces ?? ln.quantity ?? ln.qty_pieces ?? 0;
-        const price = ln.sale_price_per_piece ?? ln.unit_sale_price ?? ln.unit_price ?? 0;
+        const price =
+          ln.sale_price_per_piece ??
+          ln.unit_sale_price ??
+          ln.unit_price ??
+          0;
 
         return {
-          id: `edit-${sale.id}-${ln.id ?? itemId}-${Math.random().toString(16).slice(2)}`,
+          id: `edit-${sale.id}-${ln.id ?? itemId}-${Math.random()
+            .toString(16)
+            .slice(2)}`,
           itemId: Number(itemId),
           qtyPieces: num(qty),
           unitPrice: num(price),
@@ -877,16 +931,24 @@ export default function CurrentSaleTab({
       if (!isCredit) {
         const raw = String(sale.payment_type || "").toLowerCase();
         if (raw.includes("cash")) uiPaymentMode = "cash";
-        else if (raw.includes("mobile") || raw.includes("momo")) uiPaymentMode = "mobile";
-        else if (raw.includes("card") || raw.includes("pos")) uiPaymentMode = "card";
+        else if (raw.includes("mobile") || raw.includes("momo"))
+          uiPaymentMode = "mobile";
+        else if (raw.includes("card") || raw.includes("pos"))
+          uiPaymentMode = "card";
       }
 
       const name = sale.customer_name || sale.customer?.name || "";
       const phone = sale.customer_phone || sale.customer?.phone || "";
-      const due = sale.due_date || sale.credit_due_date || sale.customer_due_date || null;
+      const due =
+        sale.due_date ||
+        sale.credit_due_date ||
+        sale.customer_due_date ||
+        null;
 
       const collectedNowForCredit =
-        isCredit && sale.amount_collected_now != null ? String(sale.amount_collected_now) : "0";
+        isCredit && sale.amount_collected_now != null
+          ? String(sale.amount_collected_now)
+          : "0";
 
       const hasCustomer = !!(name || phone);
 
@@ -911,7 +973,9 @@ export default function CurrentSaleTab({
       setEditSourceSale(sale);
 
       if (focusServerLineId != null) {
-        const match = lines.find((l) => Number(l.serverLineId) === Number(focusServerLineId));
+        const match = lines.find(
+          (l) => Number(l.serverLineId) === Number(focusServerLineId)
+        );
         setEditingLineId(match?.id || null);
       } else {
         setEditingLineId(null);
@@ -932,7 +996,9 @@ export default function CurrentSaleTab({
 
   const focusLineIfSameSale = (focusServerLineId) => {
     if (!focusServerLineId) return;
-    const match = (saleLines || []).find((l) => Number(l.serverLineId) === Number(focusServerLineId));
+    const match = (saleLines || []).find(
+      (l) => Number(l.serverLineId) === Number(focusServerLineId)
+    );
     if (match) setEditingLineId(match.id);
   };
 
@@ -1013,23 +1079,36 @@ export default function CurrentSaleTab({
     let savedOk = false;
 
     try {
+      const saleDateKey = String(salesCaps?.saleDateKey || "sale_date");
+      const saleDateFormat = String(salesCaps?.saleDateFormat || "date-time");
+
       // ✅ IMPORTANT:
-      // - Editing: keep the original sale_date (NO changes)
-      // - New sale: use the chosen work date (from Sales history / closure date), to fix missing past sales
-      const saleDate =
-        isEditingExistingSale && editSourceSale?.sale_date
-          ? editSourceSale.sale_date
-          : (isValidYmd(effectiveWorkDate)
-              ? ymdToIsoMiddayUtc(effectiveWorkDate)
-              : new Date().toISOString());
+      // - Editing: keep original sale_date (NO changes)
+      // - New sale: use chosen work date (fix missing past sales)
+      let saleDateValue = null;
+
+      if (isEditingExistingSale) {
+        saleDateValue = normalizeExistingSaleDateForPayload(
+          editSourceSale?.sale_date,
+          saleDateFormat
+        );
+      } else {
+        saleDateValue = buildSaleDateValue(effectiveWorkDate, saleDateFormat);
+      }
+
+      // Fallback if something went wrong (never block saving)
+      if (!saleDateValue) {
+        saleDateValue = new Date().toISOString();
+      }
 
       const shouldSendCustomer = isCreditSale || attachCustomer;
 
       const payload = {
         shop_id: Number(shopId),
-        sale_date: saleDate,
         is_credit_sale: isCreditSale,
-        amount_collected_now: isCreditSale ? num(computedCollectedNow) : num(saleTotal),
+        amount_collected_now: isCreditSale
+          ? num(computedCollectedNow)
+          : num(saleTotal),
         credit_balance: isCreditSale ? num(computedCreditBalance) : 0,
         customer_name: shouldSendCustomer ? (customerName || null) : null,
         customer_phone: shouldSendCustomer ? (customerPhone || null) : null,
@@ -1046,8 +1125,12 @@ export default function CurrentSaleTab({
         }),
       };
 
+      // ✅ Set date using detected field name (sale_date vs date vs etc.)
+      payload[saleDateKey] = saleDateValue;
+
       if (!isCreditSale)
-        payload.payment_type = salesCaps.paymentMap?.[paymentMode] || paymentMode;
+        payload.payment_type =
+          salesCaps.paymentMap?.[paymentMode] || paymentMode;
       if (isCreditSale && customerDueDate && salesCaps.dueDateKey)
         payload[salesCaps.dueDateKey] = customerDueDate;
 
@@ -1070,7 +1153,9 @@ export default function CurrentSaleTab({
           const errData = await res.json();
           if (errData?.detail) {
             if (Array.isArray(errData.detail))
-              detailMessage = errData.detail.map((d) => d.msg || JSON.stringify(d)).join(" | ");
+              detailMessage = errData.detail
+                .map((d) => d.msg || JSON.stringify(d))
+                .join(" | ");
             else if (typeof errData.detail === "string")
               detailMessage = errData.detail;
             else detailMessage = JSON.stringify(errData.detail);
@@ -1079,7 +1164,33 @@ export default function CurrentSaleTab({
         throw new Error(detailMessage);
       }
 
-      await res.json();
+      const saved = await res.json();
+
+      // ✅ Verify what backend saved (helps catch backend overriding date to today)
+      try {
+        const savedSale = saved?.sale || saved;
+        const savedDateRaw =
+          savedSale?.sale_date ||
+          savedSale?.date ||
+          savedSale?.sale_day ||
+          savedSale?.day ||
+          null;
+
+        if (!isEditingExistingSale) {
+          const intendedYmd = String(effectiveWorkDate).slice(0, 10);
+          const savedYmd = savedDateRaw ? String(savedDateRaw).slice(0, 10) : null;
+
+          // If backend clearly saved a different day, warn loudly.
+          if (intendedYmd && savedYmd && intendedYmd !== savedYmd) {
+            setError?.(
+              `⚠️ Saved, but backend stored the sale under ${savedYmd} (instead of ${intendedYmd}). This means the API is overriding/ignoring the sale date. Please share your backend sales POST route so we fix it.`
+            );
+          }
+        }
+      } catch {
+        // ignore verification issues
+      }
+
       savedOk = true;
 
       fireFlash(isEditingExistingSale ? "Changes saved ✅" : "Sale saved ✅");
@@ -1105,7 +1216,7 @@ export default function CurrentSaleTab({
     } finally {
       setSaving(false);
 
-      // ✅ (change #1) IMPORTANT FIX: call onEditDone FIRST, then onGoToday
+      // ✅ IMPORTANT: call onEditDone FIRST, then onGoToday
       if (savedOk) {
         onEditDone?.();
         onGoToday?.();
@@ -1550,7 +1661,9 @@ export default function CurrentSaleTab({
               }}
               onFocus={() => setItemListOpen(true)}
               placeholder={
-                inStockOptions.length ? "Type item name (e.g. suga)..." : "No stock available"
+                inStockOptions.length
+                  ? "Type item name (e.g. suga)..."
+                  : "No stock available"
               }
               disabled={!inStockOptions.length}
               inputMode="search"
@@ -1738,7 +1851,7 @@ export default function CurrentSaleTab({
           </button>
         </div>
 
-        {/* pad meta: keep as-is (profit hiding handled in cart views) */}
+        {/* pad meta */}
         {selectedStockForPad && (
           <div
             style={{
@@ -1782,7 +1895,7 @@ export default function CurrentSaleTab({
         )}
       </div>
 
-      {/* CART - desktop table */}
+      {/* CART */}
       {saleLinesWithMeta.length === 0 ? (
         <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
           No items in the current sale yet. Use the pad above and click <strong>Add item</strong>.
@@ -1926,7 +2039,7 @@ export default function CurrentSaleTab({
             </tbody>
           </table>
 
-          {/* CART - mobile cards */}
+          {/* mobile cards (unchanged) */}
           <div className="iclas-mobile-cards" style={{ display: "none" }}>
             {(saleLinesWithMeta || []).map((line) => {
               const isEditingLine = editingLineId === line.id;
@@ -1946,14 +2059,7 @@ export default function CurrentSaleTab({
 
                   <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                     <div>
-                      <div
-                        style={{
-                          fontSize: 11,
-                          color: "#6b7280",
-                          textTransform: "uppercase",
-                          letterSpacing: "0.08em",
-                        }}
-                      >
+                      <div style={{ fontSize: 11, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.08em" }}>
                         Qty
                       </div>
                       {isEditingLine ? (
@@ -1979,14 +2085,7 @@ export default function CurrentSaleTab({
                     </div>
 
                     <div>
-                      <div
-                        style={{
-                          fontSize: 11,
-                          color: "#6b7280",
-                          textTransform: "uppercase",
-                          letterSpacing: "0.08em",
-                        }}
-                      >
+                      <div style={{ fontSize: 11, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.08em" }}>
                         Unit price
                       </div>
                       {isEditingLine ? (
@@ -2017,14 +2116,7 @@ export default function CurrentSaleTab({
                   </div>
 
                   {!hideProfit && (
-                    <div
-                      style={{
-                        marginTop: 6,
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "baseline",
-                      }}
-                    >
+                    <div style={{ marginTop: 6, display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                       <div style={{ fontSize: 12, color: "#6b7280" }}>Profit</div>
                       <div style={{ fontWeight: 900, color: "#16a34a" }}>{formatMoney(line.computed.profit)}</div>
                     </div>
@@ -2064,7 +2156,6 @@ export default function CurrentSaleTab({
               )}
             </div>
 
-            {/* mobile sticky bar */}
             <div className="iclas-mobile-stickybar">
               <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between" }}>
                 <button
@@ -2111,7 +2202,7 @@ export default function CurrentSaleTab({
         </>
       )}
 
-      {/* ✅ CUSTOMER + PAYMENT: Separate boxes + responsive order */}
+      {/* ✅ CUSTOMER + PAYMENT (unchanged UI below) */}
       <div style={{ borderTop: "1px solid #e5e7eb", marginTop: "10px", paddingTop: "10px" }}>
         <div className="iclas-paycust-wrap">
           {/* Customer box */}
@@ -2166,7 +2257,7 @@ export default function CurrentSaleTab({
               </div>
             )}
 
-            {(isCreditSale || attachCustomer) ? (
+            {isCreditSale || attachCustomer ? (
               <>
                 <div
                   style={{
