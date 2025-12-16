@@ -1,10 +1,5 @@
 // FILE: src/pages/shop/InventoryCheckPage.jsx
-import React, {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext.jsx";
 
@@ -268,8 +263,12 @@ export default function InventoryCheckPage() {
 
   const [inventoryDate, setInventoryDate] = useState(() => todayISO());
 
-  // current draft / posted check loaded for selected date
+  // ✅ Draft check id (ONLY set when current check is DRAFT)
   const [currentCheckId, setCurrentCheckId] = useState(null);
+
+  // ✅ What we loaded for this date (can be POSTED or DRAFT)
+  const [loadedCheckId, setLoadedCheckId] = useState(null);
+  const [loadedCheckStatus, setLoadedCheckStatus] = useState(null); // "DRAFT" | "POSTED" | null
 
   // pad state
   const [pad, setPad] = useState({
@@ -289,6 +288,11 @@ export default function InventoryCheckPage() {
 
   const padRef = useRef(null);
 
+  const clearAlerts = () => {
+    setError("");
+    setMessage("");
+  };
+
   // ---------- Derived maps ----------
 
   const stockByItemId = useMemo(() => {
@@ -305,9 +309,7 @@ export default function InventoryCheckPage() {
         id: s.item_id,
         label: s.item_name || `Item ${s.item_id}`,
       }))
-      .sort((a, b) =>
-        String(a.label).localeCompare(String(b.label))
-      );
+      .sort((a, b) => String(a.label).localeCompare(String(b.label)));
   }, [stockRows]);
 
   const getCostPerPiece = (itemId) => {
@@ -324,20 +326,14 @@ export default function InventoryCheckPage() {
   };
 
   const padStock = pad.itemId ? stockByItemId[Number(pad.itemId)] : null;
-  const padSystemPieces = padStock
-    ? Number(padStock.remaining_pieces || 0)
-    : 0;
+  const padSystemPieces = padStock ? Number(padStock.remaining_pieces || 0) : 0;
   const padCountedPieces =
     pad.countedPieces === "" ? null : Number(pad.countedPieces || 0);
   const padDiff =
     padCountedPieces === null ? null : padCountedPieces - padSystemPieces;
 
   const totalDiffPieces = useMemo(
-    () =>
-      lines.reduce(
-        (sum, ln) => sum + Number(ln.diffPieces || 0),
-        0
-      ),
+    () => lines.reduce((sum, ln) => sum + Number(ln.diffPieces || 0), 0),
     [lines]
   );
 
@@ -345,9 +341,7 @@ export default function InventoryCheckPage() {
     () =>
       lines.reduce(
         (sum, ln) =>
-          sum +
-          (Number(ln.costPerPiece || 0) *
-            Number(ln.systemPieces || 0)),
+          sum + Number(ln.costPerPiece || 0) * Number(ln.systemPieces || 0),
         0
       ),
     [lines]
@@ -357,44 +351,35 @@ export default function InventoryCheckPage() {
     () =>
       lines.reduce(
         (sum, ln) =>
-          sum +
-          (Number(ln.costPerPiece || 0) *
-            Number(ln.countedPieces || 0)),
+          sum + Number(ln.costPerPiece || 0) * Number(ln.countedPieces || 0),
         0
       ),
     [lines]
   );
 
-  const totalSystemValueDiff =
-    totalSystemValueAfter - totalSystemValueBefore;
+  const totalSystemValueDiff = totalSystemValueAfter - totalSystemValueBefore;
 
   // ---------- Data loading ----------
 
   useEffect(() => {
     async function loadShopAndStock() {
       setLoading(true);
-      setError("");
-      setMessage("");
+      clearAlerts();
 
       try {
         const shopRes = await fetch(`${API_BASE}/shops/${shopId}`, {
           headers: authHeadersNoJson,
         });
         if (!shopRes.ok) {
-          throw new Error(
-            `Failed to load shop. Status: ${shopRes.status}`
-          );
+          throw new Error(`Failed to load shop. Status: ${shopRes.status}`);
         }
         const shopData = await shopRes.json();
 
-        const stockRes = await fetch(
-          `${API_BASE}/stock/?shop_id=${shopId}`,
-          { headers: authHeadersNoJson }
-        );
+        const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`, {
+          headers: authHeadersNoJson,
+        });
         if (!stockRes.ok) {
-          throw new Error(
-            `Failed to load stock. Status: ${stockRes.status}`
-          );
+          throw new Error(`Failed to load stock. Status: ${stockRes.status}`);
         }
         const stockData = await stockRes.json();
 
@@ -402,10 +387,7 @@ export default function InventoryCheckPage() {
         setStockRows(Array.isArray(stockData) ? stockData : []);
       } catch (err) {
         console.error(err);
-        setError(
-          err?.message ||
-            "Failed to load shop / stock for inventory check."
-        );
+        setError(err?.message || "Failed to load shop / stock for inventory check.");
       } finally {
         setLoading(false);
       }
@@ -417,14 +399,11 @@ export default function InventoryCheckPage() {
   // load history list for the shop
   const loadHistory = async () => {
     try {
-      const res = await fetch(
-        `${API_BASE}/inventory-checks/summary?shop_id=${shopId}`,
-        { headers: authHeadersNoJson }
-      );
+      const res = await fetch(`${API_BASE}/inventory-checks/summary?shop_id=${shopId}`, {
+        headers: authHeadersNoJson,
+      });
       if (!res.ok) {
-        throw new Error(
-          `Failed to load inventory checks. Status: ${res.status}`
-        );
+        throw new Error(`Failed to load inventory checks. Status: ${res.status}`);
       }
       const data = await res.json().catch(() => []);
       const list = Array.isArray(data) ? data : [];
@@ -439,50 +418,49 @@ export default function InventoryCheckPage() {
 
   // load details for currently selected date (draft or posted)
   const loadCheckForDate = async (isoDate) => {
-    setError("");
-    setMessage("");
+    clearAlerts();
 
     try {
       const dateISO = toISODate(isoDate);
       const list = await loadHistory();
 
-      const sameDateChecks = list.filter(
-        (c) => toISODate(c.check_date) === dateISO
-      );
+      const sameDateChecks = list.filter((c) => toISODate(c.check_date) === dateISO);
 
       if (!sameDateChecks.length) {
         // no check yet for this date
+        setLoadedCheckId(null);
+        setLoadedCheckStatus(null);
         setCurrentCheckId(null);
         setLines([]);
         return;
       }
 
-      // Prefer POSTED, otherwise most recent by position
-      let match = null;
-      if (sameDateChecks.length === 1) {
-        match = sameDateChecks[0];
-      } else {
-        match =
-          sameDateChecks.find((c) => c.status === "POSTED") ||
-          sameDateChecks[sameDateChecks.length - 1];
-      }
+      // ✅ IMPORTANT FIX:
+      // Prefer a DRAFT check (editable). Only fall back to POSTED if no draft exists.
+      // This prevents the UI from accidentally loading a POSTED check and then trying to update it.
+      const draftMatch =
+        sameDateChecks.find((c) => String(c.status || "").toUpperCase() === "DRAFT") || null;
 
-      const detailRes = await fetch(
-        `${API_BASE}/inventory-checks/${match.id}`,
-        {
-          headers: authHeadersNoJson,
-        }
-      );
+      const postedMatch =
+        sameDateChecks.find((c) => String(c.status || "").toUpperCase() === "POSTED") || null;
+
+      const match = draftMatch || postedMatch || sameDateChecks[0];
+
+      const detailRes = await fetch(`${API_BASE}/inventory-checks/${match.id}`, {
+        headers: authHeadersNoJson,
+      });
 
       if (!detailRes.ok) {
-        throw new Error(
-          `Failed to load inventory check details. Status: ${detailRes.status}`
-        );
+        throw new Error(`Failed to load inventory check details. Status: ${detailRes.status}`);
       }
 
       const detail = await detailRes.json();
 
-      setCurrentCheckId(detail.id || match.id);
+      const status = String(detail.status || match.status || "DRAFT").toUpperCase();
+
+      setLoadedCheckId(detail.id || match.id);
+      setLoadedCheckStatus(status);
+
       const mapped = (detail.lines || []).map((ln) => ({
         id: ln.id,
         itemId: ln.item_id,
@@ -493,12 +471,21 @@ export default function InventoryCheckPage() {
         costPerPiece: getCostPerPiece(ln.item_id),
       }));
       setLines(mapped);
+
+      if (status === "POSTED") {
+        // ✅ Do NOT set currentCheckId to a posted check (backend will reject updates)
+        setCurrentCheckId(null);
+        setMessage(
+          "This date has a POSTED inventory check (read-only). To make changes, click “Save draft” to create a NEW draft, then continue."
+        );
+      } else {
+        // editable draft
+        setCurrentCheckId(detail.id || match.id);
+        setMessage("");
+      }
     } catch (err) {
       console.error(err);
-      setError(
-        err?.message ||
-          "Failed to fetch inventory check for selected date."
-      );
+      setError(err?.message || "Failed to fetch inventory check for selected date.");
     }
   };
 
@@ -544,14 +531,11 @@ export default function InventoryCheckPage() {
 
     const s = stockByItemId[itemId];
     if (!s) {
-      setError(
-        "This item has no stock record in this shop. Add stock via Purchases first."
-      );
+      setError("This item has no stock record in this shop. Add stock via Purchases first.");
       return;
     }
 
-    const counted =
-      pad.countedPieces === "" ? null : Number(pad.countedPieces);
+    const counted = pad.countedPieces === "" ? null : Number(pad.countedPieces);
     if (counted === null || !Number.isFinite(counted) || counted < 0) {
       setError("Enter counted pieces (0 or more).");
       return;
@@ -565,13 +549,9 @@ export default function InventoryCheckPage() {
     setMessage("");
 
     setLines((prev) => {
-      const existingIndex = prev.findIndex(
-        (ln) => Number(ln.itemId) === itemId
-      );
+      const existingIndex = prev.findIndex((ln) => Number(ln.itemId) === itemId);
       const base = {
-        id:
-          prev[existingIndex]?.id ??
-          `local-${Date.now()}-${Math.random()}`,
+        id: prev[existingIndex]?.id ?? `local-${Date.now()}-${Math.random()}`,
         itemId,
         itemName: s.item_name || `Item ${itemId}`,
         systemPieces: system,
@@ -590,10 +570,7 @@ export default function InventoryCheckPage() {
 
     resetPad();
     if (padRef.current) {
-      padRef.current.scrollIntoView({
-        behavior: "smooth",
-        block: "start",
-      });
+      padRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
     }
   };
 
@@ -603,10 +580,7 @@ export default function InventoryCheckPage() {
       countedPieces: line.countedPieces,
     });
     if (padRef.current) {
-      padRef.current.scrollIntoView({
-        behavior: "smooth",
-        block: "start",
-      });
+      padRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
     }
   };
 
@@ -618,18 +592,16 @@ export default function InventoryCheckPage() {
 
   const handleSaveDraft = async () => {
     if (!lines.length) {
-      setError(
-        "Add at least one item to the list before saving a draft."
-      );
+      setError("Add at least one item to the list before saving a draft.");
       return;
     }
 
     setSavingDraft(true);
-    setError("");
-    setMessage("");
+    clearAlerts();
 
     try {
       const payload = {
+        // ✅ If currentCheckId is null (e.g. we loaded a POSTED check), backend will CREATE a NEW draft.
         id: currentCheckId,
         shop_id: Number(shopId),
         check_date: toISODate(inventoryDate),
@@ -649,14 +621,17 @@ export default function InventoryCheckPage() {
       if (!res.ok) {
         const errData = await res.json().catch(() => null);
         throw new Error(
-          errData?.detail ||
-            `Failed to save inventory draft. Status: ${res.status}`
+          errData?.detail || `Failed to save inventory draft. Status: ${res.status}`
         );
       }
 
       const data = await res.json();
 
+      // ✅ saved draft
+      setLoadedCheckId(data.id);
+      setLoadedCheckStatus(String(data.status || "DRAFT").toUpperCase());
       setCurrentCheckId(data.id);
+
       const syncedLines = (data.lines || []).map((ln) => ({
         id: ln.id,
         itemId: ln.item_id,
@@ -670,13 +645,10 @@ export default function InventoryCheckPage() {
 
       await loadHistory();
 
-      setMessage(
-        "Inventory draft saved. Stock is NOT changed yet."
-      );
+      setMessage("Inventory draft saved. Stock is NOT changed yet.");
     } catch (err) {
       console.error(err);
       setError(err?.message || "Failed to save inventory draft.");
-      setMessage("");
     } finally {
       setSavingDraft(false);
     }
@@ -684,30 +656,23 @@ export default function InventoryCheckPage() {
 
   const handlePostInventory = async () => {
     if (!currentCheckId) {
-      setError(
-        "Save a draft first, then you can post the inventory check."
-      );
+      setError("Save a draft first, then you can post the inventory check.");
       return;
     }
 
     setPosting(true);
-    setError("");
-    setMessage("");
+    clearAlerts();
 
     try {
-      const res = await fetch(
-        `${API_BASE}/inventory-checks/${currentCheckId}/post`,
-        {
-          method: "POST",
-          headers: authHeaders,
-        }
-      );
+      const res = await fetch(`${API_BASE}/inventory-checks/${currentCheckId}/post`, {
+        method: "POST",
+        headers: authHeaders,
+      });
 
       if (!res.ok) {
         const errData = await res.json().catch(() => null);
         throw new Error(
-          errData?.detail ||
-            `Failed to post inventory check. Status: ${res.status}`
+          errData?.detail || `Failed to post inventory check. Status: ${res.status}`
         );
       }
 
@@ -726,13 +691,15 @@ export default function InventoryCheckPage() {
 
       await loadHistory();
 
-      setMessage(
-        "Inventory check posted. Stock levels have been updated."
-      );
+      // ✅ Now posted: do not keep currentCheckId, otherwise Save draft would try to update a posted check and fail.
+      setLoadedCheckId(data.id || loadedCheckId);
+      setLoadedCheckStatus("POSTED");
+      setCurrentCheckId(null);
+
+      setMessage("Inventory check posted. Stock levels have been updated.");
     } catch (err) {
       console.error(err);
       setError(err?.message || "Failed to post inventory check.");
-      setMessage("");
     } finally {
       setPosting(false);
     }
@@ -762,7 +729,7 @@ export default function InventoryCheckPage() {
       g.total_system_pieces += Number(c.total_system_pieces || 0);
       g.total_counted_pieces += Number(c.total_counted_pieces || 0);
       g.total_diff_pieces += Number(c.total_diff_pieces || 0);
-      if (c.status === "POSTED") g.status = "POSTED";
+      if (String(c.status || "").toUpperCase() === "POSTED") g.status = "POSTED";
       g.checkIds.push(c.id);
     }
     const arr = Array.from(map.values());
@@ -918,6 +885,21 @@ export default function InventoryCheckPage() {
                 History &amp; differences
               </button>
             </div>
+
+            {/* tiny status hint */}
+            <div style={{ marginTop: "10px", fontSize: "12px", color: "#6b7280" }}>
+              {loadedCheckId ? (
+                <>
+                  Loaded check #{loadedCheckId} —{" "}
+                  <strong style={{ color: loadedCheckStatus === "POSTED" ? "#b91c1c" : "#111827" }}>
+                    {loadedCheckStatus || "DRAFT"}
+                  </strong>
+                  {loadedCheckStatus === "POSTED" ? " (read-only)" : ""}
+                </>
+              ) : (
+                "No inventory check saved for this date yet."
+              )}
+            </div>
           </div>
 
           {/* Summary card */}
@@ -935,13 +917,7 @@ export default function InventoryCheckPage() {
               fontSize: "12px",
             }}
           >
-            <div
-              style={{
-                fontSize: "13px",
-                fontWeight: 700,
-                color: "#111827",
-              }}
-            >
+            <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>
               Inventory summary
             </div>
             <div
@@ -1003,56 +979,20 @@ export default function InventoryCheckPage() {
               >
                 System stock value (RWF)
               </div>
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  gap: "8px",
-                }}
-              >
-                <div style={{ fontSize: "11px", color: "#6b7280" }}>
-                  Before
-                </div>
-                <div
-                  style={{
-                    fontWeight: 700,
-                    fontSize: "13px",
-                    color: "#111827",
-                  }}
-                >
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
+                <div style={{ fontSize: "11px", color: "#6b7280" }}>Before</div>
+                <div style={{ fontWeight: 700, fontSize: "13px", color: "#111827" }}>
                   {formatMoney(totalSystemValueBefore)}
                 </div>
               </div>
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  gap: "8px",
-                }}
-              >
-                <div style={{ fontSize: "11px", color: "#6b7280" }}>
-                  After (counted)
-                </div>
-                <div
-                  style={{
-                    fontWeight: 700,
-                    fontSize: "13px",
-                    color: "#111827",
-                  }}
-                >
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
+                <div style={{ fontSize: "11px", color: "#6b7280" }}>After (counted)</div>
+                <div style={{ fontWeight: 700, fontSize: "13px", color: "#111827" }}>
                   {formatMoney(totalSystemValueAfter)}
                 </div>
               </div>
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  gap: "8px",
-                }}
-              >
-                <div style={{ fontSize: "11px", color: "#6b7280" }}>
-                  Difference
-                </div>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
+                <div style={{ fontSize: "11px", color: "#6b7280" }}>Difference</div>
                 <div
                   style={{
                     fontWeight: 700,
@@ -1067,31 +1007,16 @@ export default function InventoryCheckPage() {
                 >
                   {totalSystemValueDiff === 0
                     ? "0"
-                    : `${totalSystemValueDiff > 0 ? "+" : ""}${formatMoney(
-                        totalSystemValueDiff
-                      )}`}
+                    : `${totalSystemValueDiff > 0 ? "+" : ""}${formatMoney(totalSystemValueDiff)}`}
                 </div>
               </div>
             </div>
           </div>
         </div>
 
-        {/* date picker (no notes as requested) */}
-        <div
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: "10px",
-            marginBottom: "10px",
-          }}
-        >
-          <div
-            style={{
-              fontSize: "13px",
-              fontWeight: 700,
-              color: "#111827",
-            }}
-          >
+        {/* date picker */}
+        <div style={{ display: "inline-flex", alignItems: "center", gap: "10px", marginBottom: "10px" }}>
+          <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>
             Inventory check date
           </div>
           <input
@@ -1118,9 +1043,29 @@ export default function InventoryCheckPage() {
             backgroundColor: error ? "#fef2f2" : "#ecfdf3",
             color: error ? "#b91c1c" : "#166534",
             fontSize: "0.9rem",
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "space-between",
+            gap: "10px",
           }}
         >
-          {error || message}
+          <div style={{ flex: 1 }}>{error || message}</div>
+          <button
+            type="button"
+            onClick={clearAlerts}
+            style={{
+              border: "1px solid rgba(0,0,0,0.08)",
+              background: "#ffffff",
+              borderRadius: "999px",
+              padding: "2px 10px",
+              cursor: "pointer",
+              fontWeight: 800,
+              lineHeight: 1.6,
+            }}
+            title="Dismiss"
+          >
+            ×
+          </button>
         </div>
       )}
 
@@ -1134,9 +1079,7 @@ export default function InventoryCheckPage() {
             padding: "16px 18px 18px",
           }}
         >
-          <h2
-            style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}
-          >
+          <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>
             Enter inventory counts for {toISODate(inventoryDate)}
           </h2>
 
@@ -1164,9 +1107,7 @@ export default function InventoryCheckPage() {
                 gap: "8px",
               }}
             >
-              <span>
-                Pad: select item, enter counted pieces, then add to list
-              </span>
+              <span>Pad: select item, enter counted pieces, then add to list</span>
 
               <button
                 type="button"
@@ -1198,8 +1139,7 @@ export default function InventoryCheckPage() {
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns:
-                    "repeat(3, minmax(0, 1fr))",
+                  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
                   columnGap: "14px",
                   rowGap: "6px",
                   marginTop: "10px",
@@ -1216,9 +1156,7 @@ export default function InventoryCheckPage() {
                 <div>
                   Counted pieces:{" "}
                   <strong style={{ color: "#111827" }}>
-                    {padCountedPieces === null
-                      ? "—"
-                      : formatQty(padCountedPieces)}
+                    {padCountedPieces === null ? "—" : formatQty(padCountedPieces)}
                   </strong>
                 </div>
                 <div>
@@ -1256,9 +1194,7 @@ export default function InventoryCheckPage() {
                 <input
                   type="text"
                   readOnly
-                  value={
-                    pad.itemId ? formatQty(padSystemPieces) : ""
-                  }
+                  value={pad.itemId ? formatQty(padSystemPieces) : ""}
                   style={{
                     ...inputBase,
                     backgroundColor: "#f3f4f6",
@@ -1268,17 +1204,13 @@ export default function InventoryCheckPage() {
               </div>
 
               <div>
-                <label style={labelStyle}>
-                  Counted pieces (physical)
-                </label>
+                <label style={labelStyle}>Counted pieces (physical)</label>
                 <input
                   type="number"
                   min={0}
                   step="0.01"
                   value={pad.countedPieces}
-                  onChange={(e) =>
-                    handlePadChange("countedPieces", e.target.value)
-                  }
+                  onChange={(e) => handlePadChange("countedPieces", e.target.value)}
                   style={inputBase}
                 />
               </div>
@@ -1301,27 +1233,13 @@ export default function InventoryCheckPage() {
 
           {/* LIST */}
           {lines.length === 0 ? (
-            <div
-              style={{
-                padding: "14px 4px 6px",
-                fontSize: "13px",
-                color: "#6b7280",
-              }}
-            >
-              No items added yet. Use the pad above and click{" "}
-              <strong>+ Add to list</strong>.
+            <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
+              No items added yet. Use the pad above and click <strong>+ Add to list</strong>.
             </div>
           ) : (
             <>
-              <div
-                style={{
-                  fontSize: "12px",
-                  color: "#6b7280",
-                  marginBottom: "6px",
-                }}
-              >
-                {lines.length} item
-                {lines.length === 1 ? "" : "s"} in this inventory check.
+              <div style={{ fontSize: "12px", color: "#6b7280", marginBottom: "6px" }}>
+                {lines.length} item{lines.length === 1 ? "" : "s"} in this inventory check.
               </div>
 
               <div
@@ -1345,8 +1263,7 @@ export default function InventoryCheckPage() {
                   <div
                     style={{
                       display: "grid",
-                      gridTemplateColumns:
-                        "minmax(220px, 2.5fr) 1fr 1fr 1fr 1fr 60px",
+                      gridTemplateColumns: "minmax(220px, 2.5fr) 1fr 1fr 1fr 1fr 60px",
                       minWidth: "980px",
                       alignItems: "center",
                       padding: "8px 10px",
@@ -1360,18 +1277,10 @@ export default function InventoryCheckPage() {
                     }}
                   >
                     <div>Item</div>
-                    <div style={{ textAlign: "right" }}>
-                      System pieces
-                    </div>
-                    <div style={{ textAlign: "right" }}>
-                      Cost / piece
-                    </div>
-                    <div style={{ textAlign: "right" }}>
-                      Counted pieces
-                    </div>
-                    <div style={{ textAlign: "right" }}>
-                      Difference
-                    </div>
+                    <div style={{ textAlign: "right" }}>System pieces</div>
+                    <div style={{ textAlign: "right" }}>Cost / piece</div>
+                    <div style={{ textAlign: "right" }}>Counted pieces</div>
+                    <div style={{ textAlign: "right" }}>Difference</div>
                     <div></div>
                   </div>
 
@@ -1380,8 +1289,7 @@ export default function InventoryCheckPage() {
                       key={ln.id}
                       style={{
                         display: "grid",
-                        gridTemplateColumns:
-                          "minmax(220px, 2.5fr) 1fr 1fr 1fr 1fr 60px",
+                        gridTemplateColumns: "minmax(220px, 2.5fr) 1fr 1fr 1fr 1fr 60px",
                         minWidth: "980px",
                         alignItems: "center",
                         padding: "9px 10px",
@@ -1409,15 +1317,9 @@ export default function InventoryCheckPage() {
                           {ln.itemName || "Unknown item"}
                         </button>
                       </div>
-                      <div style={{ textAlign: "right" }}>
-                        {formatQty(ln.systemPieces)}
-                      </div>
-                      <div style={{ textAlign: "right" }}>
-                        {formatMoney(ln.costPerPiece)}
-                      </div>
-                      <div style={{ textAlign: "right" }}>
-                        {formatQty(ln.countedPieces)}
-                      </div>
+                      <div style={{ textAlign: "right" }}>{formatQty(ln.systemPieces)}</div>
+                      <div style={{ textAlign: "right" }}>{formatMoney(ln.costPerPiece)}</div>
+                      <div style={{ textAlign: "right" }}>{formatQty(ln.countedPieces)}</div>
                       <div
                         style={{
                           textAlign: "right",
@@ -1459,14 +1361,7 @@ export default function InventoryCheckPage() {
           )}
 
           {/* Actions */}
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "flex-end",
-              gap: "12px",
-              marginTop: "14px",
-            }}
-          >
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: "12px", marginTop: "14px" }}>
             <button
               type="button"
               onClick={handleSaveDraft}
@@ -1518,51 +1413,24 @@ export default function InventoryCheckPage() {
             padding: "16px 18px 18px",
           }}
         >
-          <h2
-            style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}
-          >
+          <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>
             Previous inventory checks
           </h2>
-          <div
-            style={{
-              fontSize: "12px",
-              color: "#6b7280",
-              marginTop: 4,
-            }}
-          >
+          <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 4 }}>
             One row per date. Click a date to open its full item list.
           </div>
 
           {groupedHistory.length === 0 ? (
-            <div
-              style={{
-                marginTop: 10,
-                fontSize: "13px",
-                color: "#6b7280",
-              }}
-            >
+            <div style={{ marginTop: 10, fontSize: "13px", color: "#6b7280" }}>
               No inventory checks recorded yet.
             </div>
           ) : (
-            <div
-              style={{
-                marginTop: 12,
-                borderRadius: "14px",
-                border: "1px solid #e5e7eb",
-                overflow: "hidden",
-              }}
-            >
-              <div
-                style={{
-                  maxHeight: "420px",
-                  overflowY: "auto",
-                }}
-              >
+            <div style={{ marginTop: 12, borderRadius: "14px", border: "1px solid #e5e7eb", overflow: "hidden" }}>
+              <div style={{ maxHeight: "420px", overflowY: "auto" }}>
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateColumns:
-                      "160px 1fr 1fr 1fr 120px",
+                    gridTemplateColumns: "160px 1fr 1fr 1fr 120px",
                     minWidth: "720px",
                     alignItems: "center",
                     padding: "8px 10px",
@@ -1577,15 +1445,9 @@ export default function InventoryCheckPage() {
                 >
                   <div>Date</div>
                   <div style={{ textAlign: "right" }}>Items</div>
-                  <div style={{ textAlign: "right" }}>
-                    System pieces
-                  </div>
-                  <div style={{ textAlign: "right" }}>
-                    Counted pieces
-                  </div>
-                  <div style={{ textAlign: "right" }}>
-                    Diff (pieces)
-                  </div>
+                  <div style={{ textAlign: "right" }}>System pieces</div>
+                  <div style={{ textAlign: "right" }}>Counted pieces</div>
+                  <div style={{ textAlign: "right" }}>Diff (pieces)</div>
                 </div>
 
                 {groupedHistory.map((g) => (
@@ -1593,8 +1455,7 @@ export default function InventoryCheckPage() {
                     key={g.date}
                     style={{
                       display: "grid",
-                      gridTemplateColumns:
-                        "160px 1fr 1fr 1fr 120px",
+                      gridTemplateColumns: "160px 1fr 1fr 1fr 120px",
                       minWidth: "720px",
                       alignItems: "center",
                       padding: "9px 10px",
@@ -1618,25 +1479,13 @@ export default function InventoryCheckPage() {
                       >
                         {g.date}
                       </button>
-                      <div
-                        style={{
-                          fontSize: "11px",
-                          color: "#6b7280",
-                          marginTop: 2,
-                        }}
-                      >
+                      <div style={{ fontSize: "11px", color: "#6b7280", marginTop: 2 }}>
                         {g.status === "POSTED" ? "Posted" : "Draft"}
                       </div>
                     </div>
-                    <div style={{ textAlign: "right" }}>
-                      {g.total_items}
-                    </div>
-                    <div style={{ textAlign: "right" }}>
-                      {formatQty(g.total_system_pieces)}
-                    </div>
-                    <div style={{ textAlign: "right" }}>
-                      {formatQty(g.total_counted_pieces)}
-                    </div>
+                    <div style={{ textAlign: "right" }}>{g.total_items}</div>
+                    <div style={{ textAlign: "right" }}>{formatQty(g.total_system_pieces)}</div>
+                    <div style={{ textAlign: "right" }}>{formatQty(g.total_counted_pieces)}</div>
                     <div
                       style={{
                         textAlign: "right",
