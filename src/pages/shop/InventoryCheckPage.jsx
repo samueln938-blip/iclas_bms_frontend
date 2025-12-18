@@ -63,13 +63,20 @@ function formatMoney(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return String(value);
   // money: no decimals for RWF
-  return n.toLocaleString("en-RW", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  });
+  return n.toLocaleString("en-RW", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 }
 
-// ---------- Searchable dropdown (same behaviour as Purchases pad) ----------
+function formatMoneySigned(value) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n)) return String(value);
+  const abs = Math.abs(n);
+  const s = formatMoney(abs);
+  if (n > 0) return `+${s}`;
+  if (n < 0) return `-${s}`;
+  return "0";
+}
+
+// ---------- Searchable dropdown ----------
 
 function ItemComboBox({ items, valueId, onChangeId, disabled }) {
   const wrapRef = useRef(null);
@@ -193,13 +200,7 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
           }}
         >
           {filtered.length === 0 ? (
-            <div
-              style={{
-                padding: "10px 12px",
-                fontSize: "13px",
-                color: "#6b7280",
-              }}
-            >
+            <div style={{ padding: "10px 12px", fontSize: "13px", color: "#6b7280" }}>
               No matching items
             </div>
           ) : (
@@ -263,12 +264,9 @@ export default function InventoryCheckPage() {
 
   const [inventoryDate, setInventoryDate] = useState(() => todayISO());
 
-  // ✅ Draft check id (ONLY set when current check is DRAFT)
+  // current draft / posted check loaded for selected date
   const [currentCheckId, setCurrentCheckId] = useState(null);
-
-  // ✅ What we loaded for this date (can be POSTED or DRAFT)
-  const [loadedCheckId, setLoadedCheckId] = useState(null);
-  const [loadedCheckStatus, setLoadedCheckStatus] = useState(null); // "DRAFT" | "POSTED" | null
+  const [currentCheckStatus, setCurrentCheckStatus] = useState("DRAFT"); // DRAFT | POSTED
 
   // pad state
   const [pad, setPad] = useState({
@@ -277,10 +275,10 @@ export default function InventoryCheckPage() {
   });
 
   // lines for current date
-  // {id?, itemId, itemName, systemPieces, countedPieces, diffPieces, costPerPiece}
+  // {id?, itemId, itemName, systemPieces, countedPieces, diffPieces, costPerPiece, valueDiff}
   const [lines, setLines] = useState([]);
 
-  // history list for "History & differences"
+  // history list
   const [historyChecks, setHistoryChecks] = useState([]);
 
   const [savingDraft, setSavingDraft] = useState(false);
@@ -288,18 +286,11 @@ export default function InventoryCheckPage() {
 
   const padRef = useRef(null);
 
-  const clearAlerts = () => {
-    setError("");
-    setMessage("");
-  };
-
   // ---------- Derived maps ----------
 
   const stockByItemId = useMemo(() => {
     const map = {};
-    for (const s of stockRows || []) {
-      map[s.item_id] = s;
-    }
+    for (const s of stockRows || []) map[s.item_id] = s;
     return map;
   }, [stockRows]);
 
@@ -320,17 +311,17 @@ export default function InventoryCheckPage() {
       row.cost_price_per_piece ??
       row.unit_cost ??
       row.average_cost_per_piece ??
-      row.latest_cost_per_piece;
+      row.latest_cost_per_piece ??
+      row.purchase_cost_per_piece ??
+      row.purchase_cost_per_piece;
     const n = Number(raw);
     return Number.isFinite(n) ? n : 0;
   };
 
   const padStock = pad.itemId ? stockByItemId[Number(pad.itemId)] : null;
   const padSystemPieces = padStock ? Number(padStock.remaining_pieces || 0) : 0;
-  const padCountedPieces =
-    pad.countedPieces === "" ? null : Number(pad.countedPieces || 0);
-  const padDiff =
-    padCountedPieces === null ? null : padCountedPieces - padSystemPieces;
+  const padCountedPieces = pad.countedPieces === "" ? null : Number(pad.countedPieces || 0);
+  const padDiff = padCountedPieces === null ? null : padCountedPieces - padSystemPieces;
 
   const totalDiffPieces = useMemo(
     () => lines.reduce((sum, ln) => sum + Number(ln.diffPieces || 0), 0),
@@ -340,8 +331,7 @@ export default function InventoryCheckPage() {
   const totalSystemValueBefore = useMemo(
     () =>
       lines.reduce(
-        (sum, ln) =>
-          sum + Number(ln.costPerPiece || 0) * Number(ln.systemPieces || 0),
+        (sum, ln) => sum + Number(ln.costPerPiece || 0) * Number(ln.systemPieces || 0),
         0
       ),
     [lines]
@@ -350,8 +340,7 @@ export default function InventoryCheckPage() {
   const totalSystemValueAfter = useMemo(
     () =>
       lines.reduce(
-        (sum, ln) =>
-          sum + Number(ln.costPerPiece || 0) * Number(ln.countedPieces || 0),
+        (sum, ln) => sum + Number(ln.costPerPiece || 0) * Number(ln.countedPieces || 0),
         0
       ),
     [lines]
@@ -359,28 +348,46 @@ export default function InventoryCheckPage() {
 
   const totalSystemValueDiff = totalSystemValueAfter - totalSystemValueBefore;
 
+  // ✅ NEW: Money lost/gained/net (based on diffPieces and costPerPiece)
+  const totalMoneyLost = useMemo(() => {
+    return lines.reduce((sum, ln) => {
+      const diff = Number(ln.diffPieces || 0);
+      const cost = Number(ln.costPerPiece || 0);
+      if (diff < 0) return sum + Math.abs(diff) * cost;
+      return sum;
+    }, 0);
+  }, [lines]);
+
+  const totalMoneyGained = useMemo(() => {
+    return lines.reduce((sum, ln) => {
+      const diff = Number(ln.diffPieces || 0);
+      const cost = Number(ln.costPerPiece || 0);
+      if (diff > 0) return sum + diff * cost;
+      return sum;
+    }, 0);
+  }, [lines]);
+
+  const totalMoneyNet = totalMoneyGained - totalMoneyLost;
+
   // ---------- Data loading ----------
 
   useEffect(() => {
     async function loadShopAndStock() {
       setLoading(true);
-      clearAlerts();
+      setError("");
+      setMessage("");
 
       try {
         const shopRes = await fetch(`${API_BASE}/shops/${shopId}`, {
           headers: authHeadersNoJson,
         });
-        if (!shopRes.ok) {
-          throw new Error(`Failed to load shop. Status: ${shopRes.status}`);
-        }
+        if (!shopRes.ok) throw new Error(`Failed to load shop. Status: ${shopRes.status}`);
         const shopData = await shopRes.json();
 
         const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`, {
           headers: authHeadersNoJson,
         });
-        if (!stockRes.ok) {
-          throw new Error(`Failed to load stock. Status: ${stockRes.status}`);
-        }
+        if (!stockRes.ok) throw new Error(`Failed to load stock. Status: ${stockRes.status}`);
         const stockData = await stockRes.json();
 
         setShop(shopData);
@@ -402,9 +409,7 @@ export default function InventoryCheckPage() {
       const res = await fetch(`${API_BASE}/inventory-checks/summary?shop_id=${shopId}`, {
         headers: authHeadersNoJson,
       });
-      if (!res.ok) {
-        throw new Error(`Failed to load inventory checks. Status: ${res.status}`);
-      }
+      if (!res.ok) throw new Error(`Failed to load inventory checks. Status: ${res.status}`);
       const data = await res.json().catch(() => []);
       const list = Array.isArray(data) ? data : [];
       setHistoryChecks(list);
@@ -418,7 +423,8 @@ export default function InventoryCheckPage() {
 
   // load details for currently selected date (draft or posted)
   const loadCheckForDate = async (isoDate) => {
-    clearAlerts();
+    setError("");
+    setMessage("");
 
     try {
       const dateISO = toISODate(isoDate);
@@ -427,24 +433,16 @@ export default function InventoryCheckPage() {
       const sameDateChecks = list.filter((c) => toISODate(c.check_date) === dateISO);
 
       if (!sameDateChecks.length) {
-        // no check yet for this date
-        setLoadedCheckId(null);
-        setLoadedCheckStatus(null);
         setCurrentCheckId(null);
+        setCurrentCheckStatus("DRAFT");
         setLines([]);
         return;
       }
 
-      // ✅ IMPORTANT FIX:
-      // Prefer a DRAFT check (editable). Only fall back to POSTED if no draft exists.
-      // This prevents the UI from accidentally loading a POSTED check and then trying to update it.
-      const draftMatch =
-        sameDateChecks.find((c) => String(c.status || "").toUpperCase() === "DRAFT") || null;
-
-      const postedMatch =
-        sameDateChecks.find((c) => String(c.status || "").toUpperCase() === "POSTED") || null;
-
-      const match = draftMatch || postedMatch || sameDateChecks[0];
+      // Prefer POSTED, otherwise last one
+      let match =
+        sameDateChecks.find((c) => c.status === "POSTED") ||
+        sameDateChecks[sameDateChecks.length - 1];
 
       const detailRes = await fetch(`${API_BASE}/inventory-checks/${match.id}`, {
         headers: authHeadersNoJson,
@@ -456,33 +454,30 @@ export default function InventoryCheckPage() {
 
       const detail = await detailRes.json();
 
-      const status = String(detail.status || match.status || "DRAFT").toUpperCase();
+      setCurrentCheckId(detail.id || match.id);
+      setCurrentCheckStatus(detail.status || match.status || "DRAFT");
 
-      setLoadedCheckId(detail.id || match.id);
-      setLoadedCheckStatus(status);
+      const mapped = (detail.lines || []).map((ln) => {
+        const cost =
+          Number(ln.cost_per_piece ?? ln.costPerPiece) ||
+          getCostPerPiece(ln.item_id);
 
-      const mapped = (detail.lines || []).map((ln) => ({
-        id: ln.id,
-        itemId: ln.item_id,
-        itemName: ln.item_name,
-        systemPieces: Number(ln.system_pieces || 0),
-        countedPieces: Number(ln.counted_pieces || 0),
-        diffPieces: Number(ln.diff_pieces || 0),
-        costPerPiece: getCostPerPiece(ln.item_id),
-      }));
+        const diff = Number(ln.diff_pieces || 0);
+        const valueDiff = diff * cost;
+
+        return {
+          id: ln.id,
+          itemId: ln.item_id,
+          itemName: ln.item_name,
+          systemPieces: Number(ln.system_pieces || 0),
+          countedPieces: Number(ln.counted_pieces || 0),
+          diffPieces: diff,
+          costPerPiece: cost,
+          valueDiff,
+        };
+      });
+
       setLines(mapped);
-
-      if (status === "POSTED") {
-        // ✅ Do NOT set currentCheckId to a posted check (backend will reject updates)
-        setCurrentCheckId(null);
-        setMessage(
-          "This date has a POSTED inventory check (read-only). To make changes, click “Save draft” to create a NEW draft, then continue."
-        );
-      } else {
-        // editable draft
-        setCurrentCheckId(detail.id || match.id);
-        setMessage("");
-      }
     } catch (err) {
       console.error(err);
       setError(err?.message || "Failed to fetch inventory check for selected date.");
@@ -491,38 +486,31 @@ export default function InventoryCheckPage() {
 
   // when date changes, load any existing check
   useEffect(() => {
-    if (!loading) {
-      loadCheckForDate(inventoryDate);
-    }
+    if (!loading) loadCheckForDate(inventoryDate);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inventoryDate, loading]);
 
   // ---------- Pad + list logic ----------
 
-  const resetPad = () =>
-    setPad({
-      itemId: "",
-      countedPieces: "",
-    });
+  const resetPad = () => setPad({ itemId: "", countedPieces: "" });
 
   const handlePadChange = (field, value) => {
     if (field === "itemId") {
-      setPad((prev) => ({
-        ...prev,
-        itemId: value === "" ? "" : Number(value),
-      }));
+      setPad((prev) => ({ ...prev, itemId: value === "" ? "" : Number(value) }));
       return;
     }
     if (field === "countedPieces") {
-      setPad((prev) => ({
-        ...prev,
-        countedPieces: value,
-      }));
+      setPad((prev) => ({ ...prev, countedPieces: value }));
       return;
     }
   };
 
   const handleAddToList = () => {
+    if (currentCheckStatus === "POSTED") {
+      setError("This inventory check is POSTED (locked). Choose another date to create a new draft.");
+      return;
+    }
+
     const itemId = Number(pad.itemId || 0);
     if (!itemId) {
       setError("Select an item first.");
@@ -544,6 +532,7 @@ export default function InventoryCheckPage() {
     const system = Number(s.remaining_pieces || 0);
     const diff = counted - system;
     const costPerPiece = getCostPerPiece(itemId);
+    const valueDiff = diff * costPerPiece;
 
     setError("");
     setMessage("");
@@ -558,11 +547,10 @@ export default function InventoryCheckPage() {
         countedPieces: counted,
         diffPieces: diff,
         costPerPiece,
+        valueDiff,
       };
 
-      if (existingIndex === -1) {
-        return [...prev, base];
-      }
+      if (existingIndex === -1) return [...prev, base];
       const copy = [...prev];
       copy[existingIndex] = base;
       return copy;
@@ -575,33 +563,37 @@ export default function InventoryCheckPage() {
   };
 
   const handleEditLine = (line) => {
-    setPad({
-      itemId: line.itemId,
-      countedPieces: line.countedPieces,
-    });
+    if (currentCheckStatus === "POSTED") return;
+    setPad({ itemId: line.itemId, countedPieces: line.countedPieces });
     if (padRef.current) {
       padRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
     }
   };
 
   const handleRemoveLine = (id) => {
+    if (currentCheckStatus === "POSTED") return;
     setLines((prev) => prev.filter((ln) => ln.id !== id));
   };
 
   // ---------- Save draft / post ----------
 
   const handleSaveDraft = async () => {
+    if (currentCheckStatus === "POSTED") {
+      setError("This inventory check is POSTED (locked) and cannot be modified.");
+      return;
+    }
+
     if (!lines.length) {
       setError("Add at least one item to the list before saving a draft.");
       return;
     }
 
     setSavingDraft(true);
-    clearAlerts();
+    setError("");
+    setMessage("");
 
     try {
       const payload = {
-        // ✅ If currentCheckId is null (e.g. we loaded a POSTED check), backend will CREATE a NEW draft.
         id: currentCheckId,
         shop_id: Number(shopId),
         check_date: toISODate(inventoryDate),
@@ -620,35 +612,37 @@ export default function InventoryCheckPage() {
 
       if (!res.ok) {
         const errData = await res.json().catch(() => null);
-        throw new Error(
-          errData?.detail || `Failed to save inventory draft. Status: ${res.status}`
-        );
+        throw new Error(errData?.detail || `Failed to save inventory draft. Status: ${res.status}`);
       }
 
       const data = await res.json();
 
-      // ✅ saved draft
-      setLoadedCheckId(data.id);
-      setLoadedCheckStatus(String(data.status || "DRAFT").toUpperCase());
       setCurrentCheckId(data.id);
+      setCurrentCheckStatus(data.status || "DRAFT");
 
-      const syncedLines = (data.lines || []).map((ln) => ({
-        id: ln.id,
-        itemId: ln.item_id,
-        itemName: ln.item_name,
-        systemPieces: Number(ln.system_pieces || 0),
-        countedPieces: Number(ln.counted_pieces || 0),
-        diffPieces: Number(ln.diff_pieces || 0),
-        costPerPiece: getCostPerPiece(ln.item_id),
-      }));
+      const syncedLines = (data.lines || []).map((ln) => {
+        const cost = Number(ln.cost_per_piece) || getCostPerPiece(ln.item_id);
+        const diff = Number(ln.diff_pieces || 0);
+        return {
+          id: ln.id,
+          itemId: ln.item_id,
+          itemName: ln.item_name,
+          systemPieces: Number(ln.system_pieces || 0),
+          countedPieces: Number(ln.counted_pieces || 0),
+          diffPieces: diff,
+          costPerPiece: cost,
+          valueDiff: diff * cost,
+        };
+      });
+
       setLines(syncedLines);
-
       await loadHistory();
 
       setMessage("Inventory draft saved. Stock is NOT changed yet.");
     } catch (err) {
       console.error(err);
       setError(err?.message || "Failed to save inventory draft.");
+      setMessage("");
     } finally {
       setSavingDraft(false);
     }
@@ -660,8 +654,14 @@ export default function InventoryCheckPage() {
       return;
     }
 
+    if (currentCheckStatus === "POSTED") {
+      setError("This inventory check is already POSTED.");
+      return;
+    }
+
     setPosting(true);
-    clearAlerts();
+    setError("");
+    setMessage("");
 
     try {
       const res = await fetch(`${API_BASE}/inventory-checks/${currentCheckId}/post`, {
@@ -671,35 +671,36 @@ export default function InventoryCheckPage() {
 
       if (!res.ok) {
         const errData = await res.json().catch(() => null);
-        throw new Error(
-          errData?.detail || `Failed to post inventory check. Status: ${res.status}`
-        );
+        throw new Error(errData?.detail || `Failed to post inventory check. Status: ${res.status}`);
       }
 
       const data = await res.json();
 
-      const syncedLines = (data.lines || []).map((ln) => ({
-        id: ln.id,
-        itemId: ln.item_id,
-        itemName: ln.item_name,
-        systemPieces: Number(ln.system_pieces || 0),
-        countedPieces: Number(ln.counted_pieces || 0),
-        diffPieces: Number(ln.diff_pieces || 0),
-        costPerPiece: getCostPerPiece(ln.item_id),
-      }));
+      setCurrentCheckStatus(data.status || "POSTED");
+
+      const syncedLines = (data.lines || []).map((ln) => {
+        const cost = Number(ln.cost_per_piece) || getCostPerPiece(ln.item_id);
+        const diff = Number(ln.diff_pieces || 0);
+        return {
+          id: ln.id,
+          itemId: ln.item_id,
+          itemName: ln.item_name,
+          systemPieces: Number(ln.system_pieces || 0),
+          countedPieces: Number(ln.counted_pieces || 0),
+          diffPieces: diff,
+          costPerPiece: cost,
+          valueDiff: diff * cost,
+        };
+      });
+
       setLines(syncedLines);
-
       await loadHistory();
-
-      // ✅ Now posted: do not keep currentCheckId, otherwise Save draft would try to update a posted check and fail.
-      setLoadedCheckId(data.id || loadedCheckId);
-      setLoadedCheckStatus("POSTED");
-      setCurrentCheckId(null);
 
       setMessage("Inventory check posted. Stock levels have been updated.");
     } catch (err) {
       console.error(err);
       setError(err?.message || "Failed to post inventory check.");
+      setMessage("");
     } finally {
       setPosting(false);
     }
@@ -729,11 +730,10 @@ export default function InventoryCheckPage() {
       g.total_system_pieces += Number(c.total_system_pieces || 0);
       g.total_counted_pieces += Number(c.total_counted_pieces || 0);
       g.total_diff_pieces += Number(c.total_diff_pieces || 0);
-      if (String(c.status || "").toUpperCase() === "POSTED") g.status = "POSTED";
+      if (c.status === "POSTED") g.status = "POSTED";
       g.checkIds.push(c.id);
     }
     const arr = Array.from(map.values());
-    // newest date first
     arr.sort((a, b) => b.date.localeCompare(a.date));
     return arr;
   }, [historyChecks]);
@@ -787,15 +787,10 @@ export default function InventoryCheckPage() {
     marginBottom: "6px",
   };
 
+  const isPosted = currentCheckStatus === "POSTED";
+
   return (
-    <div
-      style={{
-        width: "100%",
-        maxWidth: "1500px",
-        margin: "0 auto",
-        boxSizing: "border-box",
-      }}
-    >
+    <div style={{ width: "100%", maxWidth: "1500px", margin: "0 auto", boxSizing: "border-box" }}>
       {/* Header */}
       <div
         style={{
@@ -815,13 +810,7 @@ export default function InventoryCheckPage() {
             marginBottom: "6px",
           }}
         >
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "flex-start",
-            }}
-          >
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
             <button
               onClick={() => navigate(`/shops/${shopId}`)}
               style={{
@@ -837,41 +826,32 @@ export default function InventoryCheckPage() {
               ← Back to shop workspace
             </button>
 
-            <h1
-              style={{
-                fontSize: "30px",
-                fontWeight: 800,
-                letterSpacing: "0.03em",
-                margin: 0,
-              }}
-            >
+            <h1 style={{ fontSize: "30px", fontWeight: 800, letterSpacing: "0.03em", margin: 0 }}>
               Inventory check
             </h1>
 
-            <div
-              style={{
-                marginTop: "2px",
-                fontSize: "13px",
-                fontWeight: 600,
-                color: "#2563eb",
-              }}
-            >
+            <div style={{ marginTop: "2px", fontSize: "13px", fontWeight: 600, color: "#2563eb" }}>
               {shopName}
             </div>
 
-            <div
-              style={{
-                marginTop: "10px",
-                display: "flex",
-                gap: "8px",
-                flexWrap: "wrap",
-              }}
-            >
-              <button
-                type="button"
-                style={tabBtn(activeTab === "enter")}
-                onClick={() => setActiveTab("enter")}
+            <div style={{ marginTop: "8px", display: "flex", alignItems: "center", gap: "10px" }}>
+              <span
+                style={{
+                  fontSize: "11px",
+                  fontWeight: 800,
+                  padding: "6px 10px",
+                  borderRadius: "999px",
+                  border: `1px solid ${isPosted ? "#b91c1c" : "#16a34a"}`,
+                  color: isPosted ? "#b91c1c" : "#166534",
+                  background: isPosted ? "#fef2f2" : "#ecfdf3",
+                }}
               >
+                {isPosted ? "POSTED (locked)" : "DRAFT (editable)"}
+              </span>
+            </div>
+
+            <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              <button type="button" style={tabBtn(activeTab === "enter")} onClick={() => setActiveTab("enter")}>
                 Enter counts
               </button>
               <button
@@ -885,48 +865,31 @@ export default function InventoryCheckPage() {
                 History &amp; differences
               </button>
             </div>
-
-            {/* tiny status hint */}
-            <div style={{ marginTop: "10px", fontSize: "12px", color: "#6b7280" }}>
-              {loadedCheckId ? (
-                <>
-                  Loaded check #{loadedCheckId} —{" "}
-                  <strong style={{ color: loadedCheckStatus === "POSTED" ? "#b91c1c" : "#111827" }}>
-                    {loadedCheckStatus || "DRAFT"}
-                  </strong>
-                  {loadedCheckStatus === "POSTED" ? " (read-only)" : ""}
-                </>
-              ) : (
-                "No inventory check saved for this date yet."
-              )}
-            </div>
           </div>
 
           {/* Summary card */}
           <div
             style={{
-              minWidth: "260px",
-              maxWidth: "360px",
+              minWidth: "280px",
+              maxWidth: "420px",
               backgroundColor: "#ffffff",
               borderRadius: "16px",
               padding: "10px 14px",
               boxShadow: "0 6px 18px rgba(15,37,128,0.06)",
               display: "grid",
               gridTemplateColumns: "1fr",
-              rowGap: "6px",
+              rowGap: "8px",
               fontSize: "12px",
             }}
           >
-            <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>
-              Inventory summary
-            </div>
+            <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>Inventory summary</div>
+
             <div
               style={{
                 fontSize: "10px",
                 textTransform: "uppercase",
                 letterSpacing: "0.14em",
                 color: "#9ca3af",
-                marginBottom: "4px",
               }}
             >
               Date: {toISODate(inventoryDate)}
@@ -947,50 +910,78 @@ export default function InventoryCheckPage() {
                 style={{
                   fontSize: "18px",
                   fontWeight: 800,
-                  color:
-                    totalDiffPieces === 0
-                      ? "#111827"
-                      : totalDiffPieces > 0
-                      ? "#16a34a"
-                      : "#b91c1c",
+                  color: totalDiffPieces === 0 ? "#111827" : totalDiffPieces > 0 ? "#16a34a" : "#b91c1c",
                 }}
               >
                 {formatDiff(totalDiffPieces)}
               </div>
             </div>
 
+            {/* ✅ NEW: Money lost / gained / net */}
             <div
               style={{
-                marginTop: "6px",
-                paddingTop: "6px",
+                paddingTop: "8px",
+                borderTop: "1px dashed #e5e7eb",
+                display: "grid",
+                gridTemplateColumns: "1fr",
+                rowGap: "6px",
+              }}
+            >
+              <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.1em", color: "#6b7280" }}>
+                Shrinkage / Gain (RWF)
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
+                <div style={{ fontSize: "11px", color: "#6b7280" }}>Money lost</div>
+                <div style={{ fontWeight: 800, color: "#b91c1c" }}>{formatMoney(totalMoneyLost)}</div>
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
+                <div style={{ fontSize: "11px", color: "#6b7280" }}>Money gained</div>
+                <div style={{ fontWeight: 800, color: "#16a34a" }}>{formatMoney(totalMoneyGained)}</div>
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
+                <div style={{ fontSize: "11px", color: "#6b7280" }}>Net</div>
+                <div
+                  style={{
+                    fontWeight: 800,
+                    color: totalMoneyNet === 0 ? "#111827" : totalMoneyNet > 0 ? "#16a34a" : "#b91c1c",
+                  }}
+                >
+                  {formatMoneySigned(totalMoneyNet)}
+                </div>
+              </div>
+            </div>
+
+            {/* existing value block */}
+            <div
+              style={{
+                paddingTop: "8px",
                 borderTop: "1px dashed #e5e7eb",
                 display: "grid",
                 gridTemplateColumns: "1fr",
                 rowGap: "4px",
               }}
             >
-              <div
-                style={{
-                  fontSize: "10px",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.1em",
-                  color: "#6b7280",
-                }}
-              >
+              <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.1em", color: "#6b7280" }}>
                 System stock value (RWF)
               </div>
+
               <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
                 <div style={{ fontSize: "11px", color: "#6b7280" }}>Before</div>
                 <div style={{ fontWeight: 700, fontSize: "13px", color: "#111827" }}>
                   {formatMoney(totalSystemValueBefore)}
                 </div>
               </div>
+
               <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
                 <div style={{ fontSize: "11px", color: "#6b7280" }}>After (counted)</div>
                 <div style={{ fontWeight: 700, fontSize: "13px", color: "#111827" }}>
                   {formatMoney(totalSystemValueAfter)}
                 </div>
               </div>
+
               <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
                 <div style={{ fontSize: "11px", color: "#6b7280" }}>Difference</div>
                 <div
@@ -998,16 +989,10 @@ export default function InventoryCheckPage() {
                     fontWeight: 700,
                     fontSize: "13px",
                     color:
-                      totalSystemValueDiff === 0
-                        ? "#111827"
-                        : totalSystemValueDiff > 0
-                        ? "#16a34a"
-                        : "#b91c1c",
+                      totalSystemValueDiff === 0 ? "#111827" : totalSystemValueDiff > 0 ? "#16a34a" : "#b91c1c",
                   }}
                 >
-                  {totalSystemValueDiff === 0
-                    ? "0"
-                    : `${totalSystemValueDiff > 0 ? "+" : ""}${formatMoney(totalSystemValueDiff)}`}
+                  {formatMoneySigned(totalSystemValueDiff)}
                 </div>
               </div>
             </div>
@@ -1016,9 +1001,7 @@ export default function InventoryCheckPage() {
 
         {/* date picker */}
         <div style={{ display: "inline-flex", alignItems: "center", gap: "10px", marginBottom: "10px" }}>
-          <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>
-            Inventory check date
-          </div>
+          <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>Inventory check date</div>
           <input
             type="date"
             value={toISODate(inventoryDate)}
@@ -1044,27 +1027,30 @@ export default function InventoryCheckPage() {
             color: error ? "#b91c1c" : "#166534",
             fontSize: "0.9rem",
             display: "flex",
-            alignItems: "flex-start",
+            alignItems: "center",
             justifyContent: "space-between",
             gap: "10px",
           }}
         >
-          <div style={{ flex: 1 }}>{error || message}</div>
+          <div style={{ fontWeight: 700 }}>{error || message}</div>
           <button
             type="button"
-            onClick={clearAlerts}
+            onClick={() => {
+              setError("");
+              setMessage("");
+            }}
             style={{
-              border: "1px solid rgba(0,0,0,0.08)",
+              border: "1px solid #d1d5db",
               background: "#ffffff",
               borderRadius: "999px",
-              padding: "2px 10px",
+              padding: "6px 10px",
               cursor: "pointer",
               fontWeight: 800,
-              lineHeight: 1.6,
+              color: "#111827",
             }}
             title="Dismiss"
           >
-            ×
+            ✕
           </button>
         </div>
       )}
@@ -1094,6 +1080,7 @@ export default function InventoryCheckPage() {
               background: "#ffffff",
               border: "1px solid #e5e7eb",
               color: "#111827",
+              opacity: isPosted ? 0.85 : 1,
             }}
           >
             <div
@@ -1112,15 +1099,16 @@ export default function InventoryCheckPage() {
               <button
                 type="button"
                 onClick={handleAddToList}
+                disabled={isPosted}
                 style={{
                   padding: "0.55rem 1.3rem",
                   borderRadius: "9999px",
                   border: "none",
-                  backgroundColor: "#2563eb",
+                  backgroundColor: isPosted ? "#9ca3af" : "#2563eb",
                   color: "white",
                   fontWeight: 800,
                   fontSize: "0.9rem",
-                  cursor: "pointer",
+                  cursor: isPosted ? "not-allowed" : "pointer",
                 }}
               >
                 + Add to list
@@ -1133,7 +1121,7 @@ export default function InventoryCheckPage() {
                 items={pickerItems}
                 valueId={pad.itemId === "" ? "" : String(pad.itemId)}
                 onChangeId={(idStr) => handlePadChange("itemId", idStr)}
-                disabled={false}
+                disabled={isPosted}
               />
 
               <div
@@ -1149,9 +1137,7 @@ export default function InventoryCheckPage() {
               >
                 <div>
                   System pieces:{" "}
-                  <strong style={{ color: "#111827" }}>
-                    {pad.itemId ? formatQty(padSystemPieces) : "—"}
-                  </strong>
+                  <strong style={{ color: "#111827" }}>{pad.itemId ? formatQty(padSystemPieces) : "—"}</strong>
                 </div>
                 <div>
                   Counted pieces:{" "}
@@ -1164,13 +1150,7 @@ export default function InventoryCheckPage() {
                   <strong
                     style={{
                       color:
-                        padDiff === null
-                          ? "#111827"
-                          : padDiff > 0
-                          ? "#16a34a"
-                          : padDiff < 0
-                          ? "#b91c1c"
-                          : "#111827",
+                        padDiff === null ? "#111827" : padDiff > 0 ? "#16a34a" : padDiff < 0 ? "#b91c1c" : "#111827",
                     }}
                   >
                     {padDiff === null ? "—" : formatDiff(padDiff)}
@@ -1183,8 +1163,7 @@ export default function InventoryCheckPage() {
               style={{
                 marginTop: "12px",
                 display: "grid",
-                gridTemplateColumns:
-                  "minmax(140px, 1.5fr) minmax(140px, 1fr) minmax(140px, 1fr)",
+                gridTemplateColumns: "minmax(140px, 1.5fr) minmax(140px, 1fr) minmax(140px, 1fr)",
                 gap: "12px",
                 alignItems: "end",
               }}
@@ -1195,11 +1174,7 @@ export default function InventoryCheckPage() {
                   type="text"
                   readOnly
                   value={pad.itemId ? formatQty(padSystemPieces) : ""}
-                  style={{
-                    ...inputBase,
-                    backgroundColor: "#f3f4f6",
-                    fontWeight: 600,
-                  }}
+                  style={{ ...inputBase, backgroundColor: "#f3f4f6", fontWeight: 600 }}
                 />
               </div>
 
@@ -1210,8 +1185,9 @@ export default function InventoryCheckPage() {
                   min={0}
                   step="0.01"
                   value={pad.countedPieces}
+                  disabled={isPosted}
                   onChange={(e) => handlePadChange("countedPieces", e.target.value)}
-                  style={inputBase}
+                  style={{ ...inputBase, backgroundColor: isPosted ? "#f9fafb" : "#ffffff" }}
                 />
               </div>
 
@@ -1221,14 +1197,16 @@ export default function InventoryCheckPage() {
                   type="text"
                   readOnly
                   value={padDiff === null ? "" : formatDiff(padDiff)}
-                  style={{
-                    ...inputBase,
-                    backgroundColor: "#f3f4f6",
-                    fontWeight: 600,
-                  }}
+                  style={{ ...inputBase, backgroundColor: "#f3f4f6", fontWeight: 600 }}
                 />
               </div>
             </div>
+
+            {isPosted && (
+              <div style={{ marginTop: "10px", fontSize: "12px", color: "#b91c1c", fontWeight: 800 }}>
+                This check is POSTED and locked. Choose another date to create a new DRAFT.
+              </div>
+            )}
           </div>
 
           {/* LIST */}
@@ -1263,8 +1241,9 @@ export default function InventoryCheckPage() {
                   <div
                     style={{
                       display: "grid",
-                      gridTemplateColumns: "minmax(220px, 2.5fr) 1fr 1fr 1fr 1fr 60px",
-                      minWidth: "980px",
+                      gridTemplateColumns:
+                        "minmax(220px, 2.2fr) 1fr 1fr 1fr 1fr 1fr 60px",
+                      minWidth: "1120px",
                       alignItems: "center",
                       padding: "8px 10px",
                       borderBottom: "1px solid #e5e7eb",
@@ -1281,80 +1260,93 @@ export default function InventoryCheckPage() {
                     <div style={{ textAlign: "right" }}>Cost / piece</div>
                     <div style={{ textAlign: "right" }}>Counted pieces</div>
                     <div style={{ textAlign: "right" }}>Difference</div>
+                    <div style={{ textAlign: "right" }}>Value diff (RWF)</div>
                     <div></div>
                   </div>
 
-                  {lines.map((ln) => (
-                    <div
-                      key={ln.id}
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "minmax(220px, 2.5fr) 1fr 1fr 1fr 1fr 60px",
-                        minWidth: "980px",
-                        alignItems: "center",
-                        padding: "9px 10px",
-                        borderBottom: "1px solid #f3f4f6",
-                        fontSize: "13px",
-                      }}
-                    >
-                      <div>
-                        <button
-                          type="button"
-                          onClick={() => handleEditLine(ln)}
-                          style={{
-                            padding: 0,
-                            margin: 0,
-                            border: "none",
-                            background: "transparent",
-                            color: "#111827",
-                            fontWeight: 600,
-                            fontSize: "13px",
-                            cursor: "pointer",
-                            textAlign: "left",
-                          }}
-                          title="Edit this item in the pad"
-                        >
-                          {ln.itemName || "Unknown item"}
-                        </button>
-                      </div>
-                      <div style={{ textAlign: "right" }}>{formatQty(ln.systemPieces)}</div>
-                      <div style={{ textAlign: "right" }}>{formatMoney(ln.costPerPiece)}</div>
-                      <div style={{ textAlign: "right" }}>{formatQty(ln.countedPieces)}</div>
+                  {lines.map((ln) => {
+                    const v = Number(ln.valueDiff || 0);
+                    const vColor = v === 0 ? "#111827" : v > 0 ? "#16a34a" : "#b91c1c";
+
+                    return (
                       <div
+                        key={ln.id}
                         style={{
-                          textAlign: "right",
-                          color:
-                            ln.diffPieces > 0
-                              ? "#16a34a"
-                              : ln.diffPieces < 0
-                              ? "#b91c1c"
-                              : "#111827",
-                          fontWeight: 600,
+                          display: "grid",
+                          gridTemplateColumns:
+                            "minmax(220px, 2.2fr) 1fr 1fr 1fr 1fr 1fr 60px",
+                          minWidth: "1120px",
+                          alignItems: "center",
+                          padding: "9px 10px",
+                          borderBottom: "1px solid #f3f4f6",
+                          fontSize: "13px",
                         }}
                       >
-                        {formatDiff(ln.diffPieces)}
-                      </div>
-                      <div style={{ textAlign: "center" }}>
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveLine(ln.id)}
+                        <div>
+                          <button
+                            type="button"
+                            onClick={() => handleEditLine(ln)}
+                            disabled={isPosted}
+                            style={{
+                              padding: 0,
+                              margin: 0,
+                              border: "none",
+                              background: "transparent",
+                              color: "#111827",
+                              fontWeight: 600,
+                              fontSize: "13px",
+                              cursor: isPosted ? "not-allowed" : "pointer",
+                              textAlign: "left",
+                              opacity: isPosted ? 0.8 : 1,
+                            }}
+                            title={isPosted ? "Posted checks are locked" : "Edit this item in the pad"}
+                          >
+                            {ln.itemName || "Unknown item"}
+                          </button>
+                        </div>
+
+                        <div style={{ textAlign: "right" }}>{formatQty(ln.systemPieces)}</div>
+                        <div style={{ textAlign: "right" }}>{formatMoney(ln.costPerPiece)}</div>
+                        <div style={{ textAlign: "right" }}>{formatQty(ln.countedPieces)}</div>
+
+                        <div
                           style={{
-                            width: "26px",
-                            height: "26px",
-                            borderRadius: "9999px",
-                            border: "1px solid #fee2e2",
-                            backgroundColor: "#fef2f2",
-                            color: "#b91c1c",
-                            fontSize: "14px",
-                            cursor: "pointer",
+                            textAlign: "right",
+                            color: ln.diffPieces > 0 ? "#16a34a" : ln.diffPieces < 0 ? "#b91c1c" : "#111827",
+                            fontWeight: 700,
                           }}
-                          title="Remove from list"
                         >
-                          ✕
-                        </button>
+                          {formatDiff(ln.diffPieces)}
+                        </div>
+
+                        <div style={{ textAlign: "right", color: vColor, fontWeight: 800 }}>
+                          {formatMoneySigned(v)}
+                        </div>
+
+                        <div style={{ textAlign: "center" }}>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveLine(ln.id)}
+                            disabled={isPosted}
+                            style={{
+                              width: "26px",
+                              height: "26px",
+                              borderRadius: "9999px",
+                              border: "1px solid #fee2e2",
+                              backgroundColor: isPosted ? "#f3f4f6" : "#fef2f2",
+                              color: "#b91c1c",
+                              fontSize: "14px",
+                              cursor: isPosted ? "not-allowed" : "pointer",
+                              opacity: isPosted ? 0.7 : 1,
+                            }}
+                            title={isPosted ? "Posted checks are locked" : "Remove from list"}
+                          >
+                            ✕
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             </>
@@ -1365,7 +1357,7 @@ export default function InventoryCheckPage() {
             <button
               type="button"
               onClick={handleSaveDraft}
-              disabled={savingDraft}
+              disabled={savingDraft || isPosted}
               style={{
                 padding: "0.6rem 1.4rem",
                 borderRadius: "999px",
@@ -1374,8 +1366,8 @@ export default function InventoryCheckPage() {
                 color: "#111827",
                 fontWeight: 600,
                 fontSize: "0.95rem",
-                cursor: savingDraft ? "not-allowed" : "pointer",
-                opacity: savingDraft ? 0.8 : 1,
+                cursor: savingDraft || isPosted ? "not-allowed" : "pointer",
+                opacity: savingDraft || isPosted ? 0.6 : 1,
               }}
             >
               {savingDraft ? "Saving…" : "Save draft"}
@@ -1384,17 +1376,17 @@ export default function InventoryCheckPage() {
             <button
               type="button"
               onClick={handlePostInventory}
-              disabled={posting}
+              disabled={posting || isPosted}
               style={{
                 padding: "0.6rem 1.8rem",
                 borderRadius: "999px",
                 border: "none",
-                backgroundColor: posting ? "#9ca3af" : "#2563eb",
+                backgroundColor: posting || isPosted ? "#9ca3af" : "#2563eb",
                 color: "white",
                 fontWeight: 700,
                 fontSize: "0.95rem",
-                cursor: posting ? "not-allowed" : "pointer",
-                opacity: posting ? 0.85 : 1,
+                cursor: posting || isPosted ? "not-allowed" : "pointer",
+                opacity: posting || isPosted ? 0.85 : 1,
               }}
             >
               {posting ? "Posting…" : "Post inventory check"}
@@ -1413,9 +1405,7 @@ export default function InventoryCheckPage() {
             padding: "16px 18px 18px",
           }}
         >
-          <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>
-            Previous inventory checks
-          </h2>
+          <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>Previous inventory checks</h2>
           <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 4 }}>
             One row per date. Click a date to open its full item list.
           </div>
@@ -1425,7 +1415,14 @@ export default function InventoryCheckPage() {
               No inventory checks recorded yet.
             </div>
           ) : (
-            <div style={{ marginTop: 12, borderRadius: "14px", border: "1px solid #e5e7eb", overflow: "hidden" }}>
+            <div
+              style={{
+                marginTop: 12,
+                borderRadius: "14px",
+                border: "1px solid #e5e7eb",
+                overflow: "hidden",
+              }}
+            >
               <div style={{ maxHeight: "420px", overflowY: "auto" }}>
                 <div
                   style={{
@@ -1495,7 +1492,7 @@ export default function InventoryCheckPage() {
                             : Number(g.total_diff_pieces || 0) < 0
                             ? "#b91c1c"
                             : "#111827",
-                        fontWeight: 600,
+                        fontWeight: 700,
                       }}
                     >
                       {formatDiff(g.total_diff_pieces)}
