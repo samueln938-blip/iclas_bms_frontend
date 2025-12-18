@@ -69,7 +69,7 @@ function formatMoney(value) {
   });
 }
 
-// ---------- Searchable dropdown (same behaviour as Purchases pad) ----------
+// ---------- Searchable dropdown ----------
 
 function ItemComboBox({ items, valueId, onChangeId, disabled }) {
   const wrapRef = useRef(null);
@@ -263,11 +263,9 @@ export default function InventoryCheckPage() {
 
   const [inventoryDate, setInventoryDate] = useState(() => todayISO());
 
-  // current draft / posted check loaded for selected date
+  // current check loaded for selected date (could be DRAFT or POSTED)
   const [currentCheckId, setCurrentCheckId] = useState(null);
-  const [currentCheckStatus, setCurrentCheckStatus] = useState("DRAFT"); // DRAFT | POSTED
-
-  const isLocked = currentCheckStatus === "POSTED";
+  const [currentCheckStatus, setCurrentCheckStatus] = useState(null); // "DRAFT" | "POSTED" | null
 
   // pad state
   const [pad, setPad] = useState({
@@ -276,9 +274,10 @@ export default function InventoryCheckPage() {
   });
 
   // lines for current date
+  // {id?, itemId, itemName, systemPieces, countedPieces, diffPieces, costPerPiece}
   const [lines, setLines] = useState([]);
 
-  // history list
+  // history list for "History & differences"
   const [historyChecks, setHistoryChecks] = useState([]);
 
   const [savingDraft, setSavingDraft] = useState(false);
@@ -286,8 +285,7 @@ export default function InventoryCheckPage() {
 
   const padRef = useRef(null);
 
-  // Avoid re-loading by date when we intentionally load by check id
-  const skipNextDateLoadRef = useRef(false);
+  const isPosted = String(currentCheckStatus || "").toUpperCase() === "POSTED";
 
   // ---------- Derived maps ----------
 
@@ -337,8 +335,7 @@ export default function InventoryCheckPage() {
     () =>
       lines.reduce(
         (sum, ln) =>
-          sum +
-          Number(ln.costPerPiece || 0) * Number(ln.systemPieces || 0),
+          sum + Number(ln.costPerPiece || 0) * Number(ln.systemPieces || 0),
         0
       ),
     [lines]
@@ -348,8 +345,7 @@ export default function InventoryCheckPage() {
     () =>
       lines.reduce(
         (sum, ln) =>
-          sum +
-          Number(ln.costPerPiece || 0) * Number(ln.countedPieces || 0),
+          sum + Number(ln.costPerPiece || 0) * Number(ln.countedPieces || 0),
         0
       ),
     [lines]
@@ -386,9 +382,7 @@ export default function InventoryCheckPage() {
         setStockRows(Array.isArray(stockData) ? stockData : []);
       } catch (err) {
         console.error(err);
-        setError(
-          err?.message || "Failed to load shop / stock for inventory check."
-        );
+        setError(err?.message || "Failed to load shop / stock for inventory check.");
       } finally {
         setLoading(false);
       }
@@ -400,10 +394,9 @@ export default function InventoryCheckPage() {
   // load history list for the shop
   const loadHistory = async () => {
     try {
-      const res = await fetch(
-        `${API_BASE}/inventory-checks/summary?shop_id=${shopId}`,
-        { headers: authHeadersNoJson }
-      );
+      const res = await fetch(`${API_BASE}/inventory-checks/summary?shop_id=${shopId}`, {
+        headers: authHeadersNoJson,
+      });
       if (!res.ok) {
         throw new Error(`Failed to load inventory checks. Status: ${res.status}`);
       }
@@ -418,45 +411,7 @@ export default function InventoryCheckPage() {
     }
   };
 
-  const mapDetailToLines = (detail) => {
-    return (detail.lines || []).map((ln) => ({
-      id: ln.id,
-      itemId: ln.item_id,
-      itemName: ln.item_name,
-      systemPieces: Number(ln.system_pieces || 0),
-      countedPieces: Number(ln.counted_pieces || 0),
-      diffPieces: Number(ln.diff_pieces || 0),
-      costPerPiece: getCostPerPiece(ln.item_id),
-    }));
-  };
-
-  // Load a specific check by its id (this guarantees correct totals)
-  const loadCheckById = async (checkId) => {
-    setError("");
-    setMessage("");
-
-    const detailRes = await fetch(`${API_BASE}/inventory-checks/${checkId}`, {
-      headers: authHeadersNoJson,
-    });
-
-    if (!detailRes.ok) {
-      throw new Error(
-        `Failed to load inventory check details. Status: ${detailRes.status}`
-      );
-    }
-
-    const detail = await detailRes.json();
-
-    // prevent the date effect from immediately reloading and possibly picking another check
-    skipNextDateLoadRef.current = true;
-
-    setInventoryDate(toISODate(detail.check_date));
-    setCurrentCheckId(detail.id || checkId);
-    setCurrentCheckStatus(detail.status || "DRAFT");
-    setLines(mapDetailToLines(detail));
-  };
-
-  // load details for currently selected date (best/primary check for that date)
+  // load details for currently selected date (draft or posted)
   const loadCheckForDate = async (isoDate) => {
     setError("");
     setMessage("");
@@ -465,35 +420,44 @@ export default function InventoryCheckPage() {
       const dateISO = toISODate(isoDate);
       const list = await loadHistory();
 
-      const sameDateChecks = list.filter(
-        (c) => toISODate(c.check_date) === dateISO
-      );
+      const sameDateChecks = list.filter((c) => toISODate(c.check_date) === dateISO);
 
       if (!sameDateChecks.length) {
         setCurrentCheckId(null);
-        setCurrentCheckStatus("DRAFT");
+        setCurrentCheckStatus(null);
         setLines([]);
         return;
       }
 
-      // ✅ IMPORTANT:
-      // Pick the "main" check for that date:
-      // 1) highest total_items
-      // 2) if tie: prefer POSTED
-      // 3) if tie: higher id
-      const pick = [...sameDateChecks].sort((a, b) => {
-        const ai = Number(a.total_items || 0);
-        const bi = Number(b.total_items || 0);
-        if (bi !== ai) return bi - ai;
+      // Prefer DRAFT for editing; otherwise fall back to most recent POSTED
+      let match =
+        sameDateChecks.find((c) => String(c.status).toUpperCase() === "DRAFT") ||
+        sameDateChecks.find((c) => String(c.status).toUpperCase() === "POSTED") ||
+        sameDateChecks[sameDateChecks.length - 1];
 
-        const aPosted = a.status === "POSTED" ? 1 : 0;
-        const bPosted = b.status === "POSTED" ? 1 : 0;
-        if (bPosted !== aPosted) return bPosted - aPosted;
+      const detailRes = await fetch(`${API_BASE}/inventory-checks/${match.id}`, {
+        headers: authHeadersNoJson,
+      });
 
-        return Number(b.id || 0) - Number(a.id || 0);
-      })[0];
+      if (!detailRes.ok) {
+        throw new Error(`Failed to load inventory check details. Status: ${detailRes.status}`);
+      }
 
-      await loadCheckById(pick.id);
+      const detail = await detailRes.json();
+
+      setCurrentCheckId(detail.id || match.id);
+      setCurrentCheckStatus(detail.status || match.status || null);
+
+      const mapped = (detail.lines || []).map((ln) => ({
+        id: ln.id,
+        itemId: ln.item_id,
+        itemName: ln.item_name,
+        systemPieces: Number(ln.system_pieces || 0),
+        countedPieces: Number(ln.counted_pieces || 0),
+        diffPieces: Number(ln.diff_pieces || 0),
+        costPerPiece: getCostPerPiece(ln.item_id),
+      }));
+      setLines(mapped);
     } catch (err) {
       console.error(err);
       setError(err?.message || "Failed to fetch inventory check for selected date.");
@@ -502,14 +466,9 @@ export default function InventoryCheckPage() {
 
   // when date changes, load any existing check
   useEffect(() => {
-    if (loading) return;
-
-    if (skipNextDateLoadRef.current) {
-      skipNextDateLoadRef.current = false;
-      return;
+    if (!loading) {
+      loadCheckForDate(inventoryDate);
     }
-
-    loadCheckForDate(inventoryDate);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inventoryDate, loading]);
 
@@ -522,6 +481,10 @@ export default function InventoryCheckPage() {
     });
 
   const handlePadChange = (field, value) => {
+    // Clear sticky error/message as user starts typing again
+    if (error) setError("");
+    if (message) setMessage("");
+
     if (field === "itemId") {
       setPad((prev) => ({
         ...prev,
@@ -539,11 +502,6 @@ export default function InventoryCheckPage() {
   };
 
   const handleAddToList = () => {
-    if (isLocked) {
-      setError("This inventory check is POSTED (locked). Choose another date to create a new draft.");
-      return;
-    }
-
     const itemId = Number(pad.itemId || 0);
     if (!itemId) {
       setError("Select an item first.");
@@ -596,8 +554,6 @@ export default function InventoryCheckPage() {
   };
 
   const handleEditLine = (line) => {
-    if (isLocked) return;
-
     setPad({
       itemId: line.itemId,
       countedPieces: line.countedPieces,
@@ -608,22 +564,16 @@ export default function InventoryCheckPage() {
   };
 
   const handleRemoveLine = (id) => {
-    if (isLocked) return;
     setLines((prev) => prev.filter((ln) => ln.id !== id));
   };
 
   // ---------- Save draft / post ----------
+  // ✅ Minimal UX improvements:
+  // - If currently selected check is POSTED, we create a NEW DRAFT (id: null) instead of trying to update POSTED.
+  // - Disable buttons when no items in list.
 
   const handleSaveDraft = async () => {
-    if (isLocked) {
-      setError("This inventory check is POSTED (locked). Choose another date to create a new draft.");
-      return;
-    }
-
-    if (!lines.length) {
-      setError("Add at least one item to the list before saving a draft.");
-      return;
-    }
+    if (!lines.length) return;
 
     setSavingDraft(true);
     setError("");
@@ -631,7 +581,7 @@ export default function InventoryCheckPage() {
 
     try {
       const payload = {
-        id: currentCheckId,
+        id: isPosted ? null : currentCheckId, // ✅ key fix: don't update POSTED
         shop_id: Number(shopId),
         check_date: toISODate(inventoryDate),
         notes: null,
@@ -658,7 +608,17 @@ export default function InventoryCheckPage() {
 
       setCurrentCheckId(data.id);
       setCurrentCheckStatus(data.status || "DRAFT");
-      setLines(mapDetailToLines(data));
+
+      const syncedLines = (data.lines || []).map((ln) => ({
+        id: ln.id,
+        itemId: ln.item_id,
+        itemName: ln.item_name,
+        systemPieces: Number(ln.system_pieces || 0),
+        countedPieces: Number(ln.counted_pieces || 0),
+        diffPieces: Number(ln.diff_pieces || 0),
+        costPerPiece: getCostPerPiece(ln.item_id),
+      }));
+      setLines(syncedLines);
 
       await loadHistory();
 
@@ -673,28 +633,17 @@ export default function InventoryCheckPage() {
   };
 
   const handlePostInventory = async () => {
-    if (isLocked) {
-      setError("This inventory check is already POSTED (locked).");
-      return;
-    }
-
-    if (!currentCheckId) {
-      setError("Save a draft first, then you can post the inventory check.");
-      return;
-    }
+    if (!currentCheckId || !lines.length) return;
 
     setPosting(true);
     setError("");
     setMessage("");
 
     try {
-      const res = await fetch(
-        `${API_BASE}/inventory-checks/${currentCheckId}/post`,
-        {
-          method: "POST",
-          headers: authHeaders,
-        }
-      );
+      const res = await fetch(`${API_BASE}/inventory-checks/${currentCheckId}/post`, {
+        method: "POST",
+        headers: authHeaders,
+      });
 
       if (!res.ok) {
         const errData = await res.json().catch(() => null);
@@ -706,7 +655,17 @@ export default function InventoryCheckPage() {
       const data = await res.json();
 
       setCurrentCheckStatus(data.status || "POSTED");
-      setLines(mapDetailToLines(data));
+
+      const syncedLines = (data.lines || []).map((ln) => ({
+        id: ln.id,
+        itemId: ln.item_id,
+        itemName: ln.item_name,
+        systemPieces: Number(ln.system_pieces || 0),
+        countedPieces: Number(ln.counted_pieces || 0),
+        diffPieces: Number(ln.diff_pieces || 0),
+        costPerPiece: getCostPerPiece(ln.item_id),
+      }));
+      setLines(syncedLines);
 
       await loadHistory();
 
@@ -724,11 +683,9 @@ export default function InventoryCheckPage() {
 
   const groupedHistory = useMemo(() => {
     const map = new Map();
-
     for (const c of historyChecks || []) {
       const dateISO = toISODate(c.check_date);
       if (!dateISO) continue;
-
       let g = map.get(dateISO);
       if (!g) {
         g = {
@@ -738,66 +695,27 @@ export default function InventoryCheckPage() {
           total_counted_pieces: 0,
           total_diff_pieces: 0,
           status: c.status || "DRAFT",
-          checkCount: 0,
-          // choose a "best" check to open for this date
-          bestCheckId: c.id,
-          bestTotalItems: Number(c.total_items || 0),
-          bestIsPosted: c.status === "POSTED",
-          bestId: Number(c.id || 0),
+          checkIds: [],
         };
         map.set(dateISO, g);
       }
-
       g.total_items += Number(c.total_items || 0);
       g.total_system_pieces += Number(c.total_system_pieces || 0);
       g.total_counted_pieces += Number(c.total_counted_pieces || 0);
       g.total_diff_pieces += Number(c.total_diff_pieces || 0);
-      if (c.status === "POSTED") g.status = "POSTED";
-
-      g.checkCount += 1;
-
-      // Update bestCheckId rule:
-      // 1) max total_items
-      // 2) if tie: prefer POSTED
-      // 3) if tie: higher id
-      const items = Number(c.total_items || 0);
-      const isPosted = c.status === "POSTED";
-      const idNum = Number(c.id || 0);
-
-      const better =
-        items > g.bestTotalItems ||
-        (items === g.bestTotalItems && isPosted && !g.bestIsPosted) ||
-        (items === g.bestTotalItems && isPosted === g.bestIsPosted && idNum > g.bestId);
-
-      if (better) {
-        g.bestCheckId = c.id;
-        g.bestTotalItems = items;
-        g.bestIsPosted = isPosted;
-        g.bestId = idNum;
-      }
+      if (String(c.status).toUpperCase() === "POSTED") g.status = "POSTED";
+      g.checkIds.push(c.id);
     }
-
     const arr = Array.from(map.values());
     arr.sort((a, b) => b.date.localeCompare(a.date));
     return arr;
   }, [historyChecks]);
 
-  const openHistoryGroup = async (g) => {
-    try {
-      setActiveTab("enter");
-      await loadCheckById(g.bestCheckId);
-
-      if (g.checkCount > 1) {
-        setMessage(
-          `Note: multiple inventory checks exist for ${g.date}. Opened the largest one (${g.bestTotalItems} items).`
-        );
-      } else {
-        setMessage("");
-      }
-    } catch (err) {
-      console.error(err);
-      setError(err?.message || "Failed to open inventory check.");
-    }
+  const openHistoryCheck = async (dateISO) => {
+    const iso = toISODate(dateISO);
+    setInventoryDate(iso);
+    setActiveTab("enter");
+    await loadCheckForDate(iso);
   };
 
   // ---------- Rendering ----------
@@ -842,6 +760,9 @@ export default function InventoryCheckPage() {
     marginBottom: "6px",
   };
 
+  const canSaveDraft = lines.length > 0 && !savingDraft;
+  const canPost = lines.length > 0 && !!currentCheckId && !posting && !isPosted;
+
   return (
     <div
       style={{
@@ -870,7 +791,13 @@ export default function InventoryCheckPage() {
             marginBottom: "6px",
           }}
         >
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "flex-start",
+            }}
+          >
             <button
               onClick={() => navigate(`/shops/${shopId}`)}
               style={{
@@ -908,28 +835,14 @@ export default function InventoryCheckPage() {
               {shopName}
             </div>
 
-            {/* Posted badge */}
-            {isLocked && (
-              <div
-                style={{
-                  marginTop: "10px",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "8px",
-                  padding: "6px 10px",
-                  borderRadius: "999px",
-                  border: "1px solid #ef4444",
-                  backgroundColor: "#fef2f2",
-                  color: "#b91c1c",
-                  fontWeight: 800,
-                  fontSize: "12px",
-                }}
-              >
-                POSTED (locked)
-              </div>
-            )}
-
-            <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            <div
+              style={{
+                marginTop: "10px",
+                display: "flex",
+                gap: "8px",
+                flexWrap: "wrap",
+              }}
+            >
               <button
                 type="button"
                 style={tabBtn(activeTab === "enter")}
@@ -1058,9 +971,7 @@ export default function InventoryCheckPage() {
                 >
                   {totalSystemValueDiff === 0
                     ? "0"
-                    : `${totalSystemValueDiff > 0 ? "+" : ""}${formatMoney(
-                        totalSystemValueDiff
-                      )}`}
+                    : `${totalSystemValueDiff > 0 ? "+" : ""}${formatMoney(totalSystemValueDiff)}`}
                 </div>
               </div>
             </div>
@@ -1134,7 +1045,6 @@ export default function InventoryCheckPage() {
               background: "#ffffff",
               border: "1px solid #e5e7eb",
               color: "#111827",
-              opacity: isLocked ? 0.8 : 1,
             }}
           >
             <div
@@ -1153,16 +1063,15 @@ export default function InventoryCheckPage() {
               <button
                 type="button"
                 onClick={handleAddToList}
-                disabled={isLocked}
                 style={{
                   padding: "0.55rem 1.3rem",
                   borderRadius: "9999px",
                   border: "none",
-                  backgroundColor: isLocked ? "#9ca3af" : "#2563eb",
+                  backgroundColor: "#2563eb",
                   color: "white",
                   fontWeight: 800,
                   fontSize: "0.9rem",
-                  cursor: isLocked ? "not-allowed" : "pointer",
+                  cursor: "pointer",
                 }}
               >
                 + Add to list
@@ -1175,7 +1084,7 @@ export default function InventoryCheckPage() {
                 items={pickerItems}
                 valueId={pad.itemId === "" ? "" : String(pad.itemId)}
                 onChangeId={(idStr) => handlePadChange("itemId", idStr)}
-                disabled={isLocked}
+                disabled={false}
               />
 
               <div
@@ -1252,13 +1161,8 @@ export default function InventoryCheckPage() {
                   min={0}
                   step="0.01"
                   value={pad.countedPieces}
-                  disabled={isLocked}
                   onChange={(e) => handlePadChange("countedPieces", e.target.value)}
-                  style={{
-                    ...inputBase,
-                    backgroundColor: isLocked ? "#f9fafb" : "#ffffff",
-                    cursor: isLocked ? "not-allowed" : "text",
-                  }}
+                  style={inputBase}
                 />
               </div>
 
@@ -1310,8 +1214,7 @@ export default function InventoryCheckPage() {
                   <div
                     style={{
                       display: "grid",
-                      gridTemplateColumns:
-                        "minmax(220px, 2.5fr) 1fr 1fr 1fr 1fr 60px",
+                      gridTemplateColumns: "minmax(220px, 2.5fr) 1fr 1fr 1fr 1fr 60px",
                       minWidth: "980px",
                       alignItems: "center",
                       padding: "8px 10px",
@@ -1337,8 +1240,7 @@ export default function InventoryCheckPage() {
                       key={ln.id}
                       style={{
                         display: "grid",
-                        gridTemplateColumns:
-                          "minmax(220px, 2.5fr) 1fr 1fr 1fr 1fr 60px",
+                        gridTemplateColumns: "minmax(220px, 2.5fr) 1fr 1fr 1fr 1fr 60px",
                         minWidth: "980px",
                         alignItems: "center",
                         padding: "9px 10px",
@@ -1350,7 +1252,6 @@ export default function InventoryCheckPage() {
                         <button
                           type="button"
                           onClick={() => handleEditLine(ln)}
-                          disabled={isLocked}
                           style={{
                             padding: 0,
                             margin: 0,
@@ -1359,11 +1260,10 @@ export default function InventoryCheckPage() {
                             color: "#111827",
                             fontWeight: 600,
                             fontSize: "13px",
-                            cursor: isLocked ? "not-allowed" : "pointer",
+                            cursor: "pointer",
                             textAlign: "left",
-                            opacity: isLocked ? 0.8 : 1,
                           }}
-                          title={isLocked ? "Posted check is locked" : "Edit this item in the pad"}
+                          title="Edit this item in the pad"
                         >
                           {ln.itemName || "Unknown item"}
                         </button>
@@ -1389,18 +1289,17 @@ export default function InventoryCheckPage() {
                         <button
                           type="button"
                           onClick={() => handleRemoveLine(ln.id)}
-                          disabled={isLocked}
                           style={{
                             width: "26px",
                             height: "26px",
                             borderRadius: "9999px",
                             border: "1px solid #fee2e2",
-                            backgroundColor: isLocked ? "#f3f4f6" : "#fef2f2",
-                            color: isLocked ? "#9ca3af" : "#b91c1c",
+                            backgroundColor: "#fef2f2",
+                            color: "#b91c1c",
                             fontSize: "14px",
-                            cursor: isLocked ? "not-allowed" : "pointer",
+                            cursor: "pointer",
                           }}
-                          title={isLocked ? "Posted check is locked" : "Remove from list"}
+                          title="Remove from list"
                         >
                           ✕
                         </button>
@@ -1424,7 +1323,7 @@ export default function InventoryCheckPage() {
             <button
               type="button"
               onClick={handleSaveDraft}
-              disabled={savingDraft || isLocked}
+              disabled={!canSaveDraft}
               style={{
                 padding: "0.6rem 1.4rem",
                 borderRadius: "999px",
@@ -1433,8 +1332,8 @@ export default function InventoryCheckPage() {
                 color: "#111827",
                 fontWeight: 600,
                 fontSize: "0.95rem",
-                cursor: savingDraft || isLocked ? "not-allowed" : "pointer",
-                opacity: savingDraft || isLocked ? 0.8 : 1,
+                cursor: !canSaveDraft ? "not-allowed" : "pointer",
+                opacity: !canSaveDraft ? 0.55 : 1,
               }}
             >
               {savingDraft ? "Saving…" : "Save draft"}
@@ -1443,17 +1342,17 @@ export default function InventoryCheckPage() {
             <button
               type="button"
               onClick={handlePostInventory}
-              disabled={posting || isLocked}
+              disabled={!canPost}
               style={{
                 padding: "0.6rem 1.8rem",
                 borderRadius: "999px",
                 border: "none",
-                backgroundColor: posting || isLocked ? "#9ca3af" : "#2563eb",
+                backgroundColor: !canPost ? "#9ca3af" : "#2563eb",
                 color: "white",
                 fontWeight: 700,
                 fontSize: "0.95rem",
-                cursor: posting || isLocked ? "not-allowed" : "pointer",
-                opacity: posting || isLocked ? 0.85 : 1,
+                cursor: !canPost ? "not-allowed" : "pointer",
+                opacity: !canPost ? 0.85 : 1,
               }}
             >
               {posting ? "Posting…" : "Post inventory check"}
@@ -1476,7 +1375,7 @@ export default function InventoryCheckPage() {
             Previous inventory checks
           </h2>
           <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 4 }}>
-            One row per date. Click a date to open its main item list.
+            One row per date. Click a date to open its full item list.
           </div>
 
           {groupedHistory.length === 0 ? (
@@ -1532,7 +1431,7 @@ export default function InventoryCheckPage() {
                     <div>
                       <button
                         type="button"
-                        onClick={() => openHistoryGroup(g)}
+                        onClick={() => openHistoryCheck(g.date)}
                         style={{
                           padding: 0,
                           margin: 0,
@@ -1547,7 +1446,6 @@ export default function InventoryCheckPage() {
                       </button>
                       <div style={{ fontSize: "11px", color: "#6b7280", marginTop: 2 }}>
                         {g.status === "POSTED" ? "Posted" : "Draft"}
-                        {g.checkCount > 1 ? ` • ${g.checkCount} checks` : ""}
                       </div>
                     </div>
                     <div style={{ textAlign: "right" }}>{g.total_items}</div>
