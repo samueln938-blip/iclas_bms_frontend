@@ -30,7 +30,6 @@ function _fmtPartsYMD(date) {
   } catch {
     // fallthrough
   }
-  // final fallback (local) - should rarely hit
   const dt = date instanceof Date ? date : new Date();
   const y = dt.getFullYear();
   const m = String(dt.getMonth() + 1).padStart(2, "0");
@@ -54,6 +53,13 @@ function formatCAT_HM(date = new Date()) {
   }
 }
 
+function formatCAT_HM_FromISO(isoLike) {
+  if (!isoLike) return "";
+  const d = new Date(isoLike);
+  if (!Number.isFinite(d.getTime())) return "";
+  return formatCAT_HM(d);
+}
+
 function todayISO() {
   // ✅ CAT-safe today (no browser timezone drift)
   return _fmtPartsYMD(new Date());
@@ -75,7 +81,6 @@ function toISODate(raw) {
     return `${yyyy}-${mm}-${dd}`;
   }
 
-  // ⚠️ Avoid local-time shifting: if we must parse, convert to CAT Y-M-D
   const dt = new Date(s);
   if (!Number.isFinite(dt.getTime())) return "";
   return _fmtPartsYMD(dt);
@@ -101,7 +106,6 @@ function formatMoney(value) {
   if (value === null || value === undefined || value === "") return "0";
   const n = Number(value);
   if (!Number.isFinite(n)) return String(value);
-  // money: no decimals for RWF
   return n.toLocaleString("en-RW", {
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
@@ -316,11 +320,12 @@ export default function InventoryCheckPage() {
   });
 
   // lines for current date
-  // {id?, itemId, itemName, systemPieces, countedPieces, diffPieces, costPerPiece}
   const [lines, setLines] = useState([]);
 
   // history list for "History & differences"
   const [historyChecks, setHistoryChecks] = useState([]);
+  const historyLoadedAtRef = useRef(0);
+  const historyAbortRef = useRef(null);
 
   const [savingDraft, setSavingDraft] = useState(false);
   const [posting, setPosting] = useState(false);
@@ -338,9 +343,7 @@ export default function InventoryCheckPage() {
 
   // Abort + race protection
   const checkAbortRef = useRef(null);
-  const historyAbortRef = useRef(null);
   const checkSeqRef = useRef(0);
-  const historyLoadedAtRef = useRef(0);
 
   // ---------- Derived maps ----------
 
@@ -369,7 +372,8 @@ export default function InventoryCheckPage() {
       row.cost_price_per_piece ??
       row.unit_cost ??
       row.average_cost_per_piece ??
-      row.latest_cost_per_piece;
+      row.latest_cost_per_piece ??
+      row.purchase_cost_per_piece; // ✅ extra fallback
     const n = Number(raw);
     return Number.isFinite(n) ? n : 0;
   };
@@ -423,18 +427,14 @@ export default function InventoryCheckPage() {
           headers: authHeadersNoJson,
           signal: controller.signal,
         });
-        if (!shopRes.ok) {
-          throw new Error(`Failed to load shop. Status: ${shopRes.status}`);
-        }
+        if (!shopRes.ok) throw new Error(`Failed to load shop. Status: ${shopRes.status}`);
         const shopData = await shopRes.json();
 
         const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`, {
           headers: authHeadersNoJson,
           signal: controller.signal,
         });
-        if (!stockRes.ok) {
-          throw new Error(`Failed to load stock. Status: ${stockRes.status}`);
-        }
+        if (!stockRes.ok) throw new Error(`Failed to load stock. Status: ${stockRes.status}`);
         const stockData = await stockRes.json();
 
         setShop(shopData);
@@ -452,32 +452,28 @@ export default function InventoryCheckPage() {
     return () => controller.abort();
   }, [shopId, authHeadersNoJson]);
 
-  // load history list for the shop
+  // load history list for the shop (ONLY when History tab is opened, or after save/post)
   const loadHistory = async (force = false) => {
-    // small TTL cache (prevents repeated calls on fast date switching)
+    // TTL cache
     if (!force && historyChecks.length > 0) {
       const ageMs = Date.now() - historyLoadedAtRef.current;
-      if (ageMs < 15_000) return historyChecks;
+      if (ageMs < 20_000) return historyChecks;
     }
 
     if (historyAbortRef.current) {
       try {
         historyAbortRef.current.abort();
-      } catch {
-        // ignore
-      }
+      } catch {}
     }
     const controller = new AbortController();
     historyAbortRef.current = controller;
 
     try {
-      const res = await fetch(
-        `${API_BASE}/inventory-checks/summary?shop_id=${shopId}`,
-        { headers: authHeadersNoJson, signal: controller.signal }
-      );
-      if (!res.ok) {
-        throw new Error(`Failed to load inventory checks. Status: ${res.status}`);
-      }
+      const res = await fetch(`${API_BASE}/inventory-checks/summary?shop_id=${shopId}`, {
+        headers: authHeadersNoJson,
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error(`Failed to load inventory checks. Status: ${res.status}`);
       const data = await res.json().catch(() => []);
       const list = Array.isArray(data) ? data : [];
       setHistoryChecks(list);
@@ -491,89 +487,129 @@ export default function InventoryCheckPage() {
     }
   };
 
-  // load details for currently selected date (draft or posted)
-  const loadCheckForDate = async (isoDate, seq) => {
-    setLoadingCheck(true);
-
-    try {
-      const dateISO = toISODate(isoDate);
-
-      const list = await loadHistory(false);
-      if (seq !== checkSeqRef.current) return;
-
-      const sameDateChecks = (list || []).filter(
-        (c) => toISODate(c.check_date) === dateISO
-      );
-
-      if (!sameDateChecks.length) {
-        setCurrentCheckId(null);
-        setCurrentCheckStatus(null);
-        setLines([]);
-        return;
-      }
-
-      // Prefer DRAFT for editing; otherwise fall back to POSTED
-      const match =
-        sameDateChecks.find((c) => String(c.status).toUpperCase() === "DRAFT") ||
-        sameDateChecks.find((c) => String(c.status).toUpperCase() === "POSTED") ||
-        sameDateChecks[sameDateChecks.length - 1];
-
-      // cancel prior detail request
-      if (checkAbortRef.current) {
-        try {
-          checkAbortRef.current.abort();
-        } catch {
-          // ignore
-        }
-      }
-      const controller = new AbortController();
-      checkAbortRef.current = controller;
-
-      const detailRes = await fetch(`${API_BASE}/inventory-checks/${match.id}`, {
-        headers: authHeadersNoJson,
-        signal: controller.signal,
-      });
-
-      if (!detailRes.ok) {
-        throw new Error(
-          `Failed to load inventory check details. Status: ${detailRes.status}`
-        );
-      }
-
-      const detail = await detailRes.json();
-      if (seq !== checkSeqRef.current) return;
-
-      setCurrentCheckId(detail.id || match.id);
-      setCurrentCheckStatus(detail.status || match.status || null);
-
-      const mapped = (detail.lines || []).map((ln) => ({
-        id: ln.id,
-        itemId: ln.item_id,
-        itemName: ln.item_name,
-        systemPieces: Number(ln.system_pieces || 0),
-        countedPieces: Number(ln.counted_pieces || 0),
-        diffPieces: Number(ln.diff_pieces || 0),
-        costPerPiece: getCostPerPiece(ln.item_id),
-      }));
-      setLines(mapped);
-    } catch (err) {
-      // ignore abort
-      const aborted =
-        (checkAbortRef.current && checkAbortRef.current.signal?.aborted) || false;
-      if (aborted) return;
-
-      console.error(err);
-      setError(err?.message || "Failed to fetch inventory check for selected date.");
-    } finally {
-      if (seq === checkSeqRef.current) setLoadingCheck(false);
+  // ✅ Fast detail loader: avoids loading full history on every date switch
+  const loadCheckForDateFast = async (isoDate, seq) => {
+    const dateISO = toISODate(isoDate);
+    if (!dateISO) {
+      setCurrentCheckId(null);
+      setCurrentCheckStatus(null);
+      setLines([]);
+      return;
     }
+
+    // cancel prior detail request
+    if (checkAbortRef.current) {
+      try {
+        checkAbortRef.current.abort();
+      } catch {}
+    }
+    const controller = new AbortController();
+    checkAbortRef.current = controller;
+
+    const url = `${API_BASE}/inventory-checks/for-date?shop_id=${shopId}&check_date=${encodeURIComponent(
+      dateISO
+    )}`;
+
+    const res = await fetch(url, { headers: authHeadersNoJson, signal: controller.signal });
+
+    // If backend not updated yet, fallback to old behavior (no crash)
+    if (res.status === 404) {
+      return { fallbackNeeded: true };
+    }
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => null);
+      throw new Error(errData?.detail || `Failed to load inventory check. Status: ${res.status}`);
+    }
+
+    const detail = await res.json().catch(() => null);
+
+    // if backend returns null
+    if (!detail) {
+      if (seq !== checkSeqRef.current) return { fallbackNeeded: false };
+      setCurrentCheckId(null);
+      setCurrentCheckStatus(null);
+      setLines([]);
+      return { fallbackNeeded: false };
+    }
+
+    if (seq !== checkSeqRef.current) return { fallbackNeeded: false };
+
+    setCurrentCheckId(detail.id ?? null);
+    setCurrentCheckStatus(detail.status ?? null);
+
+    const mapped = (detail.lines || []).map((ln) => ({
+      id: ln.id,
+      itemId: ln.item_id,
+      itemName: ln.item_name,
+      systemPieces: Number(ln.system_pieces || 0),
+      countedPieces: Number(ln.counted_pieces || 0),
+      diffPieces: Number(ln.diff_pieces || 0),
+      costPerPiece: getCostPerPiece(ln.item_id),
+    }));
+    setLines(mapped);
+
+    return { fallbackNeeded: false };
   };
 
-  // when date changes, clear UI immediately then load the new date safely
+  // Fallback loader (old way) - only used if backend doesn't have /for-date yet
+  const loadCheckForDateLegacy = async (isoDate, seq) => {
+    const dateISO = toISODate(isoDate);
+    const list = await loadHistory(true);
+    if (seq !== checkSeqRef.current) return;
+
+    const sameDateChecks = (list || []).filter((c) => toISODate(c.check_date) === dateISO);
+
+    if (!sameDateChecks.length) {
+      setCurrentCheckId(null);
+      setCurrentCheckStatus(null);
+      setLines([]);
+      return;
+    }
+
+    const match =
+      sameDateChecks.find((c) => String(c.status).toUpperCase() === "DRAFT") ||
+      sameDateChecks.find((c) => String(c.status).toUpperCase() === "POSTED") ||
+      sameDateChecks[sameDateChecks.length - 1];
+
+    if (checkAbortRef.current) {
+      try {
+        checkAbortRef.current.abort();
+      } catch {}
+    }
+    const controller = new AbortController();
+    checkAbortRef.current = controller;
+
+    const detailRes = await fetch(`${API_BASE}/inventory-checks/${match.id}`, {
+      headers: authHeadersNoJson,
+      signal: controller.signal,
+    });
+    if (!detailRes.ok) {
+      throw new Error(`Failed to load inventory check details. Status: ${detailRes.status}`);
+    }
+
+    const detail = await detailRes.json();
+    if (seq !== checkSeqRef.current) return;
+
+    setCurrentCheckId(detail.id || match.id);
+    setCurrentCheckStatus(detail.status || match.status || null);
+
+    const mapped = (detail.lines || []).map((ln) => ({
+      id: ln.id,
+      itemId: ln.item_id,
+      itemName: ln.item_name,
+      systemPieces: Number(ln.system_pieces || 0),
+      countedPieces: Number(ln.counted_pieces || 0),
+      diffPieces: Number(ln.diff_pieces || 0),
+      costPerPiece: getCostPerPiece(ln.item_id),
+    }));
+    setLines(mapped);
+  };
+
+  // when date changes: clear instantly, then load fast for-date (no flash of previous day)
   useEffect(() => {
     if (loading) return;
 
-    // ✅ Clear everything that causes “previous date still showing”
     setError("");
     setMessage("");
     setCurrentCheckId(null);
@@ -583,35 +619,44 @@ export default function InventoryCheckPage() {
 
     const seq = ++checkSeqRef.current;
     const iso = toISODate(inventoryDate);
-    loadCheckForDate(iso, seq);
+
+    (async () => {
+      setLoadingCheck(true);
+      try {
+        const fast = await loadCheckForDateFast(iso, seq);
+        if (seq !== checkSeqRef.current) return;
+
+        if (fast?.fallbackNeeded) {
+          await loadCheckForDateLegacy(iso, seq);
+        }
+      } catch (err) {
+        const aborted =
+          (checkAbortRef.current && checkAbortRef.current.signal?.aborted) || false;
+        if (aborted) return;
+        console.error(err);
+        setError(err?.message || "Failed to fetch inventory check for selected date.");
+      } finally {
+        if (seq === checkSeqRef.current) setLoadingCheck(false);
+      }
+    })();
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inventoryDate, loading]);
 
   // ---------- Pad + list logic ----------
 
-  const resetPad = () =>
-    setPad({
-      itemId: "",
-      countedPieces: "",
-    });
+  const resetPad = () => setPad({ itemId: "", countedPieces: "" });
 
   const handlePadChange = (field, value) => {
     if (error) setError("");
     if (message) setMessage("");
 
     if (field === "itemId") {
-      setPad((prev) => ({
-        ...prev,
-        itemId: value === "" ? "" : Number(value),
-      }));
+      setPad((prev) => ({ ...prev, itemId: value === "" ? "" : Number(value) }));
       return;
     }
     if (field === "countedPieces") {
-      setPad((prev) => ({
-        ...prev,
-        countedPieces: value,
-      }));
+      setPad((prev) => ({ ...prev, countedPieces: value }));
       return;
     }
   };
@@ -646,9 +691,6 @@ export default function InventoryCheckPage() {
     const diff = counted - system;
     const costPerPiece = getCostPerPiece(itemId);
 
-    setError("");
-    setMessage("");
-
     setLines((prev) => {
       const existingIndex = prev.findIndex((ln) => Number(ln.itemId) === itemId);
       const base = {
@@ -662,29 +704,21 @@ export default function InventoryCheckPage() {
       };
 
       if (existingIndex === -1) return [...prev, base];
-
       const copy = [...prev];
       copy[existingIndex] = base;
       return copy;
     });
 
     resetPad();
-    if (padRef.current) {
-      padRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
+    if (padRef.current) padRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   const handleEditLine = (line) => {
     if (loadingCheck) return;
     if (isPosted) return;
 
-    setPad({
-      itemId: line.itemId,
-      countedPieces: line.countedPieces,
-    });
-    if (padRef.current) {
-      padRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
+    setPad({ itemId: line.itemId, countedPieces: line.countedPieces });
+    if (padRef.current) padRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   const handleRemoveLine = (id) => {
@@ -699,7 +733,6 @@ export default function InventoryCheckPage() {
     if (!lines.length) return;
     if (loadingCheck) return;
 
-    // ✅ Do not allow drafting on a posted date (avoids duplicate “already recorded”)
     if (isPosted) {
       setError("This date is already POSTED. Choose another date to create a new inventory check.");
       return;
@@ -750,6 +783,7 @@ export default function InventoryCheckPage() {
       }));
       setLines(syncedLines);
 
+      // refresh history only if user is on history tab later
       await loadHistory(true);
 
       setMessage("Inventory draft saved. Stock is NOT changed yet.");
@@ -831,7 +865,7 @@ export default function InventoryCheckPage() {
           total_counted_pieces: 0,
           total_diff_pieces: 0,
           status: c.status || "DRAFT",
-          checkIds: [],
+          last_created_at: c.created_at || null,
         };
         map.set(dateISO, g);
       }
@@ -840,7 +874,11 @@ export default function InventoryCheckPage() {
       g.total_counted_pieces += Number(c.total_counted_pieces || 0);
       g.total_diff_pieces += Number(c.total_diff_pieces || 0);
       if (String(c.status).toUpperCase() === "POSTED") g.status = "POSTED";
-      g.checkIds.push(c.id);
+
+      // keep latest created_at for that date
+      if (c.created_at && (!g.last_created_at || String(c.created_at) > String(g.last_created_at))) {
+        g.last_created_at = c.created_at;
+      }
     }
     const arr = Array.from(map.values());
     arr.sort((a, b) => b.date.localeCompare(a.date));
@@ -850,7 +888,7 @@ export default function InventoryCheckPage() {
   const openHistoryCheck = async (dateISO) => {
     const iso = toISODate(dateISO);
     setActiveTab("enter");
-    setInventoryDate(iso); // date effect will load safely (no double fetch)
+    setInventoryDate(iso);
   };
 
   // ---------- Rendering ----------
@@ -896,20 +934,12 @@ export default function InventoryCheckPage() {
   };
 
   const canSaveDraft = lines.length > 0 && !savingDraft && !isPosted && !loadingCheck;
-  const canPost =
-    lines.length > 0 && !!currentCheckId && !posting && !isPosted && !loadingCheck;
+  const canPost = lines.length > 0 && !!currentCheckId && !posting && !isPosted && !loadingCheck;
 
   const disableEditing = loadingCheck || isPosted;
 
   return (
-    <div
-      style={{
-        width: "100%",
-        maxWidth: "1500px",
-        margin: "0 auto",
-        boxSizing: "border-box",
-      }}
-    >
+    <div style={{ width: "100%", maxWidth: "1500px", margin: "0 auto", boxSizing: "border-box" }}>
       {/* Header */}
       <div
         style={{
@@ -929,13 +959,7 @@ export default function InventoryCheckPage() {
             marginBottom: "6px",
           }}
         >
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "flex-start",
-            }}
-          >
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
             <button
               onClick={() => navigate(`/shops/${shopId}`)}
               style={{
@@ -951,41 +975,16 @@ export default function InventoryCheckPage() {
               ← Back to shop workspace
             </button>
 
-            <h1
-              style={{
-                fontSize: "30px",
-                fontWeight: 800,
-                letterSpacing: "0.03em",
-                margin: 0,
-              }}
-            >
+            <h1 style={{ fontSize: "30px", fontWeight: 800, letterSpacing: "0.03em", margin: 0 }}>
               Inventory check
             </h1>
 
-            <div
-              style={{
-                marginTop: "2px",
-                fontSize: "13px",
-                fontWeight: 600,
-                color: "#2563eb",
-              }}
-            >
+            <div style={{ marginTop: "2px", fontSize: "13px", fontWeight: 600, color: "#2563eb" }}>
               {shopName}
             </div>
 
-            <div
-              style={{
-                marginTop: "10px",
-                display: "flex",
-                gap: "8px",
-                flexWrap: "wrap",
-              }}
-            >
-              <button
-                type="button"
-                style={tabBtn(activeTab === "enter")}
-                onClick={() => setActiveTab("enter")}
-              >
+            <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              <button type="button" style={tabBtn(activeTab === "enter")} onClick={() => setActiveTab("enter")}>
                 Enter counts
               </button>
               <button
@@ -1110,9 +1109,7 @@ export default function InventoryCheckPage() {
                 >
                   {totalSystemValueDiff === 0
                     ? "0"
-                    : `${totalSystemValueDiff > 0 ? "+" : ""}${formatMoney(
-                        totalSystemValueDiff
-                      )}`}
+                    : `${totalSystemValueDiff > 0 ? "+" : ""}${formatMoney(totalSystemValueDiff)}`}
                 </div>
               </div>
             </div>
@@ -1120,14 +1117,7 @@ export default function InventoryCheckPage() {
         </div>
 
         {/* date picker */}
-        <div
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: "10px",
-            marginBottom: "10px",
-          }}
-        >
+        <div style={{ display: "inline-flex", alignItems: "center", gap: "10px", marginBottom: "10px" }}>
           <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>
             Inventory check date
           </div>
@@ -1144,11 +1134,7 @@ export default function InventoryCheckPage() {
             }}
           />
 
-          {loadingCheck && (
-            <div style={{ fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>
-              Loading…
-            </div>
-          )}
+          {loadingCheck && <div style={{ fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>Loading…</div>}
         </div>
       </div>
 
@@ -1193,8 +1179,7 @@ export default function InventoryCheckPage() {
                 fontSize: "13px",
               }}
             >
-              An inventory check is already <strong>POSTED</strong> for this date. Choose another
-              date.
+              An inventory check is already <strong>POSTED</strong> for this date. Choose another date.
             </div>
           )}
 
@@ -1246,7 +1231,9 @@ export default function InventoryCheckPage() {
             </div>
 
             <div>
-              <label style={labelStyle}>Item</label>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#111827", marginBottom: "6px" }}>
+                Item
+              </label>
               <ItemComboBox
                 items={pickerItems}
                 valueId={pad.itemId === "" ? "" : String(pad.itemId)}
@@ -1267,9 +1254,7 @@ export default function InventoryCheckPage() {
               >
                 <div>
                   System pieces:{" "}
-                  <strong style={{ color: "#111827" }}>
-                    {pad.itemId ? formatQty(padSystemPieces) : "—"}
-                  </strong>
+                  <strong style={{ color: "#111827" }}>{pad.itemId ? formatQty(padSystemPieces) : "—"}</strong>
                 </div>
                 <div>
                   Counted pieces:{" "}
@@ -1308,21 +1293,21 @@ export default function InventoryCheckPage() {
               }}
             >
               <div>
-                <label style={labelStyle}>System pieces</label>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#111827", marginBottom: "6px" }}>
+                  System pieces
+                </label>
                 <input
                   type="text"
                   readOnly
                   value={pad.itemId ? formatQty(padSystemPieces) : ""}
-                  style={{
-                    ...inputBase,
-                    backgroundColor: "#f3f4f6",
-                    fontWeight: 600,
-                  }}
+                  style={{ ...inputBase, backgroundColor: "#f3f4f6", fontWeight: 600 }}
                 />
               </div>
 
               <div>
-                <label style={labelStyle}>Counted pieces (physical)</label>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#111827", marginBottom: "6px" }}>
+                  Counted pieces (physical)
+                </label>
                 <input
                   type="number"
                   min={0}
@@ -1339,16 +1324,14 @@ export default function InventoryCheckPage() {
               </div>
 
               <div>
-                <label style={labelStyle}>Difference</label>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#111827", marginBottom: "6px" }}>
+                  Difference
+                </label>
                 <input
                   type="text"
                   readOnly
                   value={padDiff === null ? "" : formatDiff(padDiff)}
-                  style={{
-                    ...inputBase,
-                    backgroundColor: "#f3f4f6",
-                    fontWeight: 600,
-                  }}
+                  style={{ ...inputBase, backgroundColor: "#f3f4f6", fontWeight: 600 }}
                 />
               </div>
             </div>
@@ -1404,7 +1387,7 @@ export default function InventoryCheckPage() {
                     <div style={{ textAlign: "right" }}>Cost / piece</div>
                     <div style={{ textAlign: "right" }}>Counted pieces</div>
                     <div style={{ textAlign: "right" }}>Difference</div>
-                    <div></div>
+                    <div />
                   </div>
 
                   {lines.map((ln) => (
@@ -1449,11 +1432,7 @@ export default function InventoryCheckPage() {
                         style={{
                           textAlign: "right",
                           color:
-                            ln.diffPieces > 0
-                              ? "#16a34a"
-                              : ln.diffPieces < 0
-                              ? "#b91c1c"
-                              : "#111827",
+                            ln.diffPieces > 0 ? "#16a34a" : ln.diffPieces < 0 ? "#b91c1c" : "#111827",
                           fontWeight: 600,
                         }}
                       >
@@ -1488,14 +1467,7 @@ export default function InventoryCheckPage() {
           )}
 
           {/* Actions */}
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "flex-end",
-              gap: "12px",
-              marginTop: "14px",
-            }}
-          >
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: "12px", marginTop: "14px" }}>
             <button
               type="button"
               onClick={handleSaveDraft}
@@ -1547,9 +1519,7 @@ export default function InventoryCheckPage() {
             padding: "16px 18px 18px",
           }}
         >
-          <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>
-            Previous inventory checks
-          </h2>
+          <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>Previous inventory checks</h2>
           <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 4 }}>
             One row per date. Click a date to open its full item list.
           </div>
@@ -1559,14 +1529,7 @@ export default function InventoryCheckPage() {
               No inventory checks recorded yet.
             </div>
           ) : (
-            <div
-              style={{
-                marginTop: 12,
-                borderRadius: "14px",
-                border: "1px solid #e5e7eb",
-                overflow: "hidden",
-              }}
-            >
+            <div style={{ marginTop: 12, borderRadius: "14px", border: "1px solid #e5e7eb", overflow: "hidden" }}>
               <div style={{ maxHeight: "420px", overflowY: "auto" }}>
                 <div
                   style={{
@@ -1622,6 +1585,7 @@ export default function InventoryCheckPage() {
                       </button>
                       <div style={{ fontSize: "11px", color: "#6b7280", marginTop: 2 }}>
                         {g.status === "POSTED" ? "Posted" : "Draft"}
+                        {g.last_created_at ? ` • ${formatCAT_HM_FromISO(g.last_created_at)} CAT` : ""}
                       </div>
                     </div>
                     <div style={{ textAlign: "right" }}>{g.total_items}</div>
