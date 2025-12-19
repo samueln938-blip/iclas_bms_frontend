@@ -113,7 +113,6 @@ function formatMoney(value) {
 }
 
 // ---------- Searchable dropdown ----------
-
 function ItemComboBox({ items, valueId, onChangeId, disabled }) {
   const wrapRef = useRef(null);
   const [open, setOpen] = useState(false);
@@ -236,13 +235,7 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
           }}
         >
           {filtered.length === 0 ? (
-            <div
-              style={{
-                padding: "10px 12px",
-                fontSize: "13px",
-                color: "#6b7280",
-              }}
-            >
+            <div style={{ padding: "10px 12px", fontSize: "13px", color: "#6b7280" }}>
               No matching items
             </div>
           ) : (
@@ -277,7 +270,6 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
 }
 
 // ---------- Main page ----------
-
 export default function InventoryCheckPage() {
   const { shopId } = useParams();
   const navigate = useNavigate();
@@ -346,7 +338,6 @@ export default function InventoryCheckPage() {
   const checkSeqRef = useRef(0);
 
   // ---------- Derived maps ----------
-
   const stockByItemId = useMemo(() => {
     const map = {};
     for (const s of stockRows || []) {
@@ -373,17 +364,20 @@ export default function InventoryCheckPage() {
       row.unit_cost ??
       row.average_cost_per_piece ??
       row.latest_cost_per_piece ??
-      row.purchase_cost_per_piece; // ✅ extra fallback
+      row.purchase_cost_per_piece;
     const n = Number(raw);
     return Number.isFinite(n) ? n : 0;
   };
 
   const padStock = pad.itemId ? stockByItemId[Number(pad.itemId)] : null;
   const padSystemPieces = padStock ? Number(padStock.remaining_pieces || 0) : 0;
-  const padCountedPieces =
-    pad.countedPieces === "" ? null : Number(pad.countedPieces || 0);
-  const padDiff =
-    padCountedPieces === null ? null : padCountedPieces - padSystemPieces;
+
+  const padCountedPieces = pad.countedPieces === "" ? null : Number(pad.countedPieces || 0);
+
+  const padCountedIsValid =
+    padCountedPieces !== null && Number.isFinite(padCountedPieces) && padCountedPieces >= 0;
+
+  const padDiff = padCountedPieces === null ? null : padCountedPieces - padSystemPieces;
 
   const totalDiffPieces = useMemo(
     () => lines.reduce((sum, ln) => sum + Number(ln.diffPieces || 0), 0),
@@ -393,8 +387,7 @@ export default function InventoryCheckPage() {
   const totalSystemValueBefore = useMemo(
     () =>
       lines.reduce(
-        (sum, ln) =>
-          sum + Number(ln.costPerPiece || 0) * Number(ln.systemPieces || 0),
+        (sum, ln) => sum + Number(ln.costPerPiece || 0) * Number(ln.systemPieces || 0),
         0
       ),
     [lines]
@@ -403,8 +396,7 @@ export default function InventoryCheckPage() {
   const totalSystemValueAfter = useMemo(
     () =>
       lines.reduce(
-        (sum, ln) =>
-          sum + Number(ln.costPerPiece || 0) * Number(ln.countedPieces || 0),
+        (sum, ln) => sum + Number(ln.costPerPiece || 0) * Number(ln.countedPieces || 0),
         0
       ),
     [lines]
@@ -413,7 +405,6 @@ export default function InventoryCheckPage() {
   const totalSystemValueDiff = totalSystemValueAfter - totalSystemValueBefore;
 
   // ---------- Data loading ----------
-
   useEffect(() => {
     const controller = new AbortController();
 
@@ -487,7 +478,7 @@ export default function InventoryCheckPage() {
     }
   };
 
-  // ✅ Fast detail loader: avoids loading full history on every date switch
+  // ✅ Fast detail loader
   const loadCheckForDateFast = async (isoDate, seq) => {
     const dateISO = toISODate(isoDate);
     if (!dateISO) {
@@ -512,7 +503,6 @@ export default function InventoryCheckPage() {
 
     const res = await fetch(url, { headers: authHeadersNoJson, signal: controller.signal });
 
-    // If backend not updated yet, fallback to old behavior (no crash)
     if (res.status === 404) {
       return { fallbackNeeded: true };
     }
@@ -524,7 +514,6 @@ export default function InventoryCheckPage() {
 
     const detail = await res.json().catch(() => null);
 
-    // if backend returns null
     if (!detail) {
       if (seq !== checkSeqRef.current) return { fallbackNeeded: false };
       setCurrentCheckId(null);
@@ -552,7 +541,7 @@ export default function InventoryCheckPage() {
     return { fallbackNeeded: false };
   };
 
-  // Fallback loader (old way) - only used if backend doesn't have /for-date yet
+  // Fallback loader (legacy)
   const loadCheckForDateLegacy = async (isoDate, seq) => {
     const dateISO = toISODate(isoDate);
     const list = await loadHistory(true);
@@ -606,7 +595,7 @@ export default function InventoryCheckPage() {
     setLines(mapped);
   };
 
-  // when date changes: clear instantly, then load fast for-date (no flash of previous day)
+  // when date changes
   useEffect(() => {
     if (loading) return;
 
@@ -630,8 +619,7 @@ export default function InventoryCheckPage() {
           await loadCheckForDateLegacy(iso, seq);
         }
       } catch (err) {
-        const aborted =
-          (checkAbortRef.current && checkAbortRef.current.signal?.aborted) || false;
+        const aborted = (checkAbortRef.current && checkAbortRef.current.signal?.aborted) || false;
         if (aborted) return;
         console.error(err);
         setError(err?.message || "Failed to fetch inventory check for selected date.");
@@ -644,7 +632,6 @@ export default function InventoryCheckPage() {
   }, [inventoryDate, loading]);
 
   // ---------- Pad + list logic ----------
-
   const resetPad = () => setPad({ itemId: "", countedPieces: "" });
 
   const handlePadChange = (field, value) => {
@@ -660,6 +647,10 @@ export default function InventoryCheckPage() {
       return;
     }
   };
+
+  const disableEditing = loadingCheck || isPosted;
+
+  const canAddToList = !disableEditing && !!Number(pad.itemId || 0) && padStock && padCountedIsValid;
 
   const handleAddToList = () => {
     if (loadingCheck) return;
@@ -728,7 +719,6 @@ export default function InventoryCheckPage() {
   };
 
   // ---------- Save draft / post ----------
-
   const handleSaveDraft = async () => {
     if (!lines.length) return;
     if (loadingCheck) return;
@@ -762,9 +752,7 @@ export default function InventoryCheckPage() {
 
       if (!res.ok) {
         const errData = await res.json().catch(() => null);
-        throw new Error(
-          errData?.detail || `Failed to save inventory draft. Status: ${res.status}`
-        );
+        throw new Error(errData?.detail || `Failed to save inventory draft. Status: ${res.status}`);
       }
 
       const data = await res.json();
@@ -783,7 +771,6 @@ export default function InventoryCheckPage() {
       }));
       setLines(syncedLines);
 
-      // refresh history only if user is on history tab later
       await loadHistory(true);
 
       setMessage("Inventory draft saved. Stock is NOT changed yet.");
@@ -817,9 +804,7 @@ export default function InventoryCheckPage() {
 
       if (!res.ok) {
         const errData = await res.json().catch(() => null);
-        throw new Error(
-          errData?.detail || `Failed to post inventory check. Status: ${res.status}`
-        );
+        throw new Error(errData?.detail || `Failed to post inventory check. Status: ${res.status}`);
       }
 
       const data = await res.json();
@@ -850,7 +835,6 @@ export default function InventoryCheckPage() {
   };
 
   // ---------- History tab helpers ----------
-
   const groupedHistory = useMemo(() => {
     const map = new Map();
     for (const c of historyChecks || []) {
@@ -875,7 +859,6 @@ export default function InventoryCheckPage() {
       g.total_diff_pieces += Number(c.total_diff_pieces || 0);
       if (String(c.status).toUpperCase() === "POSTED") g.status = "POSTED";
 
-      // keep latest created_at for that date
       if (c.created_at && (!g.last_created_at || String(c.created_at) > String(g.last_created_at))) {
         g.last_created_at = c.created_at;
       }
@@ -885,14 +868,13 @@ export default function InventoryCheckPage() {
     return arr;
   }, [historyChecks]);
 
-  const openHistoryCheck = async (dateISO) => {
+  const openHistoryCheck = (dateISO) => {
     const iso = toISODate(dateISO);
     setActiveTab("enter");
     setInventoryDate(iso);
   };
 
   // ---------- Rendering ----------
-
   if (loading) {
     return (
       <div style={{ padding: "32px" }}>
@@ -925,18 +907,10 @@ export default function InventoryCheckPage() {
     color: "#111827",
   };
 
-  const labelStyle = {
-    display: "block",
-    fontSize: "12px",
-    fontWeight: 700,
-    color: "#111827",
-    marginBottom: "6px",
-  };
-
   const canSaveDraft = lines.length > 0 && !savingDraft && !isPosted && !loadingCheck;
   const canPost = lines.length > 0 && !!currentCheckId && !posting && !isPosted && !loadingCheck;
 
-  const disableEditing = loadingCheck || isPosted;
+  const numCell = { whiteSpace: "nowrap" };
 
   return (
     <div style={{ width: "100%", maxWidth: "1500px", margin: "0 auto", boxSizing: "border-box" }}>
@@ -983,10 +957,20 @@ export default function InventoryCheckPage() {
               {shopName}
             </div>
 
+            <div style={{ marginTop: "6px", fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>
+              Status:{" "}
+              <span style={{ color: isPosted ? "#b91c1c" : "#111827" }}>
+                {currentCheckStatus ? String(currentCheckStatus).toUpperCase() : "—"}
+              </span>
+              {currentCheckId ? ` • Check ID: ${currentCheckId}` : ""}
+            </div>
+
             <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
               <button type="button" style={tabBtn(activeTab === "enter")} onClick={() => setActiveTab("enter")}>
                 Enter counts
               </button>
+
+              {/* ✅ FIXED: removed extra } */}
               <button
                 type="button"
                 style={tabBtn(activeTab === "history")}
@@ -1179,7 +1163,8 @@ export default function InventoryCheckPage() {
                 fontSize: "13px",
               }}
             >
-              An inventory check is already <strong>POSTED</strong> for this date. Choose another date.
+              An inventory check is already <strong>POSTED</strong> for this date
+              {currentCheckId ? ` (ID: ${currentCheckId})` : ""}. Choose another date.
             </div>
           )}
 
@@ -1213,17 +1198,17 @@ export default function InventoryCheckPage() {
               <button
                 type="button"
                 onClick={handleAddToList}
-                disabled={disableEditing}
+                disabled={!canAddToList}
                 style={{
                   padding: "0.55rem 1.3rem",
                   borderRadius: "9999px",
                   border: "none",
-                  backgroundColor: disableEditing ? "#9ca3af" : "#2563eb",
+                  backgroundColor: !canAddToList ? "#9ca3af" : "#2563eb",
                   color: "white",
                   fontWeight: 800,
                   fontSize: "0.9rem",
-                  cursor: disableEditing ? "not-allowed" : "pointer",
-                  opacity: disableEditing ? 0.85 : 1,
+                  cursor: !canAddToList ? "not-allowed" : "pointer",
+                  opacity: !canAddToList ? 0.85 : 1,
                 }}
               >
                 + Add to list
@@ -1286,8 +1271,7 @@ export default function InventoryCheckPage() {
               style={{
                 marginTop: "12px",
                 display: "grid",
-                gridTemplateColumns:
-                  "minmax(140px, 1.5fr) minmax(140px, 1fr) minmax(140px, 1fr)",
+                gridTemplateColumns: "minmax(140px, 1.5fr) minmax(140px, 1fr) minmax(140px, 1fr)",
                 gap: "12px",
                 alignItems: "end",
               }}
@@ -1425,19 +1409,22 @@ export default function InventoryCheckPage() {
                           {ln.itemName || "Unknown item"}
                         </button>
                       </div>
-                      <div style={{ textAlign: "right" }}>{formatQty(ln.systemPieces)}</div>
-                      <div style={{ textAlign: "right" }}>{formatMoney(ln.costPerPiece)}</div>
-                      <div style={{ textAlign: "right" }}>{formatQty(ln.countedPieces)}</div>
+
+                      <div style={{ textAlign: "right", ...numCell }}>{formatQty(ln.systemPieces)}</div>
+                      <div style={{ textAlign: "right", ...numCell }}>{formatMoney(ln.costPerPiece)}</div>
+                      <div style={{ textAlign: "right", ...numCell }}>{formatQty(ln.countedPieces)}</div>
+
                       <div
                         style={{
                           textAlign: "right",
-                          color:
-                            ln.diffPieces > 0 ? "#16a34a" : ln.diffPieces < 0 ? "#b91c1c" : "#111827",
+                          ...numCell,
+                          color: ln.diffPieces > 0 ? "#16a34a" : ln.diffPieces < 0 ? "#b91c1c" : "#111827",
                           fontWeight: 600,
                         }}
                       >
                         {formatDiff(ln.diffPieces)}
                       </div>
+
                       <div style={{ textAlign: "center" }}>
                         <button
                           type="button"
@@ -1588,12 +1575,13 @@ export default function InventoryCheckPage() {
                         {g.last_created_at ? ` • ${formatCAT_HM_FromISO(g.last_created_at)} CAT` : ""}
                       </div>
                     </div>
-                    <div style={{ textAlign: "right" }}>{g.total_items}</div>
-                    <div style={{ textAlign: "right" }}>{formatQty(g.total_system_pieces)}</div>
-                    <div style={{ textAlign: "right" }}>{formatQty(g.total_counted_pieces)}</div>
+                    <div style={{ textAlign: "right", ...numCell }}>{g.total_items}</div>
+                    <div style={{ textAlign: "right", ...numCell }}>{formatQty(g.total_system_pieces)}</div>
+                    <div style={{ textAlign: "right", ...numCell }}>{formatQty(g.total_counted_pieces)}</div>
                     <div
                       style={{
                         textAlign: "right",
+                        ...numCell,
                         color:
                           Number(g.total_diff_pieces || 0) > 0
                             ? "#16a34a"
