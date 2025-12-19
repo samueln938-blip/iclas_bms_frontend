@@ -761,7 +761,7 @@ export default function InventoryCheckPage() {
 
       await loadHistory(true);
 
-      setMessage("Draft saved. (You can keep editing and post anytime.)");
+      setMessage("Draft saved. You can still post anytime.");
     } catch (err) {
       console.error(err);
       setError(err?.message || "Failed to save inventory draft.");
@@ -852,7 +852,7 @@ export default function InventoryCheckPage() {
 
       await loadHistory(true);
 
-      setMessage("Posted successfully. Stock updated. You can continue editing and post again if needed.");
+      setMessage("Posted successfully. Stock updated.");
     } catch (err) {
       console.error(err);
       setError(err?.message || "Failed to post inventory check.");
@@ -933,8 +933,12 @@ export default function InventoryCheckPage() {
     color: "#111827",
   };
 
+  // ✅ Save only when something changed
   const canSaveDraft = lines.length > 0 && !savingDraft && !loadingCheck && hasChanges;
-  const canPost = lines.length > 0 && !posting && !loadingCheck && hasChanges;
+
+  // ✅ IMPORTANT FIX: Post stays active as long as there are lines
+  // (even after saving draft, so stock can be updated)
+  const canPost = lines.length > 0 && !posting && !loadingCheck;
 
   const numCell = { whiteSpace: "nowrap" };
 
@@ -1059,11 +1063,7 @@ export default function InventoryCheckPage() {
                   fontSize: "18px",
                   fontWeight: 800,
                   color:
-                    totalDiffPieces === 0
-                      ? "#111827"
-                      : totalDiffPieces > 0
-                      ? "#16a34a"
-                      : "#b91c1c",
+                    totalDiffPieces === 0 ? "#111827" : totalDiffPieces > 0 ? "#16a34a" : "#b91c1c",
                 }}
               >
                 {formatDiff(totalDiffPieces)}
@@ -1261,13 +1261,7 @@ export default function InventoryCheckPage() {
                   <strong
                     style={{
                       color:
-                        padDiff === null
-                          ? "#111827"
-                          : padDiff > 0
-                          ? "#16a34a"
-                          : padDiff < 0
-                          ? "#b91c1c"
-                          : "#111827",
+                        padDiff === null ? "#111827" : padDiff > 0 ? "#16a34a" : padDiff < 0 ? "#b91c1c" : "#111827",
                     }}
                   >
                     {padDiff === null ? "—" : formatDiff(padDiff)}
@@ -1503,9 +1497,10 @@ export default function InventoryCheckPage() {
             </button>
           </div>
 
+          {/* ✅ Only explain Save being inactive; Post remains usable */}
           {!hasChanges && lines.length > 0 && (
             <div style={{ marginTop: 10, fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>
-              Save/Post is inactive because nothing changed.
+              Save draft is inactive because nothing changed. You can still Post to apply stock adjustment.
             </div>
           )}
         </div>
@@ -1527,9 +1522,7 @@ export default function InventoryCheckPage() {
           </div>
 
           {groupedHistory.length === 0 ? (
-            <div style={{ marginTop: 10, fontSize: "13px", color: "#6b7280" }}>
-              No inventory checks recorded yet.
-            </div>
+            <div style={{ marginTop: 10, fontSize: "13px", color: "#6b7280" }}>No inventory checks recorded yet.</div>
           ) : (
             <div style={{ marginTop: 12, borderRadius: "14px", border: "1px solid #e5e7eb", overflow: "hidden" }}>
               <div style={{ maxHeight: "420px", overflowY: "auto" }}>
