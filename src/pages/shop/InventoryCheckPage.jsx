@@ -287,7 +287,7 @@ export default function InventoryCheckPage() {
     return h;
   }, [token]);
 
-  const [activeTab, setActiveTab] = useState("enter"); // "enter" | "history" | "timeline"
+  const [activeTab, setActiveTab] = useState("enter"); // "enter" | "history"
 
   const [shop, setShop] = useState(null);
   const [stockRows, setStockRows] = useState([]);
@@ -305,13 +305,16 @@ export default function InventoryCheckPage() {
   const [currentCheckId, setCurrentCheckId] = useState(null);
   const [currentCheckStatus, setCurrentCheckStatus] = useState(null); // "DRAFT" | "POSTED" | null
 
+  // timeline for the selected date (from stock movements)
+  const [timelineRows, setTimelineRows] = useState([]);
+
   // pad state
   const [pad, setPad] = useState({
     itemId: "",
     countedPieces: "",
   });
 
-  // lines for current date
+  // lines for current check record (one header)
   const [lines, setLines] = useState([]);
 
   // history list for "History & differences"
@@ -321,16 +324,11 @@ export default function InventoryCheckPage() {
 
   const [savingDraft, setSavingDraft] = useState(false);
   const [posting, setPosting] = useState(false);
+  const [startingNewDraft, setStartingNewDraft] = useState(false);
 
   const padRef = useRef(null);
 
   const isPosted = String(currentCheckStatus || "").toUpperCase() === "POSTED";
-
-  // ✅ timeline state (NO notes)
-  const [timelineLoading, setTimelineLoading] = useState(false);
-  const [timelineError, setTimelineError] = useState("");
-  const [timelineItemId, setTimelineItemId] = useState("");
-  const [timelineData, setTimelineData] = useState(null); // { rows, totals... }
 
   // CAT “now” display
   const [catNowHM, setCatNowHM] = useState(() => formatCAT_HM(new Date()));
@@ -410,18 +408,15 @@ export default function InventoryCheckPage() {
 
   const totalSystemValueDiff = totalSystemValueAfter - totalSystemValueBefore;
 
-  // ✅ timeline totals (from backend audit trail)
+  // timeline totals for the whole day (sum of adjustments that were posted)
   const timelineTotals = useMemo(() => {
-    const t = timelineData || null;
-    if (!t) return null;
-    return {
-      adjustments_count: Number(t.adjustments_count || 0),
-      checks_count: Number(t.checks_count || 0),
-      items_count: Number(t.items_count || 0),
-      total_pieces: Number(t.total_pieces || 0),
-      total_money: Number(t.total_money_impact || 0),
-    };
-  }, [timelineData]);
+    const rows = Array.isArray(timelineRows) ? timelineRows : [];
+    const totalAdj = rows.length;
+    const pieces = rows.reduce((s, r) => s + Number(r.pieces_change || 0), 0);
+    const value = rows.reduce((s, r) => s + Number(r.value_change || 0), 0);
+    const checks = new Set(rows.map((r) => String(r.check_id))).size;
+    return { totalAdj, pieces, value, checks };
+  }, [timelineRows]);
 
   // ---------- Data loading ----------
   useEffect(() => {
@@ -497,40 +492,31 @@ export default function InventoryCheckPage() {
     }
   };
 
-  // ✅ Load timeline from audit trail (stock_movements)
-  const loadTimeline = async (force = false) => {
-    if (!force && timelineData && !timelineError) return timelineData;
-
-    const dateISO = toISODate(inventoryDate);
+  // load adjustment timeline (posted movements) for a date
+  const loadTimeline = async (isoDate) => {
+    const dateISO = toISODate(isoDate);
     if (!dateISO) {
-      setTimelineData(null);
-      return null;
+      setTimelineRows([]);
+      return [];
     }
-
-    setTimelineLoading(true);
-    setTimelineError("");
-
     try {
-      const url =
-        `${API_BASE}/inventory-checks/timeline?shop_id=${shopId}` +
-        `&check_date=${encodeURIComponent(dateISO)}` +
-        (timelineItemId ? `&item_id=${encodeURIComponent(timelineItemId)}` : "");
-
-      const res = await fetch(url, { headers: authHeadersNoJson });
+      const res = await fetch(
+        `${API_BASE}/inventory-checks/timeline?shop_id=${shopId}&check_date=${encodeURIComponent(dateISO)}`,
+        { headers: authHeadersNoJson }
+      );
       if (!res.ok) {
         const errData = await res.json().catch(() => null);
         throw new Error(errData?.detail || `Failed to load timeline. Status: ${res.status}`);
       }
-      const data = await res.json().catch(() => null);
-      setTimelineData(data);
-      return data;
+      const data = await res.json().catch(() => []);
+      const list = Array.isArray(data) ? data : [];
+      setTimelineRows(list);
+      return list;
     } catch (err) {
       console.error(err);
-      setTimelineError(err?.message || "Failed to load timeline.");
-      setTimelineData(null);
-      return null;
-    } finally {
-      setTimelineLoading(false);
+      // timeline should never block the page
+      setTimelineRows([]);
+      return [];
     }
   };
 
@@ -660,12 +646,8 @@ export default function InventoryCheckPage() {
     setCurrentCheckId(null);
     setCurrentCheckStatus(null);
     setLines([]);
+    setTimelineRows([]);
     setPad({ itemId: "", countedPieces: "" });
-
-    // keep timeline in sync with the date
-    setTimelineItemId("");
-    setTimelineData(null);
-    setTimelineError("");
 
     const seq = ++checkSeqRef.current;
     const iso = toISODate(inventoryDate);
@@ -673,15 +655,14 @@ export default function InventoryCheckPage() {
     (async () => {
       setLoadingCheck(true);
       try {
+        await loadTimeline(iso);
+
         const fast = await loadCheckForDateFast(iso, seq);
         if (seq !== checkSeqRef.current) return;
 
         if (fast?.fallbackNeeded) {
           await loadCheckForDateLegacy(iso, seq);
         }
-
-        // Load timeline after loading check
-        await loadTimeline(true);
       } catch (err) {
         const aborted = (checkAbortRef.current && checkAbortRef.current.signal?.aborted) || false;
         if (aborted) return;
@@ -712,15 +693,17 @@ export default function InventoryCheckPage() {
     }
   };
 
-  // ✅ We do not lock the whole page forever.
-  // If you're viewing a POSTED check, you can click "Start new check for this date" to continue counting.
-  const disableEditing = loadingCheck || (isPosted && !!currentCheckId);
+  const disableEditing = loadingCheck || posting || savingDraft || startingNewDraft || isPosted;
 
   const canAddToList = !disableEditing && !!Number(pad.itemId || 0) && padStock && padCountedIsValid;
 
   const handleAddToList = () => {
     if (loadingCheck) return;
-    if (disableEditing) return;
+
+    if (isPosted) {
+      setError("This view is a POSTED check. Click “Start new check for this date” to continue counting.");
+      return;
+    }
 
     const itemId = Number(pad.itemId || 0);
     if (!itemId) {
@@ -768,7 +751,7 @@ export default function InventoryCheckPage() {
 
   const handleEditLine = (line) => {
     if (loadingCheck) return;
-    if (disableEditing) return;
+    if (isPosted) return;
 
     setPad({ itemId: line.itemId, countedPieces: line.countedPieces });
     if (padRef.current) padRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -776,127 +759,54 @@ export default function InventoryCheckPage() {
 
   const handleRemoveLine = (id) => {
     if (loadingCheck) return;
-    if (disableEditing) return;
+    if (isPosted) return;
     setLines((prev) => prev.filter((ln) => ln.id !== id));
   };
 
-  const startNewCheckForThisDate = () => {
-    // ✅ Creates a fresh draft for the SAME date (backend now allows it even if posted exists)
-    setError("");
-    setMessage("New inventory check started for this date. Add items and save/post when ready.");
-    setCurrentCheckId(null);
-    setCurrentCheckStatus(null);
-    setLines([]);
-    setPad({ itemId: "", countedPieces: "" });
-    if (padRef.current) padRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
-
   // ---------- Save draft / post ----------
-  const saveDraftInternal = async () => {
-    const payload = {
-      id: currentCheckId, // update existing draft or create if null
-      shop_id: Number(shopId),
-      check_date: toISODate(inventoryDate),
-      notes: null, // ✅ no notes
-      lines: lines.map((ln) => ({
-        item_id: ln.itemId,
-        counted_pieces: ln.countedPieces,
-      })),
-    };
+  const saveDraftInternal = async ({ silent = false } = {}) => {
+    if (!lines.length) return null;
+    if (loadingCheck) return null;
 
-    const res = await fetch(`${API_BASE}/inventory-checks/draft`, {
-      method: "POST",
-      headers: authHeaders,
-      body: JSON.stringify(payload),
-    });
-
-    if (!res.ok) {
-      const errData = await res.json().catch(() => null);
-      throw new Error(errData?.detail || `Failed to save inventory draft. Status: ${res.status}`);
-    }
-
-    const data = await res.json();
-
-    setCurrentCheckId(Number(data.id) || null);
-    setCurrentCheckStatus(String(data.status || "DRAFT").toUpperCase());
-
-    const syncedLines = (data.lines || []).map((ln) => ({
-      id: ln.id,
-      itemId: ln.item_id,
-      itemName: ln.item_name,
-      systemPieces: Number(ln.system_pieces || 0),
-      countedPieces: Number(ln.counted_pieces || 0),
-      diffPieces: Number(ln.diff_pieces || 0),
-      costPerPiece: getCostPerPiece(ln.item_id),
-    }));
-    setLines(syncedLines);
-
-    await loadHistory(true);
-    return data;
-  };
-
-  const handleSaveDraft = async () => {
-    if (!lines.length) return;
-    if (loadingCheck) return;
-
-    if (isPosted && currentCheckId) {
-      setError("This is a POSTED check. Click “Start new check for this date” to continue counting.");
-      return;
+    if (isPosted) {
+      setError("This view is a POSTED check. Click “Start new check for this date” to continue counting.");
+      return null;
     }
 
     setSavingDraft(true);
     setError("");
-    setMessage("");
+    if (!silent) setMessage("");
 
     try {
-      await saveDraftInternal();
-      setMessage("Inventory draft saved. Stock is NOT changed yet.");
-    } catch (err) {
-      console.error(err);
-      setError(err?.message || "Failed to save inventory draft.");
-      setMessage("");
-    } finally {
-      setSavingDraft(false);
-    }
-  };
+      const payload = {
+        id: currentCheckId, // update existing draft or create if null
+        shop_id: Number(shopId),
+        check_date: toISODate(inventoryDate),
+        notes: null,
+        lines: lines.map((ln) => ({
+          item_id: ln.itemId,
+          counted_pieces: ln.countedPieces,
+        })),
+      };
 
-  const handlePostInventory = async () => {
-    if (!lines.length) return;
-    if (loadingCheck) return;
-
-    if (isPosted && currentCheckId) {
-      setError("This is a POSTED check. Click “Start new check for this date” to post a correction.");
-      return;
-    }
-
-    setPosting(true);
-    setError("");
-    setMessage("");
-
-    try {
-      // ✅ Ensure we have a draft ID before posting (always safe)
-      let checkId = currentCheckId;
-      if (!checkId) {
-        const saved = await saveDraftInternal();
-        checkId = Number(saved?.id) || null;
-      }
-
-      if (!checkId) throw new Error("Could not create a draft to post. Please try again.");
-
-      const res = await fetch(`${API_BASE}/inventory-checks/${checkId}/post`, {
+      const res = await fetch(`${API_BASE}/inventory-checks/draft`, {
         method: "POST",
         headers: authHeaders,
+        body: JSON.stringify(payload),
       });
 
       if (!res.ok) {
         const errData = await res.json().catch(() => null);
-        throw new Error(errData?.detail || `Failed to post inventory check. Status: ${res.status}`);
+        throw new Error(errData?.detail || `Failed to save inventory draft. Status: ${res.status}`);
       }
 
       const data = await res.json();
 
-      setCurrentCheckId(Number(data.id) || null);
-      setCurrentCheckStatus(String(data.status || "POSTED").toUpperCase());
+      // extra safety: if API returns no id for any reason, reload by date
+      const newId = data?.id ?? null;
+
+      setCurrentCheckId(newId);
+      setCurrentCheckStatus(data.status || "DRAFT");
 
       const syncedLines = (data.lines || []).map((ln) => ({
         id: ln.id,
@@ -910,15 +820,141 @@ export default function InventoryCheckPage() {
       setLines(syncedLines);
 
       await loadHistory(true);
-      await loadTimeline(true);
 
-      setMessage("Inventory check posted. Stock levels have been updated. Timeline keeps the full history.");
+      if (!silent) setMessage("Inventory draft saved. Stock is NOT changed yet.");
+      return data;
+    } catch (err) {
+      console.error(err);
+      setError(err?.message || "Failed to save inventory draft.");
+      if (!silent) setMessage("");
+      return null;
+    } finally {
+      setSavingDraft(false);
+    }
+  };
+
+  const handleSaveDraft = async () => {
+    await saveDraftInternal({ silent: false });
+  };
+
+  const handlePostInventory = async () => {
+    if (!lines.length) return;
+    if (loadingCheck) return;
+
+    if (isPosted) {
+      setError("This view is already POSTED. Click “Start new check for this date” to post more items.");
+      return;
+    }
+
+    setPosting(true);
+    setError("");
+    setMessage("");
+
+    try {
+      // ✅ ensure we have a draft id (so Post works even if user didn't click Save)
+      let idToPost = currentCheckId;
+
+      if (!idToPost) {
+        const saved = await saveDraftInternal({ silent: true });
+        idToPost = saved?.id ?? null;
+      }
+
+      if (!idToPost) {
+        throw new Error("Cannot post: draft was not created. Please click Save draft and try again.");
+      }
+
+      const res = await fetch(`${API_BASE}/inventory-checks/${idToPost}/post`, {
+        method: "POST",
+        headers: authHeaders,
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => null);
+        throw new Error(errData?.detail || `Failed to post inventory check. Status: ${res.status}`);
+      }
+
+      const data = await res.json();
+
+      setCurrentCheckId(data.id ?? idToPost);
+      setCurrentCheckStatus(data.status || "POSTED");
+
+      const syncedLines = (data.lines || []).map((ln) => ({
+        id: ln.id,
+        itemId: ln.item_id,
+        itemName: ln.item_name,
+        systemPieces: Number(ln.system_pieces || 0),
+        countedPieces: Number(ln.counted_pieces || 0),
+        diffPieces: Number(ln.diff_pieces || 0),
+        costPerPiece: getCostPerPiece(ln.item_id),
+      }));
+      setLines(syncedLines);
+
+      await loadHistory(true);
+      await loadTimeline(toISODate(inventoryDate));
+
+      setMessage("Inventory check posted. Stock levels have been updated. You can start a new check for the same date to continue.");
     } catch (err) {
       console.error(err);
       setError(err?.message || "Failed to post inventory check.");
       setMessage("");
     } finally {
       setPosting(false);
+    }
+  };
+
+  // Start a new draft for the SAME DATE (enables multiple posts for the same day)
+  const handleStartNewCheckForThisDate = async () => {
+    if (loadingCheck) return;
+
+    setStartingNewDraft(true);
+    setError("");
+    setMessage("");
+
+    try {
+      const payload = {
+        id: null,
+        shop_id: Number(shopId),
+        check_date: toISODate(inventoryDate),
+        notes: null,
+        lines: [], // start clean
+      };
+
+      const res = await fetch(`${API_BASE}/inventory-checks/draft`, {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => null);
+        throw new Error(errData?.detail || `Failed to start new draft. Status: ${res.status}`);
+      }
+
+      const data = await res.json();
+
+      setCurrentCheckId(data?.id ?? null);
+      setCurrentCheckStatus(data?.status || "DRAFT");
+      setLines((data?.lines || []).map((ln) => ({
+        id: ln.id,
+        itemId: ln.item_id,
+        itemName: ln.item_name,
+        systemPieces: Number(ln.system_pieces || 0),
+        countedPieces: Number(ln.counted_pieces || 0),
+        diffPieces: Number(ln.diff_pieces || 0),
+        costPerPiece: getCostPerPiece(ln.item_id),
+      })));
+
+      setPad({ itemId: "", countedPieces: "" });
+
+      await loadHistory(true);
+
+      setMessage("New draft started for this date. Add items and post again anytime.");
+    } catch (err) {
+      console.error(err);
+      setError(err?.message || "Failed to start a new inventory check draft.");
+      setMessage("");
+    } finally {
+      setStartingNewDraft(false);
     }
   };
 
@@ -995,8 +1031,8 @@ export default function InventoryCheckPage() {
     color: "#111827",
   };
 
-  const canSaveDraft = lines.length > 0 && !savingDraft && !disableEditing && !loadingCheck;
-  const canPost = lines.length > 0 && !posting && !disableEditing && !loadingCheck;
+  const canSaveDraft = lines.length > 0 && !savingDraft && !isPosted && !loadingCheck && !posting && !startingNewDraft;
+  const canPost = lines.length > 0 && !posting && !isPosted && !loadingCheck && !savingDraft && !startingNewDraft;
 
   const numCell = { whiteSpace: "nowrap" };
 
@@ -1068,17 +1104,6 @@ export default function InventoryCheckPage() {
               >
                 History &amp; differences
               </button>
-
-              <button
-                type="button"
-                style={tabBtn(activeTab === "timeline")}
-                onClick={() => {
-                  setActiveTab("timeline");
-                  loadTimeline(true);
-                }}
-              >
-                Adjustment timeline
-              </button>
             </div>
           </div>
 
@@ -1107,10 +1132,14 @@ export default function InventoryCheckPage() {
                 textTransform: "uppercase",
                 letterSpacing: "0.14em",
                 color: "#9ca3af",
-                marginBottom: "4px",
+                marginBottom: "2px",
               }}
             >
               Date: {toISODate(inventoryDate)} • Time (CAT): {catNowHM}
+            </div>
+
+            <div style={{ fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>
+              {timelineTotals.totalAdj} adjustment(s) • {lines.length} item(s) • {timelineTotals.checks} check(s)
             </div>
 
             <div>
@@ -1122,7 +1151,7 @@ export default function InventoryCheckPage() {
                   color: "#6b7280",
                 }}
               >
-                Current check diff (pieces)
+                This check: total pieces diff
               </div>
               <div
                 style={{
@@ -1138,59 +1167,6 @@ export default function InventoryCheckPage() {
               >
                 {formatDiff(totalDiffPieces)}
               </div>
-            </div>
-
-            {/* ✅ timeline totals (full history for the day) */}
-            <div
-              style={{
-                marginTop: "6px",
-                paddingTop: "6px",
-                borderTop: "1px dashed #e5e7eb",
-                display: "grid",
-                gridTemplateColumns: "1fr",
-                rowGap: "6px",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: "10px",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.1em",
-                  color: "#6b7280",
-                }}
-              >
-                Adjustments today (history)
-              </div>
-
-              {timelineLoading ? (
-                <div style={{ fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>Loading timeline…</div>
-              ) : timelineError ? (
-                <div style={{ fontSize: "12px", color: "#b91c1c", fontWeight: 700 }}>{timelineError}</div>
-              ) : timelineTotals ? (
-                <>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
-                    <div style={{ fontSize: "11px", color: "#6b7280" }}>Pieces total</div>
-                    <div style={{ fontWeight: 800, fontSize: "13px", color: timelineTotals.total_pieces >= 0 ? "#16a34a" : "#b91c1c" }}>
-                      {formatDiff(timelineTotals.total_pieces)}
-                    </div>
-                  </div>
-
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
-                    <div style={{ fontSize: "11px", color: "#6b7280" }}>Money impact (RWF)</div>
-                    <div style={{ fontWeight: 800, fontSize: "13px", color: timelineTotals.total_money >= 0 ? "#16a34a" : "#b91c1c" }}>
-                      {timelineTotals.total_money === 0
-                        ? "0"
-                        : `${timelineTotals.total_money > 0 ? "+" : ""}${formatMoney(timelineTotals.total_money)}`}
-                    </div>
-                  </div>
-
-                  <div style={{ fontSize: "11px", color: "#6b7280" }}>
-                    {timelineTotals.adjustments_count} adjustment(s) • {timelineTotals.items_count} item(s) • {timelineTotals.checks_count} check(s)
-                  </div>
-                </>
-              ) : (
-                <div style={{ fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>No adjustments yet for this date.</div>
-              )}
             </div>
 
             <div
@@ -1248,6 +1224,53 @@ export default function InventoryCheckPage() {
                 </div>
               </div>
             </div>
+
+            <div
+              style={{
+                marginTop: "6px",
+                paddingTop: "6px",
+                borderTop: "1px dashed #e5e7eb",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "10px",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.1em",
+                  color: "#6b7280",
+                }}
+              >
+                Whole day (posted): pieces & value
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", marginTop: 4 }}>
+                <div style={{ fontSize: "11px", color: "#6b7280" }}>Pieces adjusted</div>
+                <div
+                  style={{
+                    fontWeight: 800,
+                    fontSize: "13px",
+                    color: timelineTotals.pieces === 0 ? "#111827" : timelineTotals.pieces > 0 ? "#16a34a" : "#b91c1c",
+                  }}
+                >
+                  {formatDiff(timelineTotals.pieces)}
+                </div>
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
+                <div style={{ fontSize: "11px", color: "#6b7280" }}>Value (RWF)</div>
+                <div
+                  style={{
+                    fontWeight: 800,
+                    fontSize: "13px",
+                    color: timelineTotals.value === 0 ? "#111827" : timelineTotals.value > 0 ? "#16a34a" : "#b91c1c",
+                  }}
+                >
+                  {timelineTotals.value === 0
+                    ? "0"
+                    : `${timelineTotals.value > 0 ? "+" : ""}${formatMoney(timelineTotals.value)}`}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1302,15 +1325,15 @@ export default function InventoryCheckPage() {
             Enter inventory counts for {toISODate(inventoryDate)}
           </h2>
 
-          {isPosted && currentCheckId && (
+          {isPosted && (
             <div
               style={{
-                marginTop: 10,
-                padding: "10px 12px",
+                marginTop: 12,
+                padding: "12px 12px",
                 borderRadius: "14px",
                 background: "#fef2f2",
                 color: "#b91c1c",
-                fontWeight: 700,
+                fontWeight: 800,
                 fontSize: "13px",
                 display: "flex",
                 alignItems: "center",
@@ -1320,23 +1343,31 @@ export default function InventoryCheckPage() {
               }}
             >
               <div>
-                This inventory check is <strong>POSTED</strong> (ID: {currentCheckId}). Stock is already normalized.
+                This view is <strong>POSTED</strong>
+                {currentCheckId ? ` (ID: ${currentCheckId})` : ""}. Stock is normalized.
+                <div style={{ marginTop: 6, fontWeight: 700, color: "#7f1d1d" }}>
+                  To continue counting and posting more items on the SAME date, start a new check for this date.
+                </div>
               </div>
+
               <button
                 type="button"
-                onClick={startNewCheckForThisDate}
+                onClick={handleStartNewCheckForThisDate}
+                disabled={startingNewDraft || loadingCheck}
                 style={{
-                  padding: "0.55rem 1.1rem",
+                  padding: "0.65rem 1.2rem",
                   borderRadius: "9999px",
                   border: "none",
-                  backgroundColor: "#2563eb",
+                  backgroundColor: startingNewDraft ? "#9ca3af" : "#2563eb",
                   color: "white",
-                  fontWeight: 800,
-                  fontSize: "0.9rem",
-                  cursor: "pointer",
+                  fontWeight: 900,
+                  fontSize: "0.95rem",
+                  cursor: startingNewDraft ? "not-allowed" : "pointer",
+                  opacity: startingNewDraft ? 0.9 : 1,
+                  whiteSpace: "nowrap",
                 }}
               >
-                Start new check for this date
+                {startingNewDraft ? "Starting…" : "Start new check for this date"}
               </button>
             </div>
           )}
@@ -1502,7 +1533,7 @@ export default function InventoryCheckPage() {
           ) : (
             <>
               <div style={{ fontSize: "12px", color: "#6b7280", marginBottom: "6px" }}>
-                {lines.length} item{lines.length === 1 ? "" : "s"} in this inventory check.
+                {lines.length} item{lines.length === 1 ? "" : "s"} in this check.
               </div>
 
               <div
@@ -1666,6 +1697,134 @@ export default function InventoryCheckPage() {
               {posting ? "Posting…" : "Post inventory check"}
             </button>
           </div>
+
+          {/* Timeline (no notes) */}
+          <div
+            style={{
+              marginTop: 18,
+              borderTop: "1px solid #e5e7eb",
+              paddingTop: 14,
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontSize: "14px", fontWeight: 900, color: "#111827" }}>Inventory adjustment timeline</div>
+                <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 2 }}>
+                  Posted adjustments for this date (keeps history even after stock normalization).
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => loadTimeline(toISODate(inventoryDate))}
+                style={{
+                  padding: "0.5rem 1rem",
+                  borderRadius: "999px",
+                  border: "1px solid #d1d5db",
+                  backgroundColor: "#ffffff",
+                  fontWeight: 800,
+                  fontSize: "12px",
+                  cursor: "pointer",
+                }}
+              >
+                Refresh timeline
+              </button>
+            </div>
+
+            {timelineRows.length === 0 ? (
+              <div style={{ marginTop: 10, fontSize: "13px", color: "#6b7280" }}>
+                No posted adjustments yet for this date.
+              </div>
+            ) : (
+              <div
+                style={{
+                  marginTop: 10,
+                  borderRadius: "14px",
+                  border: "1px solid #e5e7eb",
+                  overflow: "hidden",
+                }}
+              >
+                <div style={{ maxHeight: "280px", overflowY: "auto", overflowX: "auto" }}>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "110px minmax(220px,2.5fr) 120px 120px 120px 120px",
+                      minWidth: "900px",
+                      alignItems: "center",
+                      padding: "8px 10px",
+                      borderBottom: "1px solid #e5e7eb",
+                      fontSize: "11px",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.08em",
+                      color: "#6b7280",
+                      fontWeight: 800,
+                      backgroundColor: "#f9fafb",
+                    }}
+                  >
+                    <div>Time</div>
+                    <div>Item</div>
+                    <div style={{ textAlign: "right" }}>Pieces</div>
+                    <div style={{ textAlign: "right" }}>Unit cost</div>
+                    <div style={{ textAlign: "right" }}>Value</div>
+                    <div style={{ textAlign: "right" }}>Check ID</div>
+                  </div>
+
+                  {timelineRows.map((r) => {
+                    const pcs = Number(r.pieces_change || 0);
+                    const val = Number(r.value_change || 0);
+                    return (
+                      <div
+                        key={`${r.movement_id}-${r.check_id}`}
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "110px minmax(220px,2.5fr) 120px 120px 120px 120px",
+                          minWidth: "900px",
+                          alignItems: "center",
+                          padding: "9px 10px",
+                          borderBottom: "1px solid #f3f4f6",
+                          fontSize: "13px",
+                        }}
+                      >
+                        <div style={{ color: "#6b7280", fontWeight: 700 }}>
+                          {formatCAT_HM_FromISO(r.created_at)}
+                        </div>
+
+                        <div style={{ fontWeight: 700, color: "#111827" }}>{r.item_name}</div>
+
+                        <div
+                          style={{
+                            textAlign: "right",
+                            fontWeight: 900,
+                            color: pcs === 0 ? "#111827" : pcs > 0 ? "#16a34a" : "#b91c1c",
+                          }}
+                        >
+                          {formatDiff(pcs)}
+                        </div>
+
+                        <div style={{ textAlign: "right", fontWeight: 800, color: "#111827" }}>
+                          {formatMoney(r.unit_cost)}
+                        </div>
+
+                        <div
+                          style={{
+                            textAlign: "right",
+                            fontWeight: 900,
+                            color: val === 0 ? "#111827" : val > 0 ? "#16a34a" : "#b91c1c",
+                          }}
+                        >
+                          {val === 0 ? "0" : `${val > 0 ? "+" : ""}${formatMoney(val)}`}
+                        </div>
+
+                        <div style={{ textAlign: "right", fontWeight: 800, color: "#111827" }}>
+                          {r.check_id}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -1681,7 +1840,7 @@ export default function InventoryCheckPage() {
         >
           <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>Previous inventory checks</h2>
           <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 4 }}>
-            One row per date. Click a date to open its full item list.
+            One row per date. Click a date to open its latest check.
           </div>
 
           {groupedHistory.length === 0 ? (
@@ -1768,185 +1927,6 @@ export default function InventoryCheckPage() {
                     </div>
                   </div>
                 ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ================= TAB: Adjustment timeline ================= */}
-      {activeTab === "timeline" && (
-        <div
-          style={{
-            backgroundColor: "#ffffff",
-            borderRadius: "20px",
-            boxShadow: "0 10px 30px rgba(15,37,128,0.06)",
-            padding: "16px 18px 18px",
-          }}
-        >
-          <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>
-            Inventory adjustment timeline — {toISODate(inventoryDate)}
-          </h2>
-          <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 4 }}>
-            This is the full history from the database (Stock Movements). No notes.
-          </div>
-
-          <div style={{ marginTop: 12, display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
-            <div style={{ fontSize: "12px", fontWeight: 800, color: "#111827" }}>Filter by item</div>
-            <div style={{ minWidth: 280, flex: "1 1 320px" }}>
-              <ItemComboBox
-                items={pickerItems}
-                valueId={timelineItemId ? String(timelineItemId) : ""}
-                onChangeId={(idStr) => {
-                  setTimelineItemId(idStr);
-                  setTimelineData(null);
-                  setTimelineError("");
-                  // reload immediately
-                  setTimeout(() => loadTimeline(true), 0);
-                }}
-                disabled={timelineLoading}
-              />
-            </div>
-
-            <button
-              type="button"
-              onClick={() => {
-                setTimelineItemId("");
-                setTimelineData(null);
-                setTimelineError("");
-                loadTimeline(true);
-              }}
-              style={{
-                padding: "0.55rem 1.1rem",
-                borderRadius: "9999px",
-                border: "1px solid #d1d5db",
-                backgroundColor: "#ffffff",
-                color: "#111827",
-                fontWeight: 800,
-                fontSize: "0.9rem",
-                cursor: "pointer",
-              }}
-            >
-              Clear filter
-            </button>
-
-            <button
-              type="button"
-              onClick={() => loadTimeline(true)}
-              style={{
-                padding: "0.55rem 1.1rem",
-                borderRadius: "9999px",
-                border: "none",
-                backgroundColor: "#2563eb",
-                color: "white",
-                fontWeight: 800,
-                fontSize: "0.9rem",
-                cursor: "pointer",
-              }}
-            >
-              Refresh
-            </button>
-          </div>
-
-          {timelineLoading ? (
-            <div style={{ marginTop: 12, fontSize: "13px", color: "#6b7280", fontWeight: 700 }}>Loading…</div>
-          ) : timelineError ? (
-            <div style={{ marginTop: 12, fontSize: "13px", color: "#b91c1c", fontWeight: 800 }}>{timelineError}</div>
-          ) : !timelineData || !Array.isArray(timelineData.rows) || timelineData.rows.length === 0 ? (
-            <div style={{ marginTop: 12, fontSize: "13px", color: "#6b7280" }}>
-              No inventory adjustments recorded for this date.
-            </div>
-          ) : (
-            <div style={{ marginTop: 12, borderRadius: "14px", border: "1px solid #e5e7eb", overflow: "hidden" }}>
-              <div style={{ maxHeight: "460px", overflowY: "auto", overflowX: "auto", scrollbarGutter: "stable" }}>
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "110px minmax(220px, 2.2fr) 1fr 1fr 1fr 120px",
-                    minWidth: "980px",
-                    alignItems: "center",
-                    padding: "8px 10px",
-                    borderBottom: "1px solid #e5e7eb",
-                    fontSize: "11px",
-                    textTransform: "uppercase",
-                    letterSpacing: "0.08em",
-                    color: "#6b7280",
-                    fontWeight: 700,
-                    backgroundColor: "#f9fafb",
-                  }}
-                >
-                  <div>Time</div>
-                  <div>Item</div>
-                  <div style={{ textAlign: "right" }}>Pieces change</div>
-                  <div style={{ textAlign: "right" }}>Unit cost</div>
-                  <div style={{ textAlign: "right" }}>Money impact</div>
-                  <div style={{ textAlign: "right" }}>Check ID</div>
-                </div>
-
-                {timelineData.rows.map((r) => {
-                  const pieces = Number(r.pieces_change || 0);
-                  const money = Number(r.money_impact || 0);
-                  return (
-                    <div
-                      key={r.movement_id}
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "110px minmax(220px, 2.2fr) 1fr 1fr 1fr 120px",
-                        minWidth: "980px",
-                        alignItems: "center",
-                        padding: "9px 10px",
-                        borderBottom: "1px solid #f3f4f6",
-                        fontSize: "13px",
-                      }}
-                    >
-                      <div style={{ color: "#6b7280", fontWeight: 800 }}>
-                        {formatCAT_HM_FromISO(r.created_at)}
-                      </div>
-                      <div style={{ fontWeight: 700, color: "#111827" }}>{r.item_name}</div>
-                      <div style={{ textAlign: "right", fontWeight: 800, color: pieces > 0 ? "#16a34a" : pieces < 0 ? "#b91c1c" : "#111827" }}>
-                        {formatDiff(pieces)}
-                      </div>
-                      <div style={{ textAlign: "right", ...numCell }}>{formatMoney(r.unit_cost)}</div>
-                      <div style={{ textAlign: "right", fontWeight: 800, color: money > 0 ? "#16a34a" : money < 0 ? "#b91c1c" : "#111827" }}>
-                        {money === 0 ? "0" : `${money > 0 ? "+" : ""}${formatMoney(money)}`}
-                      </div>
-                      <div style={{ textAlign: "right", color: "#6b7280", fontWeight: 800 }}>
-                        {r.check_id || "—"}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              <div
-                style={{
-                  padding: "10px 12px",
-                  background: "#ffffff",
-                  borderTop: "1px solid #e5e7eb",
-                  display: "flex",
-                  justifyContent: "space-between",
-                  gap: "12px",
-                  flexWrap: "wrap",
-                  fontSize: "12px",
-                  fontWeight: 800,
-                }}
-              >
-                <div style={{ color: "#6b7280" }}>
-                  {timelineData.adjustments_count} adjustment(s) • {timelineData.items_count} item(s) • {timelineData.checks_count} check(s)
-                </div>
-                <div style={{ display: "flex", gap: "14px", flexWrap: "wrap" }}>
-                  <div style={{ color: Number(timelineData.total_pieces || 0) >= 0 ? "#16a34a" : "#b91c1c" }}>
-                    Pieces total: {formatDiff(timelineData.total_pieces)}
-                  </div>
-                  <div style={{ color: Number(timelineData.total_money_impact || 0) >= 0 ? "#16a34a" : "#b91c1c" }}>
-                    Money impact:{" "}
-                    {Number(timelineData.total_money_impact || 0) === 0
-                      ? "0"
-                      : `${Number(timelineData.total_money_impact || 0) > 0 ? "+" : ""}${formatMoney(
-                          timelineData.total_money_impact
-                        )}`}
-                  </div>
-                </div>
               </div>
             </div>
           )}
