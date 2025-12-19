@@ -8,14 +8,55 @@ import { API_BASE as CLIENT_API_BASE } from "../../api/client.jsx";
 
 const API_BASE = CLIENT_API_BASE;
 
-// ---------- Small helpers ----------
+// =========================
+// Timezone helpers (CAT)
+// Rwanda is CAT (UTC+2)
+// =========================
+const CAT_TZ = "Africa/Kigali";
+
+function _fmtPartsYMD(date) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: CAT_TZ,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(date);
+
+    const y = parts.find((p) => p.type === "year")?.value;
+    const m = parts.find((p) => p.type === "month")?.value;
+    const d = parts.find((p) => p.type === "day")?.value;
+    if (y && m && d) return `${y}-${m}-${d}`;
+  } catch {
+    // fallthrough
+  }
+  // final fallback (local) - should rarely hit
+  const dt = date instanceof Date ? date : new Date();
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const d = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function formatCAT_HM(date = new Date()) {
+  try {
+    return new Intl.DateTimeFormat("en-GB", {
+      timeZone: CAT_TZ,
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(date);
+  } catch {
+    const dt = date instanceof Date ? date : new Date();
+    const hh = String(dt.getHours()).padStart(2, "0");
+    const mm = String(dt.getMinutes()).padStart(2, "0");
+    return `${hh}:${mm}`;
+  }
+}
 
 function todayISO() {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  // ✅ CAT-safe today (no browser timezone drift)
+  return _fmtPartsYMD(new Date());
 }
 
 function toISODate(raw) {
@@ -34,12 +75,10 @@ function toISODate(raw) {
     return `${yyyy}-${mm}-${dd}`;
   }
 
+  // ⚠️ Avoid local-time shifting: if we must parse, convert to CAT Y-M-D
   const dt = new Date(s);
   if (!Number.isFinite(dt.getTime())) return "";
-  const y = dt.getFullYear();
-  const m = String(dt.getMonth() + 1).padStart(2, "0");
-  const d = String(dt.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
+  return _fmtPartsYMD(dt);
 }
 
 function formatQty(value) {
@@ -258,6 +297,9 @@ export default function InventoryCheckPage() {
   const [stockRows, setStockRows] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  // ✅ date-level loading (prevents “old day shows for seconds”)
+  const [loadingCheck, setLoadingCheck] = useState(false);
+
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
@@ -286,6 +328,19 @@ export default function InventoryCheckPage() {
   const padRef = useRef(null);
 
   const isPosted = String(currentCheckStatus || "").toUpperCase() === "POSTED";
+
+  // CAT “now” display
+  const [catNowHM, setCatNowHM] = useState(() => formatCAT_HM(new Date()));
+  useEffect(() => {
+    const t = setInterval(() => setCatNowHM(formatCAT_HM(new Date())), 30_000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Abort + race protection
+  const checkAbortRef = useRef(null);
+  const historyAbortRef = useRef(null);
+  const checkSeqRef = useRef(0);
+  const historyLoadedAtRef = useRef(0);
 
   // ---------- Derived maps ----------
 
@@ -356,6 +411,8 @@ export default function InventoryCheckPage() {
   // ---------- Data loading ----------
 
   useEffect(() => {
+    const controller = new AbortController();
+
     async function loadShopAndStock() {
       setLoading(true);
       setError("");
@@ -364,6 +421,7 @@ export default function InventoryCheckPage() {
       try {
         const shopRes = await fetch(`${API_BASE}/shops/${shopId}`, {
           headers: authHeadersNoJson,
+          signal: controller.signal,
         });
         if (!shopRes.ok) {
           throw new Error(`Failed to load shop. Status: ${shopRes.status}`);
@@ -372,6 +430,7 @@ export default function InventoryCheckPage() {
 
         const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`, {
           headers: authHeadersNoJson,
+          signal: controller.signal,
         });
         if (!stockRes.ok) {
           throw new Error(`Failed to load stock. Status: ${stockRes.status}`);
@@ -381,30 +440,51 @@ export default function InventoryCheckPage() {
         setShop(shopData);
         setStockRows(Array.isArray(stockData) ? stockData : []);
       } catch (err) {
+        if (controller.signal.aborted) return;
         console.error(err);
         setError(err?.message || "Failed to load shop / stock for inventory check.");
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     }
 
     loadShopAndStock();
+    return () => controller.abort();
   }, [shopId, authHeadersNoJson]);
 
   // load history list for the shop
-  const loadHistory = async () => {
+  const loadHistory = async (force = false) => {
+    // small TTL cache (prevents repeated calls on fast date switching)
+    if (!force && historyChecks.length > 0) {
+      const ageMs = Date.now() - historyLoadedAtRef.current;
+      if (ageMs < 15_000) return historyChecks;
+    }
+
+    if (historyAbortRef.current) {
+      try {
+        historyAbortRef.current.abort();
+      } catch {
+        // ignore
+      }
+    }
+    const controller = new AbortController();
+    historyAbortRef.current = controller;
+
     try {
-      const res = await fetch(`${API_BASE}/inventory-checks/summary?shop_id=${shopId}`, {
-        headers: authHeadersNoJson,
-      });
+      const res = await fetch(
+        `${API_BASE}/inventory-checks/summary?shop_id=${shopId}`,
+        { headers: authHeadersNoJson, signal: controller.signal }
+      );
       if (!res.ok) {
         throw new Error(`Failed to load inventory checks. Status: ${res.status}`);
       }
       const data = await res.json().catch(() => []);
       const list = Array.isArray(data) ? data : [];
       setHistoryChecks(list);
+      historyLoadedAtRef.current = Date.now();
       return list;
     } catch (err) {
+      if (controller.signal.aborted) return [];
       console.error(err);
       setError(err?.message || "Failed to fetch inventory checks.");
       return [];
@@ -412,15 +492,18 @@ export default function InventoryCheckPage() {
   };
 
   // load details for currently selected date (draft or posted)
-  const loadCheckForDate = async (isoDate) => {
-    setError("");
-    setMessage("");
+  const loadCheckForDate = async (isoDate, seq) => {
+    setLoadingCheck(true);
 
     try {
       const dateISO = toISODate(isoDate);
-      const list = await loadHistory();
 
-      const sameDateChecks = list.filter((c) => toISODate(c.check_date) === dateISO);
+      const list = await loadHistory(false);
+      if (seq !== checkSeqRef.current) return;
+
+      const sameDateChecks = (list || []).filter(
+        (c) => toISODate(c.check_date) === dateISO
+      );
 
       if (!sameDateChecks.length) {
         setCurrentCheckId(null);
@@ -429,21 +512,36 @@ export default function InventoryCheckPage() {
         return;
       }
 
-      // Prefer DRAFT for editing; otherwise fall back to most recent POSTED
-      let match =
+      // Prefer DRAFT for editing; otherwise fall back to POSTED
+      const match =
         sameDateChecks.find((c) => String(c.status).toUpperCase() === "DRAFT") ||
         sameDateChecks.find((c) => String(c.status).toUpperCase() === "POSTED") ||
         sameDateChecks[sameDateChecks.length - 1];
 
+      // cancel prior detail request
+      if (checkAbortRef.current) {
+        try {
+          checkAbortRef.current.abort();
+        } catch {
+          // ignore
+        }
+      }
+      const controller = new AbortController();
+      checkAbortRef.current = controller;
+
       const detailRes = await fetch(`${API_BASE}/inventory-checks/${match.id}`, {
         headers: authHeadersNoJson,
+        signal: controller.signal,
       });
 
       if (!detailRes.ok) {
-        throw new Error(`Failed to load inventory check details. Status: ${detailRes.status}`);
+        throw new Error(
+          `Failed to load inventory check details. Status: ${detailRes.status}`
+        );
       }
 
       const detail = await detailRes.json();
+      if (seq !== checkSeqRef.current) return;
 
       setCurrentCheckId(detail.id || match.id);
       setCurrentCheckStatus(detail.status || match.status || null);
@@ -459,16 +557,34 @@ export default function InventoryCheckPage() {
       }));
       setLines(mapped);
     } catch (err) {
+      // ignore abort
+      const aborted =
+        (checkAbortRef.current && checkAbortRef.current.signal?.aborted) || false;
+      if (aborted) return;
+
       console.error(err);
       setError(err?.message || "Failed to fetch inventory check for selected date.");
+    } finally {
+      if (seq === checkSeqRef.current) setLoadingCheck(false);
     }
   };
 
-  // when date changes, load any existing check
+  // when date changes, clear UI immediately then load the new date safely
   useEffect(() => {
-    if (!loading) {
-      loadCheckForDate(inventoryDate);
-    }
+    if (loading) return;
+
+    // ✅ Clear everything that causes “previous date still showing”
+    setError("");
+    setMessage("");
+    setCurrentCheckId(null);
+    setCurrentCheckStatus(null);
+    setLines([]);
+    setPad({ itemId: "", countedPieces: "" });
+
+    const seq = ++checkSeqRef.current;
+    const iso = toISODate(inventoryDate);
+    loadCheckForDate(iso, seq);
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inventoryDate, loading]);
 
@@ -481,7 +597,6 @@ export default function InventoryCheckPage() {
     });
 
   const handlePadChange = (field, value) => {
-    // Clear sticky error/message as user starts typing again
     if (error) setError("");
     if (message) setMessage("");
 
@@ -502,6 +617,13 @@ export default function InventoryCheckPage() {
   };
 
   const handleAddToList = () => {
+    if (loadingCheck) return;
+
+    if (isPosted) {
+      setError("An inventory check is already POSTED for this date. Choose another date.");
+      return;
+    }
+
     const itemId = Number(pad.itemId || 0);
     if (!itemId) {
       setError("Select an item first.");
@@ -539,9 +661,8 @@ export default function InventoryCheckPage() {
         costPerPiece,
       };
 
-      if (existingIndex === -1) {
-        return [...prev, base];
-      }
+      if (existingIndex === -1) return [...prev, base];
+
       const copy = [...prev];
       copy[existingIndex] = base;
       return copy;
@@ -554,6 +675,9 @@ export default function InventoryCheckPage() {
   };
 
   const handleEditLine = (line) => {
+    if (loadingCheck) return;
+    if (isPosted) return;
+
     setPad({
       itemId: line.itemId,
       countedPieces: line.countedPieces,
@@ -564,16 +688,22 @@ export default function InventoryCheckPage() {
   };
 
   const handleRemoveLine = (id) => {
+    if (loadingCheck) return;
+    if (isPosted) return;
     setLines((prev) => prev.filter((ln) => ln.id !== id));
   };
 
   // ---------- Save draft / post ----------
-  // ✅ Minimal UX improvements:
-  // - If currently selected check is POSTED, we create a NEW DRAFT (id: null) instead of trying to update POSTED.
-  // - Disable buttons when no items in list.
 
   const handleSaveDraft = async () => {
     if (!lines.length) return;
+    if (loadingCheck) return;
+
+    // ✅ Do not allow drafting on a posted date (avoids duplicate “already recorded”)
+    if (isPosted) {
+      setError("This date is already POSTED. Choose another date to create a new inventory check.");
+      return;
+    }
 
     setSavingDraft(true);
     setError("");
@@ -581,7 +711,7 @@ export default function InventoryCheckPage() {
 
     try {
       const payload = {
-        id: isPosted ? null : currentCheckId, // ✅ key fix: don't update POSTED
+        id: currentCheckId, // update existing draft or create if null
         shop_id: Number(shopId),
         check_date: toISODate(inventoryDate),
         notes: null,
@@ -620,7 +750,7 @@ export default function InventoryCheckPage() {
       }));
       setLines(syncedLines);
 
-      await loadHistory();
+      await loadHistory(true);
 
       setMessage("Inventory draft saved. Stock is NOT changed yet.");
     } catch (err) {
@@ -634,6 +764,12 @@ export default function InventoryCheckPage() {
 
   const handlePostInventory = async () => {
     if (!currentCheckId || !lines.length) return;
+    if (loadingCheck) return;
+
+    if (isPosted) {
+      setError("This inventory check is already POSTED.");
+      return;
+    }
 
     setPosting(true);
     setError("");
@@ -667,7 +803,7 @@ export default function InventoryCheckPage() {
       }));
       setLines(syncedLines);
 
-      await loadHistory();
+      await loadHistory(true);
 
       setMessage("Inventory check posted. Stock levels have been updated.");
     } catch (err) {
@@ -713,9 +849,8 @@ export default function InventoryCheckPage() {
 
   const openHistoryCheck = async (dateISO) => {
     const iso = toISODate(dateISO);
-    setInventoryDate(iso);
     setActiveTab("enter");
-    await loadCheckForDate(iso);
+    setInventoryDate(iso); // date effect will load safely (no double fetch)
   };
 
   // ---------- Rendering ----------
@@ -760,8 +895,11 @@ export default function InventoryCheckPage() {
     marginBottom: "6px",
   };
 
-  const canSaveDraft = lines.length > 0 && !savingDraft;
-  const canPost = lines.length > 0 && !!currentCheckId && !posting && !isPosted;
+  const canSaveDraft = lines.length > 0 && !savingDraft && !isPosted && !loadingCheck;
+  const canPost =
+    lines.length > 0 && !!currentCheckId && !posting && !isPosted && !loadingCheck;
+
+  const disableEditing = loadingCheck || isPosted;
 
   return (
     <div
@@ -855,7 +993,7 @@ export default function InventoryCheckPage() {
                 style={tabBtn(activeTab === "history")}
                 onClick={() => {
                   setActiveTab("history");
-                  loadHistory();
+                  loadHistory(true);
                 }}
               >
                 History &amp; differences
@@ -881,6 +1019,7 @@ export default function InventoryCheckPage() {
             <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>
               Inventory summary
             </div>
+
             <div
               style={{
                 fontSize: "10px",
@@ -890,7 +1029,7 @@ export default function InventoryCheckPage() {
                 marginBottom: "4px",
               }}
             >
-              Date: {toISODate(inventoryDate)}
+              Date: {toISODate(inventoryDate)} • Time (CAT): {catNowHM}
             </div>
 
             <div>
@@ -971,7 +1110,9 @@ export default function InventoryCheckPage() {
                 >
                   {totalSystemValueDiff === 0
                     ? "0"
-                    : `${totalSystemValueDiff > 0 ? "+" : ""}${formatMoney(totalSystemValueDiff)}`}
+                    : `${totalSystemValueDiff > 0 ? "+" : ""}${formatMoney(
+                        totalSystemValueDiff
+                      )}`}
                 </div>
               </div>
             </div>
@@ -1002,6 +1143,12 @@ export default function InventoryCheckPage() {
               backgroundColor: "#ffffff",
             }}
           />
+
+          {loadingCheck && (
+            <div style={{ fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>
+              Loading…
+            </div>
+          )}
         </div>
       </div>
 
@@ -1034,6 +1181,23 @@ export default function InventoryCheckPage() {
             Enter inventory counts for {toISODate(inventoryDate)}
           </h2>
 
+          {isPosted && (
+            <div
+              style={{
+                marginTop: 10,
+                padding: "10px 12px",
+                borderRadius: "14px",
+                background: "#fef2f2",
+                color: "#b91c1c",
+                fontWeight: 700,
+                fontSize: "13px",
+              }}
+            >
+              An inventory check is already <strong>POSTED</strong> for this date. Choose another
+              date.
+            </div>
+          )}
+
           {/* PAD */}
           <div
             ref={padRef}
@@ -1045,6 +1209,7 @@ export default function InventoryCheckPage() {
               background: "#ffffff",
               border: "1px solid #e5e7eb",
               color: "#111827",
+              opacity: disableEditing ? 0.9 : 1,
             }}
           >
             <div
@@ -1063,15 +1228,17 @@ export default function InventoryCheckPage() {
               <button
                 type="button"
                 onClick={handleAddToList}
+                disabled={disableEditing}
                 style={{
                   padding: "0.55rem 1.3rem",
                   borderRadius: "9999px",
                   border: "none",
-                  backgroundColor: "#2563eb",
+                  backgroundColor: disableEditing ? "#9ca3af" : "#2563eb",
                   color: "white",
                   fontWeight: 800,
                   fontSize: "0.9rem",
-                  cursor: "pointer",
+                  cursor: disableEditing ? "not-allowed" : "pointer",
+                  opacity: disableEditing ? 0.85 : 1,
                 }}
               >
                 + Add to list
@@ -1084,7 +1251,7 @@ export default function InventoryCheckPage() {
                 items={pickerItems}
                 valueId={pad.itemId === "" ? "" : String(pad.itemId)}
                 onChangeId={(idStr) => handlePadChange("itemId", idStr)}
-                disabled={false}
+                disabled={disableEditing}
               />
 
               <div
@@ -1161,8 +1328,13 @@ export default function InventoryCheckPage() {
                   min={0}
                   step="0.01"
                   value={pad.countedPieces}
+                  disabled={disableEditing}
                   onChange={(e) => handlePadChange("countedPieces", e.target.value)}
-                  style={inputBase}
+                  style={{
+                    ...inputBase,
+                    backgroundColor: disableEditing ? "#f9fafb" : "#ffffff",
+                    cursor: disableEditing ? "not-allowed" : "text",
+                  }}
                 />
               </div>
 
@@ -1252,6 +1424,7 @@ export default function InventoryCheckPage() {
                         <button
                           type="button"
                           onClick={() => handleEditLine(ln)}
+                          disabled={disableEditing}
                           style={{
                             padding: 0,
                             margin: 0,
@@ -1260,8 +1433,9 @@ export default function InventoryCheckPage() {
                             color: "#111827",
                             fontWeight: 600,
                             fontSize: "13px",
-                            cursor: "pointer",
+                            cursor: disableEditing ? "not-allowed" : "pointer",
                             textAlign: "left",
+                            opacity: disableEditing ? 0.7 : 1,
                           }}
                           title="Edit this item in the pad"
                         >
@@ -1289,15 +1463,17 @@ export default function InventoryCheckPage() {
                         <button
                           type="button"
                           onClick={() => handleRemoveLine(ln.id)}
+                          disabled={disableEditing}
                           style={{
                             width: "26px",
                             height: "26px",
                             borderRadius: "9999px",
                             border: "1px solid #fee2e2",
-                            backgroundColor: "#fef2f2",
-                            color: "#b91c1c",
+                            backgroundColor: disableEditing ? "#f3f4f6" : "#fef2f2",
+                            color: disableEditing ? "#9ca3af" : "#b91c1c",
                             fontSize: "14px",
-                            cursor: "pointer",
+                            cursor: disableEditing ? "not-allowed" : "pointer",
+                            opacity: disableEditing ? 0.7 : 1,
                           }}
                           title="Remove from list"
                         >
