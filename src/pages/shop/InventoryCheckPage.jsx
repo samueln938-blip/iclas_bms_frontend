@@ -293,7 +293,7 @@ export default function InventoryCheckPage() {
   const [stockRows, setStockRows] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // ✅ date-level loading (prevents “old day shows for seconds”)
+  // ✅ date-level loading
   const [loadingCheck, setLoadingCheck] = useState(false);
 
   const [error, setError] = useState("");
@@ -314,6 +314,9 @@ export default function InventoryCheckPage() {
   // lines for current date
   const [lines, setLines] = useState([]);
 
+  // snapshot signature so buttons only enable when there are changes
+  const [syncedSig, setSyncedSig] = useState("");
+
   // history list for "History & differences"
   const [historyChecks, setHistoryChecks] = useState([]);
   const historyLoadedAtRef = useRef(0);
@@ -323,8 +326,6 @@ export default function InventoryCheckPage() {
   const [posting, setPosting] = useState(false);
 
   const padRef = useRef(null);
-
-  const isPosted = String(currentCheckStatus || "").toUpperCase() === "POSTED";
 
   // CAT “now” display
   const [catNowHM, setCatNowHM] = useState(() => formatCAT_HM(new Date()));
@@ -368,6 +369,22 @@ export default function InventoryCheckPage() {
     const n = Number(raw);
     return Number.isFinite(n) ? n : 0;
   };
+
+  const signatureForLines = (arr) => {
+    const list = (arr || [])
+      .map((ln) => ({
+        itemId: Number(ln.itemId),
+        counted: Number(ln.countedPieces ?? 0),
+      }))
+      .filter((x) => Number.isFinite(x.itemId) && x.itemId > 0)
+      .sort((a, b) => a.itemId - b.itemId)
+      .map((x) => `${x.itemId}:${x.counted}`);
+    return list.join("|");
+  };
+
+  const hasChanges = useMemo(() => {
+    return signatureForLines(lines) !== (syncedSig || "");
+  }, [lines, syncedSig]);
 
   const padStock = pad.itemId ? stockByItemId[Number(pad.itemId)] : null;
   const padSystemPieces = padStock ? Number(padStock.remaining_pieces || 0) : 0;
@@ -485,6 +502,7 @@ export default function InventoryCheckPage() {
       setCurrentCheckId(null);
       setCurrentCheckStatus(null);
       setLines([]);
+      setSyncedSig("");
       return;
     }
 
@@ -519,6 +537,7 @@ export default function InventoryCheckPage() {
       setCurrentCheckId(null);
       setCurrentCheckStatus(null);
       setLines([]);
+      setSyncedSig("");
       return { fallbackNeeded: false };
     }
 
@@ -536,7 +555,9 @@ export default function InventoryCheckPage() {
       diffPieces: Number(ln.diff_pieces || 0),
       costPerPiece: getCostPerPiece(ln.item_id),
     }));
+
     setLines(mapped);
+    setSyncedSig(signatureForLines(mapped));
 
     return { fallbackNeeded: false };
   };
@@ -553,6 +574,7 @@ export default function InventoryCheckPage() {
       setCurrentCheckId(null);
       setCurrentCheckStatus(null);
       setLines([]);
+      setSyncedSig("");
       return;
     }
 
@@ -592,7 +614,9 @@ export default function InventoryCheckPage() {
       diffPieces: Number(ln.diff_pieces || 0),
       costPerPiece: getCostPerPiece(ln.item_id),
     }));
+
     setLines(mapped);
+    setSyncedSig(signatureForLines(mapped));
   };
 
   // when date changes
@@ -604,6 +628,7 @@ export default function InventoryCheckPage() {
     setCurrentCheckId(null);
     setCurrentCheckStatus(null);
     setLines([]);
+    setSyncedSig("");
     setPad({ itemId: "", countedPieces: "" });
 
     const seq = ++checkSeqRef.current;
@@ -648,17 +673,14 @@ export default function InventoryCheckPage() {
     }
   };
 
-  const disableEditing = loadingCheck || isPosted;
+  // ✅ Friendly rule: posting should NOT lock editing
+  // We only disable editing during loading/saving/posting
+  const disableEditing = loadingCheck || savingDraft || posting;
 
   const canAddToList = !disableEditing && !!Number(pad.itemId || 0) && padStock && padCountedIsValid;
 
   const handleAddToList = () => {
     if (loadingCheck) return;
-
-    if (isPosted) {
-      setError("An inventory check is already POSTED for this date. Choose another date.");
-      return;
-    }
 
     const itemId = Number(pad.itemId || 0);
     if (!itemId) {
@@ -706,15 +728,12 @@ export default function InventoryCheckPage() {
 
   const handleEditLine = (line) => {
     if (loadingCheck) return;
-    if (isPosted) return;
-
     setPad({ itemId: line.itemId, countedPieces: line.countedPieces });
     if (padRef.current) padRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   const handleRemoveLine = (id) => {
     if (loadingCheck) return;
-    if (isPosted) return;
     setLines((prev) => prev.filter((ln) => ln.id !== id));
   };
 
@@ -723,18 +742,13 @@ export default function InventoryCheckPage() {
     if (!lines.length) return;
     if (loadingCheck) return;
 
-    if (isPosted) {
-      setError("This date is already POSTED. Choose another date to create a new inventory check.");
-      return;
-    }
-
     setSavingDraft(true);
     setError("");
     setMessage("");
 
     try {
       const payload = {
-        id: currentCheckId, // update existing draft or create if null
+        id: currentCheckId, // update existing or create if null
         shop_id: Number(shopId),
         check_date: toISODate(inventoryDate),
         notes: null,
@@ -769,11 +783,13 @@ export default function InventoryCheckPage() {
         diffPieces: Number(ln.diff_pieces || 0),
         costPerPiece: getCostPerPiece(ln.item_id),
       }));
+
       setLines(syncedLines);
+      setSyncedSig(signatureForLines(syncedLines));
 
       await loadHistory(true);
 
-      setMessage("Inventory draft saved. Stock is NOT changed yet.");
+      setMessage("Draft saved. (You can keep editing and post anytime.)");
     } catch (err) {
       console.error(err);
       setError(err?.message || "Failed to save inventory draft.");
@@ -784,20 +800,59 @@ export default function InventoryCheckPage() {
   };
 
   const handlePostInventory = async () => {
-    if (!currentCheckId || !lines.length) return;
+    if (!lines.length) return;
     if (loadingCheck) return;
-
-    if (isPosted) {
-      setError("This inventory check is already POSTED.");
-      return;
-    }
 
     setPosting(true);
     setError("");
     setMessage("");
 
     try {
-      const res = await fetch(`${API_BASE}/inventory-checks/${currentCheckId}/post`, {
+      // ✅ If no check yet, auto-save draft first
+      let checkId = currentCheckId;
+
+      if (!checkId) {
+        const payload = {
+          id: null,
+          shop_id: Number(shopId),
+          check_date: toISODate(inventoryDate),
+          notes: null,
+          lines: lines.map((ln) => ({
+            item_id: ln.itemId,
+            counted_pieces: ln.countedPieces,
+          })),
+        };
+
+        const draftRes = await fetch(`${API_BASE}/inventory-checks/draft`, {
+          method: "POST",
+          headers: authHeaders,
+          body: JSON.stringify(payload),
+        });
+
+        if (!draftRes.ok) {
+          const errData = await draftRes.json().catch(() => null);
+          throw new Error(errData?.detail || `Failed to save draft before posting. Status: ${draftRes.status}`);
+        }
+
+        const draftData = await draftRes.json();
+        checkId = draftData.id;
+        setCurrentCheckId(draftData.id);
+        setCurrentCheckStatus(draftData.status || "DRAFT");
+
+        const syncedLinesDraft = (draftData.lines || []).map((ln) => ({
+          id: ln.id,
+          itemId: ln.item_id,
+          itemName: ln.item_name,
+          systemPieces: Number(ln.system_pieces || 0),
+          countedPieces: Number(ln.counted_pieces || 0),
+          diffPieces: Number(ln.diff_pieces || 0),
+          costPerPiece: getCostPerPiece(ln.item_id),
+        }));
+        setLines(syncedLinesDraft);
+        setSyncedSig(signatureForLines(syncedLinesDraft));
+      }
+
+      const res = await fetch(`${API_BASE}/inventory-checks/${checkId}/post`, {
         method: "POST",
         headers: authHeaders,
       });
@@ -820,11 +875,13 @@ export default function InventoryCheckPage() {
         diffPieces: Number(ln.diff_pieces || 0),
         costPerPiece: getCostPerPiece(ln.item_id),
       }));
+
       setLines(syncedLines);
+      setSyncedSig(signatureForLines(syncedLines));
 
       await loadHistory(true);
 
-      setMessage("Inventory check posted. Stock levels have been updated.");
+      setMessage("Posted successfully. You can continue editing and post again if you find new differences.");
     } catch (err) {
       console.error(err);
       setError(err?.message || "Failed to post inventory check.");
@@ -907,8 +964,9 @@ export default function InventoryCheckPage() {
     color: "#111827",
   };
 
-  const canSaveDraft = lines.length > 0 && !savingDraft && !isPosted && !loadingCheck;
-  const canPost = lines.length > 0 && !!currentCheckId && !posting && !isPosted && !loadingCheck;
+  // ✅ Buttons only active when something changed
+  const canSaveDraft = lines.length > 0 && !savingDraft && !loadingCheck && hasChanges;
+  const canPost = lines.length > 0 && !posting && !loadingCheck && hasChanges;
 
   const numCell = { whiteSpace: "nowrap" };
 
@@ -959,10 +1017,19 @@ export default function InventoryCheckPage() {
 
             <div style={{ marginTop: "6px", fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>
               Status:{" "}
-              <span style={{ color: isPosted ? "#b91c1c" : "#111827" }}>
+              <span style={{ color: "#111827" }}>
                 {currentCheckStatus ? String(currentCheckStatus).toUpperCase() : "—"}
               </span>
               {currentCheckId ? ` • Check ID: ${currentCheckId}` : ""}
+              {hasChanges ? (
+                <span style={{ marginLeft: 10, color: "#b45309", fontWeight: 800 }}>
+                  • Unsaved changes
+                </span>
+              ) : (
+                <span style={{ marginLeft: 10, color: "#16a34a", fontWeight: 800 }}>
+                  • Up to date
+                </span>
+              )}
             </div>
 
             <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
@@ -970,7 +1037,6 @@ export default function InventoryCheckPage() {
                 Enter counts
               </button>
 
-              {/* ✅ FIXED: removed extra } */}
               <button
                 type="button"
                 style={tabBtn(activeTab === "history")}
@@ -1150,23 +1216,6 @@ export default function InventoryCheckPage() {
           <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>
             Enter inventory counts for {toISODate(inventoryDate)}
           </h2>
-
-          {isPosted && (
-            <div
-              style={{
-                marginTop: 10,
-                padding: "10px 12px",
-                borderRadius: "14px",
-                background: "#fef2f2",
-                color: "#b91c1c",
-                fontWeight: 700,
-                fontSize: "13px",
-              }}
-            >
-              An inventory check is already <strong>POSTED</strong> for this date
-              {currentCheckId ? ` (ID: ${currentCheckId})` : ""}. Choose another date.
-            </div>
-          )}
 
           {/* PAD */}
           <div
@@ -1410,14 +1459,14 @@ export default function InventoryCheckPage() {
                         </button>
                       </div>
 
-                      <div style={{ textAlign: "right", ...numCell }}>{formatQty(ln.systemPieces)}</div>
-                      <div style={{ textAlign: "right", ...numCell }}>{formatMoney(ln.costPerPiece)}</div>
-                      <div style={{ textAlign: "right", ...numCell }}>{formatQty(ln.countedPieces)}</div>
+                      <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>{formatQty(ln.systemPieces)}</div>
+                      <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>{formatMoney(ln.costPerPiece)}</div>
+                      <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>{formatQty(ln.countedPieces)}</div>
 
                       <div
                         style={{
                           textAlign: "right",
-                          ...numCell,
+                          whiteSpace: "nowrap",
                           color: ln.diffPieces > 0 ? "#16a34a" : ln.diffPieces < 0 ? "#b91c1c" : "#111827",
                           fontWeight: 600,
                         }}
@@ -1493,6 +1542,12 @@ export default function InventoryCheckPage() {
               {posting ? "Posting…" : "Post inventory check"}
             </button>
           </div>
+
+          {!hasChanges && lines.length > 0 && (
+            <div style={{ marginTop: 10, fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>
+              Save/Post is inactive because nothing changed.
+            </div>
+          )}
         </div>
       )}
 
@@ -1575,13 +1630,13 @@ export default function InventoryCheckPage() {
                         {g.last_created_at ? ` • ${formatCAT_HM_FromISO(g.last_created_at)} CAT` : ""}
                       </div>
                     </div>
-                    <div style={{ textAlign: "right", ...numCell }}>{g.total_items}</div>
-                    <div style={{ textAlign: "right", ...numCell }}>{formatQty(g.total_system_pieces)}</div>
-                    <div style={{ textAlign: "right", ...numCell }}>{formatQty(g.total_counted_pieces)}</div>
+                    <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>{g.total_items}</div>
+                    <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>{formatQty(g.total_system_pieces)}</div>
+                    <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>{formatQty(g.total_counted_pieces)}</div>
                     <div
                       style={{
                         textAlign: "right",
-                        ...numCell,
+                        whiteSpace: "nowrap",
                         color:
                           Number(g.total_diff_pieces || 0) > 0
                             ? "#16a34a"
