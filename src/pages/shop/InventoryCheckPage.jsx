@@ -306,7 +306,7 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
                   color: "#111827",
                 }}
               >
-                <div style={{ fontWeight: 600 }}>{it.label}</div>
+                <div style={{ fontWeight: 600, textAlign: "left" }}>{it.label}</div>
               </button>
             ))
           )}
@@ -658,7 +658,7 @@ export default function InventoryCheckPage() {
   const padDiff = padCountedPieces === null ? null : padCountedPieces - padSystemPieces;
 
   // =========================================================
-  // ✅ FIX: Summary should include posted items too
+  // ✅ Summary should include posted items too
   // - draft lines (lines) are draft-only
   // - posted rows are in postedRowsForTable
   // - we merge them per item: draft overrides posted
@@ -705,11 +705,6 @@ export default function InventoryCheckPage() {
 
     return Array.from(byItem.values());
   }, [postedRowsForTable, lines]);
-
-  const totalDiffPieces = useMemo(
-    () => summaryLatestRows.reduce((sum, r) => sum + Number(r.diffPieces || 0), 0),
-    [summaryLatestRows]
-  );
 
   const totalSystemValueBefore = useMemo(
     () =>
@@ -1613,21 +1608,6 @@ export default function InventoryCheckPage() {
           borderRadius: "18px",
         }}
       >
-        <button
-          onClick={() => navigate(`/shops/${shopId}`)}
-          style={{
-            border: "none",
-            background: "transparent",
-            padding: 0,
-            margin: "10px 0 6px",
-            fontSize: "12px",
-            color: "#2563eb",
-            cursor: "pointer",
-          }}
-        >
-          ← Back to shop workspace
-        </button>
-
         <div
           style={{
             display: "flex",
@@ -1638,6 +1618,22 @@ export default function InventoryCheckPage() {
           }}
         >
           <div>
+            <button
+              onClick={() => navigate(`/shops/${shopId}`)}
+              style={{
+                border: "none",
+                background: "transparent",
+                padding: 0,
+                margin: "10px 0 6px",
+                fontSize: "12px",
+                color: "#2563eb",
+                cursor: "pointer",
+                textAlign: "left",
+              }}
+            >
+              ← Back to shop workspace
+            </button>
+
             <h1 style={{ fontSize: "30px", fontWeight: 800, letterSpacing: "0.03em", margin: 0 }}>
               Inventory check
             </h1>
@@ -1817,20 +1813,6 @@ export default function InventoryCheckPage() {
             alignItems: "stretch",
           }}
         >
-          <div style={statTile}>
-            <div style={statLabel}>Draft table diff (pieces)</div>
-            <div
-              style={statValue(
-                totalDiffPieces === 0 ? "#111827" : totalDiffPieces > 0 ? "#16a34a" : "#b91c1c"
-              )}
-            >
-              {formatDiff(totalDiffPieces)}
-            </div>
-            <div style={{ fontSize: "11px", color: "#6b7280", fontWeight: 700 }}>
-              From latest per item
-            </div>
-          </div>
-
           <div style={statTile}>
             <div style={statLabel}>Amount before count (RWF)</div>
             <div style={statValue("#111827")}>{formatMoney(totalSystemValueBefore)}</div>
@@ -2077,7 +2059,7 @@ export default function InventoryCheckPage() {
                       backgroundColor: "#f9fafb",
                     }}
                   >
-                    <div>Item</div>
+                    <div style={{ textAlign: "left" }}>Item</div>
                     <div style={{ textAlign: "right" }}>System pieces</div>
                     <div style={{ textAlign: "right" }}>Cost / piece</div>
                     <div style={{ textAlign: "right" }}>Counted pieces</div>
@@ -2098,7 +2080,7 @@ export default function InventoryCheckPage() {
                         fontSize: "13px",
                       }}
                     >
-                      <div>
+                      <div style={{ textAlign: "left" }}>
                         <button
                           type="button"
                           onClick={() => handleEditLine(ln)}
@@ -2247,7 +2229,7 @@ export default function InventoryCheckPage() {
                     }}
                   >
                     <div>Count time (CAT)</div>
-                    <div>Item</div>
+                    <div style={{ textAlign: "left" }}>Item</div>
                     <div style={{ textAlign: "right" }}>System</div>
                     <div style={{ textAlign: "right" }}>Counted</div>
                     <div style={{ textAlign: "right" }}>Difference</div>
@@ -2273,7 +2255,7 @@ export default function InventoryCheckPage() {
                         {ln.postedTimeIso ? formatCAT_HM_FromISO(ln.postedTimeIso) : "—"}
                       </div>
 
-                      <div style={{ fontWeight: 800, color: "#111827" }}>{ln.itemName}</div>
+                      <div style={{ fontWeight: 800, color: "#111827", textAlign: "left" }}>{ln.itemName}</div>
 
                       <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>{formatQty(ln.systemPieces)}</div>
                       <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>{formatQty(ln.countedPieces)}</div>
