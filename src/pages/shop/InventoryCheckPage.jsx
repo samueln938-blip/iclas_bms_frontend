@@ -487,7 +487,8 @@ export default function InventoryCheckPage() {
 
     const systemPieces = Number(systemPiecesRaw || 0);
     const countedPieces = Number(countedPiecesRaw || 0);
-    const diffPieces = diffRaw === null || diffRaw === undefined ? countedPieces - systemPieces : Number(diffRaw || 0);
+    const diffPieces =
+      diffRaw === null || diffRaw === undefined ? countedPieces - systemPieces : Number(diffRaw || 0);
 
     const postedAt =
       ln?.posted_at ||
@@ -656,28 +657,76 @@ export default function InventoryCheckPage() {
 
   const padDiff = padCountedPieces === null ? null : padCountedPieces - padSystemPieces;
 
-  // ✅ Summary uses the ONE-row-per-item list
+  // =========================================================
+  // ✅ FIX: Summary should include posted items too
+  // - draft lines (lines) are draft-only
+  // - posted rows are in postedRowsForTable
+  // - we merge them per item: draft overrides posted
+  // =========================================================
+  const summaryLatestRows = useMemo(() => {
+    const byItem = new Map();
+
+    // 1) seed from posted (so summary works even when draft table is empty)
+    for (const p of postedRowsForTable || []) {
+      const itemId = Number(p.itemId);
+      if (!Number.isFinite(itemId) || itemId <= 0) continue;
+
+      const systemPieces = Number(p.systemPieces || 0);
+      const countedPieces = Number(p.countedPieces || 0);
+      const costPerPiece = Number(p.costPerPiece || 0);
+
+      // IMPORTANT: use diff at time of posting (before normalization)
+      const diffPieces = Number.isFinite(Number(p.diffBeforeNormalization))
+        ? Number(p.diffBeforeNormalization)
+        : countedPieces - systemPieces;
+
+      byItem.set(itemId, {
+        itemId,
+        systemPieces,
+        countedPieces,
+        diffPieces,
+        costPerPiece,
+      });
+    }
+
+    // 2) overlay draft lines (latest per item) if present
+    for (const d of lines || []) {
+      const itemId = Number(d.itemId);
+      if (!Number.isFinite(itemId) || itemId <= 0) continue;
+
+      byItem.set(itemId, {
+        itemId,
+        systemPieces: Number(d.systemPieces || 0),
+        countedPieces: Number(d.countedPieces || 0),
+        diffPieces: Number(d.diffPieces || 0),
+        costPerPiece: Number(d.costPerPiece || 0),
+      });
+    }
+
+    return Array.from(byItem.values());
+  }, [postedRowsForTable, lines]);
+
   const totalDiffPieces = useMemo(
-    () => lines.reduce((sum, ln) => sum + Number(ln.diffPieces || 0), 0),
-    [lines]
+    () => summaryLatestRows.reduce((sum, r) => sum + Number(r.diffPieces || 0), 0),
+    [summaryLatestRows]
   );
 
   const totalSystemValueBefore = useMemo(
     () =>
-      lines.reduce(
-        (sum, ln) => sum + Number(ln.costPerPiece || 0) * Number(ln.systemPieces || 0),
+      summaryLatestRows.reduce(
+        (sum, r) => sum + Number(r.costPerPiece || 0) * Number(r.systemPieces || 0),
         0
       ),
-    [lines]
+    [summaryLatestRows]
   );
 
   const totalSystemValueAfter = useMemo(
     () =>
-      lines.reduce(
-        (sum, ln) => sum + Number(ln.costPerPiece || 0) * Number(ln.countedPieces || 0),
+      summaryLatestRows.reduce(
+        (sum, r) => sum + Number(r.costPerPiece || 0) * Number(r.countedPieces || 0),
         0
       ),
-    [lines]
+    [summaryLatestRows]
   );
 
   const totalSystemValueDiff = totalSystemValueAfter - totalSystemValueBefore;
@@ -1730,7 +1779,7 @@ export default function InventoryCheckPage() {
         </button>
       </div>
 
-      {/* ✅ Inventory summary strip (ONLY requested boxes) */}
+      {/* ✅ Inventory summary strip (now includes posted rows too) */}
       <div
         style={{
           backgroundColor: "#ffffff",
@@ -1754,7 +1803,7 @@ export default function InventoryCheckPage() {
           <div style={{ fontSize: "13px", fontWeight: 900, color: "#111827" }}>Inventory summary</div>
 
           <div style={{ fontSize: "12px", color: "#6b7280", fontWeight: 800 }}>
-            {timelineTotals.totalAdj} post(s) • {lines.length} item(s) • {timelineTotals.checks} check(s) • Draft items:{" "}
+            {timelineTotals.totalAdj} post(s) • {summaryLatestRows.length} item(s) • {timelineTotals.checks} check(s) • Draft items:{" "}
             {draftLinesCount} • Posted items: {postedLinesCount}
             {progressTotal > 0 ? ` • Progress: ${progressCounted}/${progressTotal}` : ""}
           </div>
@@ -1778,7 +1827,7 @@ export default function InventoryCheckPage() {
               {formatDiff(totalDiffPieces)}
             </div>
             <div style={{ fontSize: "11px", color: "#6b7280", fontWeight: 700 }}>
-              From current table (latest per item)
+              From latest per item
             </div>
           </div>
 
