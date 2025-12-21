@@ -116,7 +116,7 @@ function formatMoney(value) {
 // ✅ IMPORTANT FIX: trailing-slash redirect CORS fallback
 // Some deployments redirect /path -> /path/ (307) or vice-versa.
 // Redirect responses may miss CORS headers => browser blocks.
-// For GET requests we safely retry the alternate URL once.
+// We retry the alternate URL once IF fetch throws.
 // =====================================================
 function _toggleTrailingSlashBeforeQuery(url) {
   const s = String(url || "");
@@ -490,14 +490,16 @@ export default function InventoryCheckPage() {
       setMessage("");
 
       try {
-        const shopRes = await fetch(`${API_BASE}/shops/${shopId}`, {
+        // ✅ FIX: use slash fallback to avoid 307->CORS block
+        const shopRes = await fetchWithSlashFallback(`${API_BASE}/shops/${shopId}`, {
           headers: authHeadersNoJson,
           signal: controller.signal,
         });
         if (!shopRes.ok) throw new Error(`Failed to load shop. Status: ${shopRes.status}`);
         const shopData = await shopRes.json();
 
-        const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`, {
+        // ✅ FIX: use slash fallback too (safe even if already correct)
+        const stockRes = await fetchWithSlashFallback(`${API_BASE}/stock/?shop_id=${shopId}`, {
           headers: authHeadersNoJson,
           signal: controller.signal,
         });
@@ -522,7 +524,8 @@ export default function InventoryCheckPage() {
   // ✅ refresh stock (important after POST, because remaining_pieces changed)
   const reloadStock = async () => {
     try {
-      const stockRes = await fetch(`${API_BASE}/stock/?shop_id=${shopId}`, {
+      // ✅ FIX: use slash fallback to avoid 307->CORS block
+      const stockRes = await fetchWithSlashFallback(`${API_BASE}/stock/?shop_id=${shopId}`, {
         headers: authHeadersNoJson,
       });
       if (!stockRes.ok) return;
@@ -837,7 +840,8 @@ export default function InventoryCheckPage() {
         })),
       };
 
-      const res = await fetch(`${API_BASE}/inventory-checks/draft`, {
+      // ✅ FIX: use slash fallback (POST can also get 307->CORS block)
+      const res = await fetchWithSlashFallback(`${API_BASE}/inventory-checks/draft`, {
         method: "POST",
         headers: authHeaders,
         body: JSON.stringify(payload),
@@ -894,7 +898,8 @@ export default function InventoryCheckPage() {
         throw new Error("Cannot post: draft was not created. Please click Save draft and try again.");
       }
 
-      const res = await fetch(`${API_BASE}/inventory-checks/${idToPost}/post`, {
+      // ✅ FIX: use slash fallback (POST can also get 307->CORS block)
+      const res = await fetchWithSlashFallback(`${API_BASE}/inventory-checks/${idToPost}/post`, {
         method: "POST",
         headers: authHeaders,
       });
