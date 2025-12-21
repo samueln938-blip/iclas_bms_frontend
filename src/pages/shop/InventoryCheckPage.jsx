@@ -430,6 +430,59 @@ export default function InventoryCheckPage() {
     return false;
   };
 
+  // ---------- Helpers for posted list fields (best effort, no backend changes required) ----------
+  const _numOr = (v, fallback = 0) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : fallback;
+  };
+
+  const _firstDefined = (...vals) => {
+    for (const v of vals) {
+      if (v !== null && v !== undefined && v !== "") return v;
+    }
+    return null;
+  };
+
+  const _lineTimeISO = (ln) =>
+    _firstDefined(
+      ln?.counted_at,
+      ln?.countedAt,
+      ln?.created_at,
+      ln?.createdAt,
+      ln?.updated_at,
+      ln?.updatedAt,
+      ln?.posted_at,
+      ln?.postedAt
+    );
+
+  const _diffBeforeNorm = (ln, counted, systemAtCount, diffAtCount) => {
+    const direct = _firstDefined(
+      ln?.diff_pieces_before_normalization,
+      ln?.diff_before_normalization,
+      ln?.diff_pieces_before_norm,
+      ln?.diff_pieces_before,
+      ln?.diffBeforeNormalization,
+      ln?.diffBeforeNorm,
+      ln?.diff_before_norm
+    );
+    const directNum = Number(direct);
+    if (Number.isFinite(directNum)) return directNum;
+
+    const sysBefore = _firstDefined(
+      ln?.system_pieces_before_normalization,
+      ln?.system_pieces_before_norm,
+      ln?.system_pieces_before,
+      ln?.system_before_normalization,
+      ln?.systemPiecesBeforeNormalization,
+      ln?.systemPiecesBeforeNorm
+    );
+    const sysBeforeNum = Number(sysBefore);
+    if (Number.isFinite(sysBeforeNum)) return _numOr(counted, 0) - sysBeforeNum;
+
+    if (Number.isFinite(Number(diffAtCount))) return _numOr(diffAtCount, 0);
+    return _numOr(counted, 0) - _numOr(systemAtCount, 0);
+  };
+
   // ✅ collapse detail.lines to ONE row per item (latest line id wins)
   // ✅ optional: onlyPosted=true/false to filter for the posted list without touching existing table
   const collapseLinesToLatestPerItem = (rawLines, opts = {}) => {
@@ -453,14 +506,30 @@ export default function InventoryCheckPage() {
         !prev ||
         (Number.isFinite(id) && Number.isFinite(prev._lineId) ? id > prev._lineId : true)
       ) {
+        const systemAtCount = _numOr(_firstDefined(ln?.system_pieces, ln?.systemPieces), 0);
+        const countedAtCount = _numOr(_firstDefined(ln?.counted_pieces, ln?.countedPieces), 0);
+
+        const diffAtCount = _numOr(
+          _firstDefined(ln?.diff_pieces, ln?.diffPieces, countedAtCount - systemAtCount),
+          countedAtCount - systemAtCount
+        );
+
+        const diffBeforeNorm = _diffBeforeNorm(ln, countedAtCount, systemAtCount, diffAtCount);
+
         byItem.set(itemId, {
           _lineId: Number.isFinite(id) ? id : -1,
           id: ln?.id,
           itemId: itemId,
           itemName: ln?.item_name || `Item ${itemId}`,
-          systemPieces: Number(ln?.system_pieces || 0),
-          countedPieces: Number(ln?.counted_pieces || 0),
-          diffPieces: Number(ln?.diff_pieces || 0),
+
+          systemPieces: systemAtCount,
+          countedPieces: countedAtCount,
+          diffPieces: diffAtCount,
+
+          // ✅ extra fields for the posted list (best effort)
+          diffBeforeNormPieces: diffBeforeNorm,
+          lineTimeIso: _lineTimeISO(ln),
+
           costPerPiece: getCostPerPiece(itemId),
         });
       }
@@ -497,22 +566,46 @@ export default function InventoryCheckPage() {
     return map;
   }, [timelineRows]);
 
+  // ✅ Posted rows with the exact columns you requested
   const postedRowsForTable = useMemo(() => {
     const arr = (postedLines || []).map((ln) => {
-      const timeIso = postedTimeByItemId.get(Number(ln.itemId)) || null;
-      const diffValue = Number(ln.diffPieces || 0) * Number(ln.costPerPiece || 0);
-      return { ...ln, postedTimeIso: timeIso, diffValue };
+      const itemId = Number(ln.itemId);
+
+      // ✅ Count time: prefer line time, fallback to timeline
+      const countTimeIso = ln.lineTimeIso || postedTimeByItemId.get(itemId) || null;
+
+      // ✅ System pieces NOW (after normalization) from stock (best to show current system state)
+      const systemNow = _numOr(stockByItemId[itemId]?.remaining_pieces, _numOr(ln.systemPieces, 0));
+
+      // ✅ Difference NOW (after normalization)
+      const diffNow = _numOr(ln.countedPieces, 0) - systemNow;
+
+      // ✅ Difference BEFORE normalization (what you asked for)
+      const diffBeforeNormalization = _numOr(ln.diffBeforeNormPieces, _numOr(ln.diffPieces, 0));
+
+      // ✅ Total difference cost uses BEFORE-normalization diff * cost/piece
+      const totalDiffCost =
+        diffBeforeNormalization * _numOr(ln.costPerPiece, 0);
+
+      return {
+        ...ln,
+        countTimeIso,
+        systemNow,
+        diffNow,
+        diffBeforeNormalization,
+        totalDiffCost,
+      };
     });
 
     arr.sort((a, b) => {
-      const ta = a.postedTimeIso ? String(a.postedTimeIso) : "";
-      const tb = b.postedTimeIso ? String(b.postedTimeIso) : "";
+      const ta = a.countTimeIso ? String(a.countTimeIso) : "";
+      const tb = b.countTimeIso ? String(b.countTimeIso) : "";
       if (ta && tb && ta !== tb) return tb.localeCompare(ta); // latest first
       return String(a.itemName || "").localeCompare(String(b.itemName || ""));
     });
 
     return arr;
-  }, [postedLines, postedTimeByItemId]);
+  }, [postedLines, postedTimeByItemId, stockByItemId]);
 
   // pad-derived
   const padStock = pad.itemId ? stockByItemId[Number(pad.itemId)] : null;
@@ -770,7 +863,7 @@ export default function InventoryCheckPage() {
     // ✅ one row per item (latest line wins) — unchanged
     setLines(collapseLinesToLatestPerItem(detail.lines || []));
 
-    // ✅ NEW: posted list extracted from same detail.lines (does NOT alter existing table)
+    // ✅ posted list extracted from same detail.lines (does NOT alter existing table)
     setPostedLines(collapseLinesToLatestPerItem(detail.lines || [], { onlyPosted: true }));
 
     return { fallbackNeeded: false };
@@ -820,7 +913,7 @@ export default function InventoryCheckPage() {
     // ✅ one row per item (latest line wins) — unchanged
     setLines(collapseLinesToLatestPerItem(detail.lines || []));
 
-    // ✅ NEW posted list
+    // ✅ posted list
     setPostedLines(collapseLinesToLatestPerItem(detail.lines || [], { onlyPosted: true }));
   };
 
@@ -1002,7 +1095,7 @@ export default function InventoryCheckPage() {
 
       setLines(collapseLinesToLatestPerItem(data.lines || []));
 
-      // ✅ NEW: keep posted list updated too
+      // ✅ keep posted list updated too
       setPostedLines(collapseLinesToLatestPerItem(data.lines || [], { onlyPosted: true }));
 
       await loadHistory(true);
@@ -1061,7 +1154,7 @@ export default function InventoryCheckPage() {
 
       setLines(collapseLinesToLatestPerItem(data.lines || []));
 
-      // ✅ NEW: refresh posted list after post
+      // ✅ refresh posted list after post
       setPostedLines(collapseLinesToLatestPerItem(data.lines || [], { onlyPosted: true }));
 
       await reloadStock();
@@ -1831,13 +1924,13 @@ export default function InventoryCheckPage() {
             </button>
           </div>
 
-          {/* ✅ NEW: Posted items list (ONLY addition requested) */}
+          {/* ✅ Posted items list (the addition you requested) */}
           <div style={{ marginTop: 18 }}>
             <div style={{ fontSize: "14px", fontWeight: 900, color: "#111827" }}>
-              Posted items (already normalized)
+              Posted items (still visible after posting)
             </div>
             <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 4, fontWeight: 800 }}>
-              Hour • Item • System • Counted • Diff • Cost/piece • Total diff cost
+              Count time • Item • System (now) • Counted • Diff (now) • Diff before normalization • Cost/piece • Total diff cost
             </div>
 
             {postedRowsForTable.length === 0 ? (
@@ -1859,8 +1952,9 @@ export default function InventoryCheckPage() {
                   <div
                     style={{
                       display: "grid",
-                      gridTemplateColumns: "110px minmax(220px, 2.2fr) 1fr 1fr 1fr 1fr 1.2fr",
-                      minWidth: "1100px",
+                      gridTemplateColumns:
+                        "120px minmax(220px, 2.2fr) 1fr 1fr 1fr 1.2fr 1fr 1.3fr",
+                      minWidth: "1320px",
                       alignItems: "center",
                       padding: "8px 10px",
                       borderBottom: "1px solid #e5e7eb",
@@ -1872,64 +1966,89 @@ export default function InventoryCheckPage() {
                       backgroundColor: "#f9fafb",
                     }}
                   >
-                    <div>Hour (CAT)</div>
+                    <div>Count time (CAT)</div>
                     <div>Item</div>
-                    <div style={{ textAlign: "right" }}>System</div>
+                    <div style={{ textAlign: "right" }}>System (now)</div>
                     <div style={{ textAlign: "right" }}>Counted</div>
-                    <div style={{ textAlign: "right" }}>Diff</div>
+                    <div style={{ textAlign: "right" }}>Diff (now)</div>
+                    <div style={{ textAlign: "right" }}>Diff before norm</div>
                     <div style={{ textAlign: "right" }}>Cost/piece</div>
                     <div style={{ textAlign: "right" }}>Total diff cost</div>
                   </div>
 
-                  {postedRowsForTable.map((ln) => (
-                    <div
-                      key={`posted-${ln.id}`}
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "110px minmax(220px, 2.2fr) 1fr 1fr 1fr 1fr 1.2fr",
-                        minWidth: "1100px",
-                        alignItems: "center",
-                        padding: "9px 10px",
-                        borderBottom: "1px solid #f3f4f6",
-                        fontSize: "13px",
-                      }}
-                    >
-                      <div style={{ fontWeight: 900, color: "#111827" }}>
-                        {ln.postedTimeIso ? formatCAT_HM_FromISO(ln.postedTimeIso) : "—"}
-                      </div>
+                  {postedRowsForTable.map((ln) => {
+                    const diffNow = Number(ln.diffNow || 0);
+                    const diffBefore = Number(ln.diffBeforeNormalization || 0);
+                    const cost = Number(ln.costPerPiece || 0);
+                    const totalCost = Number(ln.totalDiffCost || 0);
 
-                      <div style={{ fontWeight: 800, color: "#111827" }}>{ln.itemName}</div>
-
-                      <div style={{ textAlign: "right", ...numCell }}>{formatQty(ln.systemPieces)}</div>
-                      <div style={{ textAlign: "right", ...numCell }}>{formatQty(ln.countedPieces)}</div>
-
+                    return (
                       <div
+                        key={`posted-${ln.id}`}
                         style={{
-                          textAlign: "right",
-                          ...numCell,
-                          color: ln.diffPieces > 0 ? "#16a34a" : ln.diffPieces < 0 ? "#b91c1c" : "#111827",
-                          fontWeight: 800,
+                          display: "grid",
+                          gridTemplateColumns:
+                            "120px minmax(220px, 2.2fr) 1fr 1fr 1fr 1.2fr 1fr 1.3fr",
+                          minWidth: "1320px",
+                          alignItems: "center",
+                          padding: "9px 10px",
+                          borderBottom: "1px solid #f3f4f6",
+                          fontSize: "13px",
                         }}
                       >
-                        {formatDiff(ln.diffPieces)}
-                      </div>
+                        <div style={{ fontWeight: 900, color: "#111827" }}>
+                          {ln.countTimeIso ? formatCAT_HM_FromISO(ln.countTimeIso) : "—"}
+                        </div>
 
-                      <div style={{ textAlign: "right", ...numCell, fontWeight: 800 }}>
-                        {formatMoney(ln.costPerPiece)}
-                      </div>
+                        <div style={{ fontWeight: 800, color: "#111827" }}>{ln.itemName}</div>
 
-                      <div
-                        style={{
-                          textAlign: "right",
-                          ...numCell,
-                          fontWeight: 900,
-                          color: ln.diffValue > 0 ? "#16a34a" : ln.diffValue < 0 ? "#b91c1c" : "#111827",
-                        }}
-                      >
-                        {ln.diffValue === 0 ? "0" : `${ln.diffValue > 0 ? "+" : ""}${formatMoney(ln.diffValue)}`}
+                        <div style={{ textAlign: "right", ...numCell }}>
+                          {formatQty(ln.systemNow)}
+                        </div>
+
+                        <div style={{ textAlign: "right", ...numCell }}>
+                          {formatQty(ln.countedPieces)}
+                        </div>
+
+                        <div
+                          style={{
+                            textAlign: "right",
+                            ...numCell,
+                            color: diffNow > 0 ? "#16a34a" : diffNow < 0 ? "#b91c1c" : "#111827",
+                            fontWeight: 800,
+                          }}
+                        >
+                          {formatDiff(diffNow)}
+                        </div>
+
+                        <div
+                          style={{
+                            textAlign: "right",
+                            ...numCell,
+                            color: diffBefore > 0 ? "#16a34a" : diffBefore < 0 ? "#b91c1c" : "#111827",
+                            fontWeight: 800,
+                          }}
+                        >
+                          {formatDiff(diffBefore)}
+                        </div>
+
+                        <div style={{ textAlign: "right", ...numCell, fontWeight: 800 }}>
+                          {formatMoney(cost)}
+                        </div>
+
+                        <div
+                          style={{
+                            textAlign: "right",
+                            ...numCell,
+                            fontWeight: 900,
+                            color: totalCost > 0 ? "#16a34a" : totalCost < 0 ? "#b91c1c" : "#111827",
+                          }}
+                        >
+                          {totalCost === 0 ? "0" : `${totalCost > 0 ? "+" : ""}${formatMoney(totalCost)}`}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
