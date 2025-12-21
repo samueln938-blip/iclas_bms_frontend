@@ -314,9 +314,11 @@ export default function InventoryCheckPage() {
     countedPieces: "",
   });
 
-  // lines shown in the main table:
-  // ✅ ALWAYS one line per item (latest line wins) so summary does NOT double-count.
+  // draft lines (unposted) shown in main table
   const [lines, setLines] = useState([]);
+
+  // ✅ posted lines (already posted/normalized) shown below the pad
+  const [postedLines, setPostedLines] = useState([]);
 
   // history list for "History & differences"
   const [historyChecks, setHistoryChecks] = useState([]);
@@ -403,6 +405,22 @@ export default function InventoryCheckPage() {
     return out;
   };
 
+  // timeline: latest posted time by item
+  const latestPostedTimeByItemId = useMemo(() => {
+    const map = new Map();
+    const rows = Array.isArray(timelineRows) ? timelineRows : [];
+    for (const r of rows) {
+      const itemId = Number(r?.item_id);
+      if (!Number.isFinite(itemId) || itemId <= 0) continue;
+      const iso = r?.created_at;
+      if (!iso) continue;
+      // keep latest ISO by string compare (works for ISO-like)
+      const prev = map.get(itemId);
+      if (!prev || String(iso) > String(prev)) map.set(itemId, iso);
+    }
+    return map;
+  }, [timelineRows]);
+
   // pad-derived
   const padStock = pad.itemId ? stockByItemId[Number(pad.itemId)] : null;
   const padSystemPieces = padStock ? Number(padStock.remaining_pieces || 0) : 0;
@@ -449,6 +467,17 @@ export default function InventoryCheckPage() {
     const checks = new Set(rows.map((r) => String(r.check_id))).size;
     return { totalAdj, pieces, value, checks };
   }, [timelineRows]);
+
+  // ✅ Progress: counted unique items (posted + draft) vs total stock items
+  const progress = useMemo(() => {
+    const total = (stockRows || []).length;
+    const countedSet = new Set();
+    for (const ln of lines || []) countedSet.add(Number(ln.itemId));
+    for (const ln of postedLines || []) countedSet.add(Number(ln.itemId));
+    const counted = Array.from(countedSet).filter((x) => Number.isFinite(x) && x > 0).length;
+    const pct = total > 0 ? Math.round((counted / total) * 100) : 0;
+    return { total, counted, pct };
+  }, [stockRows, lines, postedLines]);
 
   // ---------- Data loading ----------
   useEffect(() => {
@@ -566,17 +595,18 @@ export default function InventoryCheckPage() {
     }
   };
 
-  // ✅ Fast detail loader
-  const loadCheckForDateFast = async (isoDate, seq) => {
+  // ✅ Load BOTH draft-only + include_posted_lines (then derive posted lines by comparing IDs)
+  const loadCheckViewsForDate = async (isoDate, seq) => {
     const dateISO = toISODate(isoDate);
     if (!dateISO) {
       setCurrentCheckId(null);
       setCurrentCheckStatus(null);
       setLines([]);
+      setPostedLines([]);
       return;
     }
 
-    // cancel prior detail request
+    // cancel prior detail request(s)
     if (checkAbortRef.current) {
       try {
         checkAbortRef.current.abort();
@@ -585,83 +615,53 @@ export default function InventoryCheckPage() {
     const controller = new AbortController();
     checkAbortRef.current = controller;
 
-    const url = `${API_BASE}/inventory-checks/for-date?shop_id=${shopId}&check_date=${encodeURIComponent(
+    const urlDraft = `${API_BASE}/inventory-checks/for-date?shop_id=${shopId}&check_date=${encodeURIComponent(
       dateISO
     )}`;
+    const urlAll = `${API_BASE}/inventory-checks/for-date?shop_id=${shopId}&check_date=${encodeURIComponent(
+      dateISO
+    )}&include_posted_lines=true`;
 
-    const res = await fetch(url, { headers: authHeadersNoJson, signal: controller.signal });
+    const [draftRes, allRes] = await Promise.all([
+      fetch(urlDraft, { headers: authHeadersNoJson, signal: controller.signal }),
+      fetch(urlAll, { headers: authHeadersNoJson, signal: controller.signal }),
+    ]);
 
-    if (res.status === 404) {
-      return { fallbackNeeded: true };
+    if (!draftRes.ok) {
+      const errData = await draftRes.json().catch(() => null);
+      throw new Error(errData?.detail || `Failed to load inventory check. Status: ${draftRes.status}`);
+    }
+    if (!allRes.ok) {
+      const errData = await allRes.json().catch(() => null);
+      throw new Error(errData?.detail || `Failed to load inventory lines. Status: ${allRes.status}`);
     }
 
-    if (!res.ok) {
-      const errData = await res.json().catch(() => null);
-      throw new Error(errData?.detail || `Failed to load inventory check. Status: ${res.status}`);
-    }
+    const draftDetail = await draftRes.json().catch(() => null);
+    const allDetail = await allRes.json().catch(() => null);
 
-    const detail = await res.json().catch(() => null);
-
-    if (!detail) {
-      if (seq !== checkSeqRef.current) return { fallbackNeeded: false };
-      setCurrentCheckId(null);
-      setCurrentCheckStatus(null);
-      setLines([]);
-      return { fallbackNeeded: false };
-    }
-
-    if (seq !== checkSeqRef.current) return { fallbackNeeded: false };
-
-    setCurrentCheckId(detail.id ?? null);
-    setCurrentCheckStatus(detail.status ?? null);
-
-    // ✅ one row per item (latest line wins)
-    setLines(collapseLinesToLatestPerItem(detail.lines || []));
-
-    return { fallbackNeeded: false };
-  };
-
-  // Fallback loader (legacy)
-  const loadCheckForDateLegacy = async (isoDate, seq) => {
-    const dateISO = toISODate(isoDate);
-    const list = await loadHistory(true);
     if (seq !== checkSeqRef.current) return;
 
-    const sameDateChecks = (list || []).filter((c) => toISODate(c.check_date) === dateISO);
+    const headerId = (draftDetail?.id ?? allDetail?.id ?? null) || null;
+    const statusVal = (draftDetail?.status ?? allDetail?.status ?? null) || null;
 
-    if (!sameDateChecks.length) {
-      setCurrentCheckId(null);
-      setCurrentCheckStatus(null);
-      setLines([]);
-      return;
-    }
+    setCurrentCheckId(headerId);
+    setCurrentCheckStatus(statusVal);
 
-    const match = sameDateChecks[sameDateChecks.length - 1];
+    const draftRaw = Array.isArray(draftDetail?.lines) ? draftDetail.lines : [];
+    const allRaw = Array.isArray(allDetail?.lines) ? allDetail.lines : [];
 
-    if (checkAbortRef.current) {
-      try {
-        checkAbortRef.current.abort();
-      } catch {}
-    }
-    const controller = new AbortController();
-    checkAbortRef.current = controller;
+    // draft table
+    setLines(collapseLinesToLatestPerItem(draftRaw));
 
-    const detailRes = await fetch(`${API_BASE}/inventory-checks/${match.id}`, {
-      headers: authHeadersNoJson,
-      signal: controller.signal,
+    // posted lines = (all lines) minus (draft lines), by line id
+    const draftIds = new Set(draftRaw.map((l) => Number(l?.id)).filter((x) => Number.isFinite(x)));
+    const postedRaw = allRaw.filter((l) => {
+      const id = Number(l?.id);
+      if (!Number.isFinite(id)) return false;
+      return !draftIds.has(id);
     });
-    if (!detailRes.ok) {
-      throw new Error(`Failed to load inventory check details. Status: ${detailRes.status}`);
-    }
 
-    const detail = await detailRes.json();
-    if (seq !== checkSeqRef.current) return;
-
-    setCurrentCheckId(detail.id || match.id);
-    setCurrentCheckStatus(detail.status || match.status || null);
-
-    // ✅ one row per item (latest line wins)
-    setLines(collapseLinesToLatestPerItem(detail.lines || []));
+    setPostedLines(collapseLinesToLatestPerItem(postedRaw));
   };
 
   // when date changes
@@ -673,6 +673,7 @@ export default function InventoryCheckPage() {
     setCurrentCheckId(null);
     setCurrentCheckStatus(null);
     setLines([]);
+    setPostedLines([]);
     setTimelineRows([]);
     setPad({ itemId: "", countedPieces: "" });
 
@@ -683,13 +684,7 @@ export default function InventoryCheckPage() {
       setLoadingCheck(true);
       try {
         await loadTimeline(iso);
-
-        const fast = await loadCheckForDateFast(iso, seq);
-        if (seq !== checkSeqRef.current) return;
-
-        if (fast?.fallbackNeeded) {
-          await loadCheckForDateLegacy(iso, seq);
-        }
+        await loadCheckViewsForDate(iso, seq);
       } catch (err) {
         const aborted = (checkAbortRef.current && checkAbortRef.current.signal?.aborted) || false;
         if (aborted) return;
@@ -763,7 +758,8 @@ export default function InventoryCheckPage() {
         costPerPiece,
       };
 
-      if (existingIndex === -1) return [...prev, base].sort((a, b) => String(a.itemName).localeCompare(String(b.itemName)));
+      if (existingIndex === -1)
+        return [...prev, base].sort((a, b) => String(a.itemName).localeCompare(String(b.itemName)));
       const copy = [...prev];
       copy[existingIndex] = base;
       copy.sort((a, b) => String(a.itemName).localeCompare(String(b.itemName)));
@@ -824,7 +820,7 @@ export default function InventoryCheckPage() {
       setCurrentCheckId(newId);
       setCurrentCheckStatus(data.status || "DRAFT");
 
-      // ✅ display one row per item (latest line wins)
+      // draft table only (backend returns draft-only)
       setLines(collapseLinesToLatestPerItem(data.lines || []));
 
       await loadHistory(true);
@@ -843,6 +839,9 @@ export default function InventoryCheckPage() {
 
   const handleSaveDraft = async () => {
     await saveDraftInternal({ silent: false });
+    // refresh posted lines too (so UI stays consistent)
+    const seq = ++checkSeqRef.current;
+    await loadCheckViewsForDate(toISODate(inventoryDate), seq).catch(() => {});
   };
 
   const handlePostInventory = async () => {
@@ -876,19 +875,17 @@ export default function InventoryCheckPage() {
         throw new Error(errData?.detail || `Failed to post inventory check. Status: ${res.status}`);
       }
 
-      const data = await res.json();
-
-      setCurrentCheckId(data.id ?? idToPost);
-      setCurrentCheckStatus(data.status || null);
-
-      // ✅ display one row per item (latest line wins)
-      setLines(collapseLinesToLatestPerItem(data.lines || []));
+      await res.json().catch(() => null);
 
       // ✅ critical: stock was normalized -> refresh stock rows so next counts use latest system pieces
       await reloadStock();
 
       await loadHistory(true);
       await loadTimeline(toISODate(inventoryDate));
+
+      // ✅ refresh BOTH draft + posted views
+      const seq = ++checkSeqRef.current;
+      await loadCheckViewsForDate(toISODate(inventoryDate), seq);
 
       setMessage("Posted. Stock is normalized. You can continue counting and post again anytime.");
     } catch (err) {
@@ -940,6 +937,32 @@ export default function InventoryCheckPage() {
     setInventoryDate(iso);
   };
 
+  const continueLatestInventory = async () => {
+    setError("");
+    setMessage("");
+    const list = await loadHistory(true);
+    const arr = Array.isArray(list) ? list : [];
+    if (!arr.length) {
+      setMessage("No previous inventory found yet.");
+      return;
+    }
+    // pick most recent by check_date then id
+    const sorted = [...arr].sort((a, b) => {
+      const da = toISODate(a.check_date);
+      const db = toISODate(b.check_date);
+      if (da !== db) return String(db).localeCompare(String(da));
+      return Number(b.id || 0) - Number(a.id || 0);
+    });
+    const latestDate = toISODate(sorted[0]?.check_date);
+    if (!latestDate) {
+      setMessage("Could not determine latest inventory date.");
+      return;
+    }
+    setActiveTab("enter");
+    setInventoryDate(latestDate);
+    setMessage(`Continuing inventory for ${latestDate}.`);
+  };
+
   // ---------- Rendering ----------
   if (loading) {
     return (
@@ -973,7 +996,7 @@ export default function InventoryCheckPage() {
     color: "#111827",
   };
 
-  // ✅ Save/Post inactive when nothing in the table
+  // ✅ Save/Post inactive when nothing in the draft table
   const canSaveDraft = lines.length > 0 && !savingDraft && !loadingCheck && !posting;
   const canPost = lines.length > 0 && !posting && !loadingCheck && !savingDraft;
 
@@ -1065,9 +1088,7 @@ export default function InventoryCheckPage() {
               fontSize: "12px",
             }}
           >
-            <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>
-              Inventory summary
-            </div>
+            <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>Inventory summary</div>
 
             <div
               style={{
@@ -1081,8 +1102,36 @@ export default function InventoryCheckPage() {
               Date: {toISODate(inventoryDate)} • Time (CAT): {catNowHM}
             </div>
 
-            <div style={{ fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>
-              {timelineTotals.totalAdj} post(s) • {lines.length} item(s) • {timelineTotals.checks} check(s)
+            {/* ✅ Progress bar */}
+            <div style={{ marginTop: 2 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginBottom: 4 }}>
+                <div style={{ fontSize: "11px", color: "#6b7280", fontWeight: 800 }}>
+                  Progress: {progress.counted}/{progress.total} items
+                </div>
+                <div style={{ fontSize: "11px", color: "#111827", fontWeight: 900 }}>{progress.pct}%</div>
+              </div>
+              <div
+                style={{
+                  height: 8,
+                  width: "100%",
+                  background: "#e5e7eb",
+                  borderRadius: 999,
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    height: "100%",
+                    width: `${Math.max(0, Math.min(100, progress.pct))}%`,
+                    background: "#2563eb",
+                    borderRadius: 999,
+                    transition: "width 180ms ease",
+                  }}
+                />
+              </div>
+              <div style={{ marginTop: 6, fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>
+                Draft: {lines.length} • Posted (latest per item): {postedLines.length} • Posts today: {timelineTotals.totalAdj}
+              </div>
             </div>
 
             <div>
@@ -1094,18 +1143,14 @@ export default function InventoryCheckPage() {
                   color: "#6b7280",
                 }}
               >
-                Current table: total pieces diff
+                Draft table: total pieces diff
               </div>
               <div
                 style={{
                   fontSize: "18px",
                   fontWeight: 800,
                   color:
-                    totalDiffPieces === 0
-                      ? "#111827"
-                      : totalDiffPieces > 0
-                      ? "#16a34a"
-                      : "#b91c1c",
+                    totalDiffPieces === 0 ? "#111827" : totalDiffPieces > 0 ? "#16a34a" : "#b91c1c",
                 }}
               >
                 {formatDiff(totalDiffPieces)}
@@ -1130,7 +1175,7 @@ export default function InventoryCheckPage() {
                   color: "#6b7280",
                 }}
               >
-                Stock value (RWF) using current cost/piece
+                Draft value impact (RWF) using current cost/piece
               </div>
 
               <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
@@ -1183,7 +1228,7 @@ export default function InventoryCheckPage() {
                   color: "#6b7280",
                 }}
               >
-                Whole day (posted): pieces & value
+                Whole day (posted): pieces &amp; value
               </div>
 
               <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", marginTop: 4 }}>
@@ -1193,11 +1238,7 @@ export default function InventoryCheckPage() {
                     fontWeight: 800,
                     fontSize: "13px",
                     color:
-                      timelineTotals.pieces === 0
-                        ? "#111827"
-                        : timelineTotals.pieces > 0
-                        ? "#16a34a"
-                        : "#b91c1c",
+                      timelineTotals.pieces === 0 ? "#111827" : timelineTotals.pieces > 0 ? "#16a34a" : "#b91c1c",
                   }}
                 >
                   {formatDiff(timelineTotals.pieces)}
@@ -1211,11 +1252,7 @@ export default function InventoryCheckPage() {
                     fontWeight: 800,
                     fontSize: "13px",
                     color:
-                      timelineTotals.value === 0
-                        ? "#111827"
-                        : timelineTotals.value > 0
-                        ? "#16a34a"
-                        : "#b91c1c",
+                      timelineTotals.value === 0 ? "#111827" : timelineTotals.value > 0 ? "#16a34a" : "#b91c1c",
                   }}
                 >
                   {timelineTotals.value === 0
@@ -1228,10 +1265,8 @@ export default function InventoryCheckPage() {
         </div>
 
         {/* date picker */}
-        <div style={{ display: "inline-flex", alignItems: "center", gap: "10px", marginBottom: "10px" }}>
-          <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>
-            Inventory check date
-          </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", marginBottom: "10px" }}>
+          <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>Inventory check date</div>
           <input
             type="date"
             value={toISODate(inventoryDate)}
@@ -1244,6 +1279,39 @@ export default function InventoryCheckPage() {
               backgroundColor: "#ffffff",
             }}
           />
+
+          <button
+            type="button"
+            onClick={() => setInventoryDate(todayISO())}
+            style={{
+              padding: "8px 12px",
+              borderRadius: "999px",
+              border: "1px solid #d1d5db",
+              backgroundColor: "#ffffff",
+              fontWeight: 800,
+              fontSize: "12px",
+              cursor: "pointer",
+            }}
+          >
+            Today
+          </button>
+
+          <button
+            type="button"
+            onClick={continueLatestInventory}
+            style={{
+              padding: "8px 12px",
+              borderRadius: "999px",
+              border: "1px solid #d1d5db",
+              backgroundColor: "#ffffff",
+              fontWeight: 800,
+              fontSize: "12px",
+              cursor: "pointer",
+            }}
+            title="Jump to the most recent inventory date so you can continue counting over multiple days"
+          >
+            Continue latest inventory
+          </button>
 
           {loadingCheck && <div style={{ fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>Loading…</div>}
         </div>
@@ -1326,7 +1394,15 @@ export default function InventoryCheckPage() {
             </div>
 
             <div>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#111827", marginBottom: "6px" }}>
+              <label
+                style={{
+                  display: "block",
+                  fontSize: "12px",
+                  fontWeight: 700,
+                  color: "#111827",
+                  marginBottom: "6px",
+                }}
+              >
                 Item
               </label>
               <ItemComboBox
@@ -1387,7 +1463,15 @@ export default function InventoryCheckPage() {
               }}
             >
               <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#111827", marginBottom: "6px" }}>
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: "12px",
+                    fontWeight: 700,
+                    color: "#111827",
+                    marginBottom: "6px",
+                  }}
+                >
                   System pieces
                 </label>
                 <input
@@ -1399,7 +1483,15 @@ export default function InventoryCheckPage() {
               </div>
 
               <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#111827", marginBottom: "6px" }}>
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: "12px",
+                    fontWeight: 700,
+                    color: "#111827",
+                    marginBottom: "6px",
+                  }}
+                >
                   Counted pieces (physical)
                 </label>
                 <input
@@ -1418,7 +1510,15 @@ export default function InventoryCheckPage() {
               </div>
 
               <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#111827", marginBottom: "6px" }}>
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: "12px",
+                    fontWeight: 700,
+                    color: "#111827",
+                    marginBottom: "6px",
+                  }}
+                >
                   Difference
                 </label>
                 <input
@@ -1431,15 +1531,15 @@ export default function InventoryCheckPage() {
             </div>
           </div>
 
-          {/* TABLE */}
+          {/* DRAFT TABLE */}
           {lines.length === 0 ? (
             <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
-              No items added yet. Use the pad above and click <strong>+ Add to table</strong>.
+              No draft items added yet. Use the pad above and click <strong>+ Add to table</strong>.
             </div>
           ) : (
             <>
               <div style={{ fontSize: "12px", color: "#6b7280", marginBottom: "6px" }}>
-                {lines.length} item{lines.length === 1 ? "" : "s"} in this table (latest per item).
+                Draft table: {lines.length} item{lines.length === 1 ? "" : "s"} (latest per item).
               </div>
 
               <div
@@ -1604,13 +1704,210 @@ export default function InventoryCheckPage() {
             </button>
           </div>
 
-          {/* small refresh row (no second table) */}
+          {/* Posted items table (below pad) */}
+          <div style={{ marginTop: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
+              <div style={{ fontSize: "13px", fontWeight: 900, color: "#111827" }}>
+                Posted items (already normalized)
+              </div>
+              <div style={{ fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>
+                Shows the latest posted line per item for this date.
+              </div>
+            </div>
+
+            {postedLines.length === 0 ? (
+              <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
+                No posted items yet for this date.
+              </div>
+            ) : (
+              <div
+                style={{
+                  borderRadius: "14px",
+                  border: "1px solid #e5e7eb",
+                  backgroundColor: "#ffffff",
+                  overflow: "hidden",
+                  boxShadow: "0 6px 18px rgba(15, 23, 42, 0.05)",
+                }}
+              >
+                <div style={{ maxHeight: "320px", overflowY: "auto", overflowX: "auto", scrollbarGutter: "stable" }}>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "minmax(220px, 2.5fr) 110px 1fr 1fr 1fr 1fr",
+                      minWidth: "980px",
+                      alignItems: "center",
+                      padding: "8px 10px",
+                      borderBottom: "1px solid #e5e7eb",
+                      fontSize: "11px",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.08em",
+                      color: "#6b7280",
+                      fontWeight: 700,
+                      backgroundColor: "#f9fafb",
+                    }}
+                  >
+                    <div>Item</div>
+                    <div style={{ textAlign: "right" }}>Posted at</div>
+                    <div style={{ textAlign: "right" }}>System pieces</div>
+                    <div style={{ textAlign: "right" }}>Cost / piece</div>
+                    <div style={{ textAlign: "right" }}>Counted pieces</div>
+                    <div style={{ textAlign: "right" }}>Difference</div>
+                  </div>
+
+                  {postedLines.map((ln) => {
+                    const t = latestPostedTimeByItemId.get(Number(ln.itemId)) || "";
+                    return (
+                      <div
+                        key={`posted-${ln.id}`}
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "minmax(220px, 2.5fr) 110px 1fr 1fr 1fr 1fr",
+                          minWidth: "980px",
+                          alignItems: "center",
+                          padding: "9px 10px",
+                          borderBottom: "1px solid #f3f4f6",
+                          fontSize: "13px",
+                        }}
+                      >
+                        <div style={{ fontWeight: 700, color: "#111827" }}>{ln.itemName || "Unknown item"}</div>
+                        <div style={{ textAlign: "right", ...numCell, color: "#6b7280", fontWeight: 800 }}>
+                          {t ? formatCAT_HM_FromISO(t) : "—"}
+                        </div>
+                        <div style={{ textAlign: "right", ...numCell }}>{formatQty(ln.systemPieces)}</div>
+                        <div style={{ textAlign: "right", ...numCell }}>{formatMoney(ln.costPerPiece)}</div>
+                        <div style={{ textAlign: "right", ...numCell }}>{formatQty(ln.countedPieces)}</div>
+                        <div
+                          style={{
+                            textAlign: "right",
+                            ...numCell,
+                            color: ln.diffPieces > 0 ? "#16a34a" : ln.diffPieces < 0 ? "#b91c1c" : "#111827",
+                            fontWeight: 700,
+                          }}
+                        >
+                          {formatDiff(ln.diffPieces)}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Posted adjustments timeline (full history) */}
+          <div style={{ marginTop: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
+              <div style={{ fontSize: "13px", fontWeight: 900, color: "#111827" }}>
+                Posted adjustments timeline (full history)
+              </div>
+              <div style={{ fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>
+                Each post is stored as a StockMovement (audit trail).
+              </div>
+            </div>
+
+            {timelineRows.length === 0 ? (
+              <div style={{ padding: "10px 4px", fontSize: "13px", color: "#6b7280" }}>
+                No posted adjustments yet for this date.
+              </div>
+            ) : (
+              <div
+                style={{
+                  borderRadius: "14px",
+                  border: "1px solid #e5e7eb",
+                  backgroundColor: "#ffffff",
+                  overflow: "hidden",
+                }}
+              >
+                <div style={{ maxHeight: "280px", overflowY: "auto", overflowX: "auto", scrollbarGutter: "stable" }}>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "110px minmax(220px, 2.2fr) 1fr 1fr 1fr",
+                      minWidth: "920px",
+                      alignItems: "center",
+                      padding: "8px 10px",
+                      borderBottom: "1px solid #e5e7eb",
+                      fontSize: "11px",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.08em",
+                      color: "#6b7280",
+                      fontWeight: 700,
+                      backgroundColor: "#f9fafb",
+                    }}
+                  >
+                    <div style={{ textAlign: "right" }}>Time</div>
+                    <div>Item</div>
+                    <div style={{ textAlign: "right" }}>Pieces change</div>
+                    <div style={{ textAlign: "right" }}>Unit cost</div>
+                    <div style={{ textAlign: "right" }}>Value (RWF)</div>
+                  </div>
+
+                  {timelineRows.map((r) => (
+                    <div
+                      key={r.movement_id}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "110px minmax(220px, 2.2fr) 1fr 1fr 1fr",
+                        minWidth: "920px",
+                        alignItems: "center",
+                        padding: "9px 10px",
+                        borderBottom: "1px solid #f3f4f6",
+                        fontSize: "13px",
+                      }}
+                    >
+                      <div style={{ textAlign: "right", ...numCell, color: "#6b7280", fontWeight: 800 }}>
+                        {formatCAT_HM_FromISO(r.created_at)}
+                      </div>
+                      <div style={{ fontWeight: 700, color: "#111827" }}>{r.item_name || `Item ${r.item_id}`}</div>
+                      <div
+                        style={{
+                          textAlign: "right",
+                          ...numCell,
+                          fontWeight: 800,
+                          color:
+                            Number(r.pieces_change || 0) === 0
+                              ? "#111827"
+                              : Number(r.pieces_change || 0) > 0
+                              ? "#16a34a"
+                              : "#b91c1c",
+                        }}
+                      >
+                        {formatDiff(r.pieces_change)}
+                      </div>
+                      <div style={{ textAlign: "right", ...numCell }}>{formatMoney(r.unit_cost)}</div>
+                      <div
+                        style={{
+                          textAlign: "right",
+                          ...numCell,
+                          fontWeight: 800,
+                          color:
+                            Number(r.value_change || 0) === 0
+                              ? "#111827"
+                              : Number(r.value_change || 0) > 0
+                              ? "#16a34a"
+                              : "#b91c1c",
+                        }}
+                      >
+                        {Number(r.value_change || 0) === 0
+                          ? "0"
+                          : `${Number(r.value_change || 0) > 0 ? "+" : ""}${formatMoney(r.value_change)}`}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Refresh row */}
           <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end", gap: 10, flexWrap: "wrap" }}>
             <button
               type="button"
               onClick={async () => {
                 await reloadStock();
                 await loadTimeline(toISODate(inventoryDate));
+                const seq = ++checkSeqRef.current;
+                await loadCheckViewsForDate(toISODate(inventoryDate), seq).catch(() => {});
               }}
               style={{
                 padding: "0.5rem 1rem",
@@ -1622,7 +1919,7 @@ export default function InventoryCheckPage() {
                 cursor: "pointer",
               }}
             >
-              Refresh stock & day totals
+              Refresh stock & posted tables
             </button>
           </div>
         </div>
@@ -1644,9 +1941,7 @@ export default function InventoryCheckPage() {
           </div>
 
           {groupedHistory.length === 0 ? (
-            <div style={{ marginTop: 10, fontSize: "13px", color: "#6b7280" }}>
-              No inventory checks recorded yet.
-            </div>
+            <div style={{ marginTop: 10, fontSize: "13px", color: "#6b7280" }}>No inventory checks recorded yet.</div>
           ) : (
             <div style={{ marginTop: 12, borderRadius: "14px", border: "1px solid #e5e7eb", overflow: "hidden" }}>
               <div style={{ maxHeight: "420px", overflowY: "auto" }}>
