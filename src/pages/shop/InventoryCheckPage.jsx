@@ -335,6 +335,21 @@ export default function InventoryCheckPage() {
   const [currentCheckId, setCurrentCheckId] = useState(null);
   const [currentCheckStatus, setCurrentCheckStatus] = useState(null); // "DRAFT" | "IN_PROGRESS" | null
 
+  // ✅ extra check meta (from backend)
+  const [checkMeta, setCheckMeta] = useState({
+    session_status: null,
+    started_at: null,
+    closed_at: null,
+    progress_total_items: null,
+    progress_counted_items: null,
+    progress_percent: null,
+    posted_lines_count: null,
+    draft_lines_count: null,
+    shrink_value: null,
+    gain_value: null,
+    net_value: null,
+  });
+
   // timeline for the selected date (from stock movements)
   const [timelineRows, setTimelineRows] = useState([]);
 
@@ -346,11 +361,7 @@ export default function InventoryCheckPage() {
 
   // lines shown in the main table:
   // ✅ ALWAYS one line per item (latest line wins) so summary does NOT double-count.
-  // ✅ This is the DRAFT table (editable).
   const [lines, setLines] = useState([]);
-
-  // ✅ posted lines table (read-only)
-  const [postedLines, setPostedLines] = useState([]);
 
   // history list for "History & differences"
   const [historyChecks, setHistoryChecks] = useState([]);
@@ -367,20 +378,6 @@ export default function InventoryCheckPage() {
   useEffect(() => {
     const t = setInterval(() => setCatNowHM(formatCAT_HM(new Date())), 30_000);
     return () => clearInterval(t);
-  }, []);
-
-  // ✅ responsive for Option C
-  const [isNarrow, setIsNarrow] = useState(() => {
-    try {
-      return window.innerWidth < 1100;
-    } catch {
-      return false;
-    }
-  });
-  useEffect(() => {
-    const onResize = () => setIsNarrow(window.innerWidth < 1100);
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
   }, []);
 
   // Abort + race protection
@@ -420,8 +417,7 @@ export default function InventoryCheckPage() {
   };
 
   // ✅ collapse detail.lines to ONE row per item (latest line id wins)
-  // ✅ and allow filtering posted vs draft using ln.is_posted
-  const collapseLinesToLatestPerItem = (rawLines, { onlyPosted = null } = {}) => {
+  const collapseLinesToLatestPerItem = (rawLines) => {
     const arr = Array.isArray(rawLines) ? rawLines : [];
     const byItem = new Map();
 
@@ -429,15 +425,14 @@ export default function InventoryCheckPage() {
       const itemId = Number(ln?.item_id);
       if (!Number.isFinite(itemId) || itemId <= 0) continue;
 
-      const isPosted = Boolean(ln?.is_posted);
-      if (onlyPosted === true && !isPosted) continue;
-      if (onlyPosted === false && isPosted) continue;
-
       const id = Number(ln?.id);
       const prev = byItem.get(itemId);
 
       // choose the highest line.id as "latest"
-      if (!prev || (Number.isFinite(id) && Number.isFinite(prev._lineId) ? id > prev._lineId : true)) {
+      if (
+        !prev ||
+        (Number.isFinite(id) && Number.isFinite(prev._lineId) ? id > prev._lineId : true)
+      ) {
         byItem.set(itemId, {
           _lineId: Number.isFinite(id) ? id : -1,
           id: ln?.id,
@@ -503,85 +498,6 @@ export default function InventoryCheckPage() {
     return { totalAdj, pieces, value, checks };
   }, [timelineRows]);
 
-  // ✅ Posted impact (gain/shrink/net) computed from timeline values if available.
-  // If backend doesn't send value_change, we fallback to postedLines diff value.
-  const postedImpact = useMemo(() => {
-    const rows = Array.isArray(timelineRows) ? timelineRows : [];
-
-    let gain = 0;
-    let shrink = 0;
-    let hasValueChange = false;
-
-    for (const r of rows) {
-      const v = Number(r.value_change);
-      if (!Number.isFinite(v)) continue;
-      hasValueChange = true;
-      if (v >= 0) gain += v;
-      else shrink += Math.abs(v);
-    }
-
-    if (hasValueChange) {
-      return { gain, shrink, net: gain - shrink, source: "timeline" };
-    }
-
-    // fallback from postedLines
-    let g2 = 0;
-    let s2 = 0;
-    for (const ln of postedLines || []) {
-      const diffValue = Number(ln.diffPieces || 0) * Number(ln.costPerPiece || 0);
-      if (!Number.isFinite(diffValue)) continue;
-      if (diffValue >= 0) g2 += diffValue;
-      else s2 += Math.abs(diffValue);
-    }
-    return { gain: g2, shrink: s2, net: g2 - s2, source: "postedLines" };
-  }, [timelineRows, postedLines]);
-
-  // ✅ hour per item: take latest timeline timestamp by item_id (best-effort)
-  const postedTimeByItemId = useMemo(() => {
-    const map = new Map();
-    const rows = Array.isArray(timelineRows) ? timelineRows : [];
-    for (const r of rows) {
-      const itemId = Number(r.item_id ?? r.itemId);
-      if (!Number.isFinite(itemId) || itemId <= 0) continue;
-
-      const iso =
-        r.created_at ?? r.posted_at ?? r.occurred_at ?? r.timestamp ?? r.createdAt ?? null;
-      if (!iso) continue;
-
-      const prev = map.get(itemId);
-      if (!prev || String(iso) > String(prev)) map.set(itemId, iso);
-    }
-    return map;
-  }, [timelineRows]);
-
-  const postedRowsForTable = useMemo(() => {
-    const arr = (postedLines || []).map((ln) => {
-      const timeIso = postedTimeByItemId.get(Number(ln.itemId)) || null;
-      const diffValue = Number(ln.diffPieces || 0) * Number(ln.costPerPiece || 0);
-      return { ...ln, postedTimeIso: timeIso, diffValue };
-    });
-
-    arr.sort((a, b) => {
-      const ta = a.postedTimeIso ? String(a.postedTimeIso) : "";
-      const tb = b.postedTimeIso ? String(b.postedTimeIso) : "";
-      if (ta && tb && ta !== tb) return tb.localeCompare(ta); // latest first
-      return String(a.itemName || "").localeCompare(String(b.itemName || ""));
-    });
-
-    return arr;
-  }, [postedLines, postedTimeByItemId]);
-
-  // ✅ simple “progress” like your screenshot (counted items / total items)
-  const progress = useMemo(() => {
-    const total = pickerItems.length;
-    const set = new Set();
-    for (const ln of postedLines || []) set.add(Number(ln.itemId));
-    for (const ln of lines || []) set.add(Number(ln.itemId));
-    const counted = Array.from(set).filter((x) => Number.isFinite(x) && x > 0).length;
-    const pct = total > 0 ? counted / total : 0;
-    return { total, counted, pct };
-  }, [pickerItems, postedLines, lines]);
-
   // ---------- Data loading ----------
   useEffect(() => {
     const controller = new AbortController();
@@ -621,6 +537,7 @@ export default function InventoryCheckPage() {
     return () => controller.abort();
   }, [shopId, authHeadersNoJson]);
 
+  // ✅ refresh stock (important after POST, because remaining_pieces changed)
   const reloadStock = async () => {
     try {
       const stockRes = await fetchWithSlashFallback(`${API_BASE}/stock/?shop_id=${shopId}`, {
@@ -634,7 +551,9 @@ export default function InventoryCheckPage() {
     }
   };
 
+  // load history list for the shop (ONLY when History tab is opened, or after save/post)
   const loadHistory = async (force = false) => {
+    // TTL cache
     if (!force && historyChecks.length > 0) {
       const ageMs = Date.now() - historyLoadedAtRef.current;
       if (ageMs < 20_000) return historyChecks;
@@ -670,6 +589,7 @@ export default function InventoryCheckPage() {
     }
   };
 
+  // load adjustment timeline (posted movements) for a date
   const loadTimeline = async (isoDate) => {
     const dateISO = toISODate(isoDate);
     if (!dateISO) {
@@ -698,16 +618,22 @@ export default function InventoryCheckPage() {
     }
   };
 
-  // ✅ try to fetch full detail by id (to get posted lines reliably)
-  const fetchCheckDetailById = async (id, { signal } = {}) => {
-    if (!id) return null;
-    const url = `${API_BASE}/inventory-checks/${id}?include_posted_lines=true`;
-    const res = await fetchWithSlashFallback(url, { headers: authHeadersNoJson, signal });
-    if (!res.ok) {
-      const errData = await res.json().catch(() => null);
-      throw new Error(errData?.detail || `Failed to load inventory check. Status: ${res.status}`);
-    }
-    return await res.json().catch(() => null);
+  const setMetaFromDetail = (detail) => {
+    const d = detail || {};
+    setCheckMeta((prev) => ({
+      ...prev,
+      session_status: d.session_status ?? prev.session_status ?? null,
+      started_at: d.started_at ?? prev.started_at ?? null,
+      closed_at: d.closed_at ?? prev.closed_at ?? null,
+      progress_total_items: d.progress_total_items ?? prev.progress_total_items ?? null,
+      progress_counted_items: d.progress_counted_items ?? prev.progress_counted_items ?? null,
+      progress_percent: d.progress_percent ?? prev.progress_percent ?? null,
+      posted_lines_count: d.posted_lines_count ?? prev.posted_lines_count ?? null,
+      draft_lines_count: d.draft_lines_count ?? prev.draft_lines_count ?? null,
+      shrink_value: d.shrink_value ?? prev.shrink_value ?? null,
+      gain_value: d.gain_value ?? prev.gain_value ?? null,
+      net_value: d.net_value ?? prev.net_value ?? null,
+    }));
   };
 
   // ✅ Fast detail loader
@@ -717,7 +643,19 @@ export default function InventoryCheckPage() {
       setCurrentCheckId(null);
       setCurrentCheckStatus(null);
       setLines([]);
-      setPostedLines([]);
+      setCheckMeta({
+        session_status: null,
+        started_at: null,
+        closed_at: null,
+        progress_total_items: null,
+        progress_counted_items: null,
+        progress_percent: null,
+        posted_lines_count: null,
+        draft_lines_count: null,
+        shrink_value: null,
+        gain_value: null,
+        net_value: null,
+      });
       return;
     }
 
@@ -732,7 +670,7 @@ export default function InventoryCheckPage() {
 
     const url = `${API_BASE}/inventory-checks/for-date?shop_id=${shopId}&check_date=${encodeURIComponent(
       dateISO
-    )}&include_posted_lines=true`;
+    )}`;
 
     const res = await fetchWithSlashFallback(url, {
       headers: authHeadersNoJson,
@@ -755,7 +693,6 @@ export default function InventoryCheckPage() {
       setCurrentCheckId(null);
       setCurrentCheckStatus(null);
       setLines([]);
-      setPostedLines([]);
       return { fallbackNeeded: false };
     }
 
@@ -763,29 +700,10 @@ export default function InventoryCheckPage() {
 
     setCurrentCheckId(detail.id ?? null);
     setCurrentCheckStatus(detail.status ?? null);
+    setMetaFromDetail(detail);
 
-    // ✅ IMPORTANT: draft table should ONLY show non-posted
-    setLines(collapseLinesToLatestPerItem(detail.lines || [], { onlyPosted: false }));
-
-    // ✅ posted list shows ONLY posted
-    setPostedLines(collapseLinesToLatestPerItem(detail.lines || [], { onlyPosted: true }));
-
-    // ✅ if backend returns counts but missing posted lines, fetch full detail by id
-    const expectedPosted =
-      Number(detail.posted_lines_count || 0) ||
-      Number(detail.posted_items || 0) ||
-      0;
-
-    const gotPosted = collapseLinesToLatestPerItem(detail.lines || [], { onlyPosted: true }).length;
-
-    if (expectedPosted > 0 && gotPosted === 0 && detail.id) {
-      const full = await fetchCheckDetailById(detail.id, { signal: controller.signal });
-      if (seq !== checkSeqRef.current) return { fallbackNeeded: false };
-      setLines(collapseLinesToLatestPerItem(full?.lines || [], { onlyPosted: false }));
-      setPostedLines(collapseLinesToLatestPerItem(full?.lines || [], { onlyPosted: true }));
-      setCurrentCheckId(full?.id ?? detail.id);
-      setCurrentCheckStatus(full?.status ?? detail.status ?? null);
-    }
+    // ✅ one row per item (latest line wins)
+    setLines(collapseLinesToLatestPerItem(detail.lines || []));
 
     return { fallbackNeeded: false };
   };
@@ -802,7 +720,6 @@ export default function InventoryCheckPage() {
       setCurrentCheckId(null);
       setCurrentCheckStatus(null);
       setLines([]);
-      setPostedLines([]);
       return;
     }
 
@@ -816,14 +733,23 @@ export default function InventoryCheckPage() {
     const controller = new AbortController();
     checkAbortRef.current = controller;
 
-    const detail = await fetchCheckDetailById(match.id, { signal: controller.signal });
+    const detailRes = await fetchWithSlashFallback(`${API_BASE}/inventory-checks/${match.id}`, {
+      headers: authHeadersNoJson,
+      signal: controller.signal,
+    });
+    if (!detailRes.ok) {
+      throw new Error(`Failed to load inventory check details. Status: ${detailRes.status}`);
+    }
+
+    const detail = await detailRes.json();
     if (seq !== checkSeqRef.current) return;
 
-    setCurrentCheckId(detail?.id || match.id);
-    setCurrentCheckStatus(detail?.status || match.status || null);
+    setCurrentCheckId(detail.id || match.id);
+    setCurrentCheckStatus(detail.status || match.status || null);
+    setMetaFromDetail(detail);
 
-    setLines(collapseLinesToLatestPerItem(detail?.lines || [], { onlyPosted: false }));
-    setPostedLines(collapseLinesToLatestPerItem(detail?.lines || [], { onlyPosted: true }));
+    // ✅ one row per item (latest line wins)
+    setLines(collapseLinesToLatestPerItem(detail.lines || []));
   };
 
   // when date changes
@@ -835,9 +761,21 @@ export default function InventoryCheckPage() {
     setCurrentCheckId(null);
     setCurrentCheckStatus(null);
     setLines([]);
-    setPostedLines([]);
     setTimelineRows([]);
     setPad({ itemId: "", countedPieces: "" });
+    setCheckMeta({
+      session_status: null,
+      started_at: null,
+      closed_at: null,
+      progress_total_items: null,
+      progress_counted_items: null,
+      progress_percent: null,
+      posted_lines_count: null,
+      draft_lines_count: null,
+      shrink_value: null,
+      gain_value: null,
+      net_value: null,
+    });
 
     const seq = ++checkSeqRef.current;
     const iso = toISODate(inventoryDate);
@@ -854,7 +792,8 @@ export default function InventoryCheckPage() {
           await loadCheckForDateLegacy(iso, seq);
         }
       } catch (err) {
-        const aborted = (checkAbortRef.current && checkAbortRef.current.signal?.aborted) || false;
+        const aborted =
+          (checkAbortRef.current && checkAbortRef.current.signal?.aborted) || false;
         if (aborted) return;
         console.error(err);
         setError(err?.message || "Failed to fetch inventory check for selected date.");
@@ -986,10 +925,9 @@ export default function InventoryCheckPage() {
       const newId = data?.id ?? null;
       setCurrentCheckId(newId);
       setCurrentCheckStatus(data.status || "DRAFT");
+      setMetaFromDetail(data);
 
-      // ✅ keep draft-only in editable table
-      setLines(collapseLinesToLatestPerItem(data.lines || [], { onlyPosted: false }));
-      setPostedLines(collapseLinesToLatestPerItem(data.lines || [], { onlyPosted: true }));
+      setLines(collapseLinesToLatestPerItem(data.lines || []));
 
       await loadHistory(true);
 
@@ -1043,10 +981,9 @@ export default function InventoryCheckPage() {
 
       setCurrentCheckId(data.id ?? idToPost);
       setCurrentCheckStatus(data.status || null);
+      setMetaFromDetail(data);
 
-      // ✅ after post, backend may return posted lines; keep draft-only table empty/updated
-      setLines(collapseLinesToLatestPerItem(data.lines || [], { onlyPosted: false }));
-      setPostedLines(collapseLinesToLatestPerItem(data.lines || [], { onlyPosted: true }));
+      setLines(collapseLinesToLatestPerItem(data.lines || []));
 
       await reloadStock();
       await loadHistory(true);
@@ -1140,941 +1077,787 @@ export default function InventoryCheckPage() {
 
   const numCell = { whiteSpace: "nowrap" };
 
-  // ===== Option C Layout (correctly): keep summary content, only change placement =====
-  const pageGridStyle = isNarrow
-    ? { display: "grid", gridTemplateColumns: "1fr", gap: "12px", alignItems: "start" }
-    : { display: "grid", gridTemplateColumns: "minmax(0, 1fr) 380px", gap: "14px", alignItems: "start" };
+  // summary meta
+  const progressCounted = Number(checkMeta?.progress_counted_items ?? 0);
+  const progressTotal = Number(checkMeta?.progress_total_items ?? 0);
+  const progressPercentRaw = Number(checkMeta?.progress_percent ?? 0);
+  const progressPercent =
+    Number.isFinite(progressPercentRaw) ? Math.max(0, Math.min(1, progressPercentRaw)) : 0;
+
+  const postedLinesCount = Number(checkMeta?.posted_lines_count ?? 0);
+  const draftLinesCount = Number(checkMeta?.draft_lines_count ?? 0);
+
+  const shrinkValue = Number(checkMeta?.shrink_value ?? 0);
+  const gainValue = Number(checkMeta?.gain_value ?? 0);
+  const netValue = Number(checkMeta?.net_value ?? 0);
+
+  const startedHM = checkMeta?.started_at ? formatCAT_HM_FromISO(checkMeta.started_at) : "";
+  const sessionStatus = checkMeta?.session_status ? String(checkMeta.session_status).toUpperCase() : "";
+
+  const statTile = {
+    border: "1px solid #e5e7eb",
+    borderRadius: "14px",
+    background: "#ffffff",
+    padding: "10px 12px",
+    minHeight: "68px",
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "center",
+    gap: 4,
+  };
+
+  const statLabel = {
+    fontSize: "10px",
+    textTransform: "uppercase",
+    letterSpacing: "0.12em",
+    color: "#6b7280",
+    fontWeight: 800,
+  };
+
+  const statValue = (color = "#111827") => ({
+    fontSize: "18px",
+    fontWeight: 900,
+    color,
+    lineHeight: 1.1,
+    whiteSpace: "nowrap",
+  });
 
   return (
-    <div style={{ width: "100%", maxWidth: "1500px", margin: "0 auto", boxSizing: "border-box", padding: "0 10px" }}>
-      <div style={pageGridStyle}>
-        {/* ================= LEFT COLUMN ================= */}
-        <div style={{ minWidth: 0 }}>
-          {/* Header (WITHOUT summary card here) */}
-          <div
-            style={{
-              paddingBottom: "8px",
-              marginBottom: "8px",
-              background:
-                "linear-gradient(to bottom, #f3f4f6 0%, #f3f4f6 65%, rgba(243,244,246,0) 100%)",
-              borderRadius: "18px",
-              padding: "14px 14px 10px",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px" }}>
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
-                <button
-                  onClick={() => navigate(`/shops/${shopId}`)}
-                  style={{
-                    border: "none",
-                    background: "transparent",
-                    padding: 0,
-                    marginBottom: "6px",
-                    fontSize: "12px",
-                    color: "#2563eb",
-                    cursor: "pointer",
-                    fontWeight: 700,
-                  }}
-                >
-                  ← Back to shop workspace
-                </button>
+    <div style={{ width: "100%", maxWidth: "1500px", margin: "0 auto", boxSizing: "border-box" }}>
+      {/* Header (compact — no tall summary here) */}
+      <div
+        style={{
+          paddingBottom: "10px",
+          marginBottom: "10px",
+          background:
+            "linear-gradient(to bottom, #f3f4f6 0%, #f3f4f6 65%, rgba(243,244,246,0) 100%)",
+          borderRadius: "18px",
+        }}
+      >
+        <button
+          onClick={() => navigate(`/shops/${shopId}`)}
+          style={{
+            border: "none",
+            background: "transparent",
+            padding: 0,
+            margin: "10px 0 6px",
+            fontSize: "12px",
+            color: "#2563eb",
+            cursor: "pointer",
+          }}
+        >
+          ← Back to shop workspace
+        </button>
 
-                <h1 style={{ fontSize: "30px", fontWeight: 800, letterSpacing: "0.03em", margin: 0 }}>
-                  Inventory check
-                </h1>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "flex-end",
+            justifyContent: "space-between",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
+          <div>
+            <h1 style={{ fontSize: "30px", fontWeight: 800, letterSpacing: "0.03em", margin: 0 }}>
+              Inventory check
+            </h1>
 
-                <div style={{ marginTop: "2px", fontSize: "13px", fontWeight: 600, color: "#2563eb" }}>
-                  {shopName}
-                </div>
-
-                <div style={{ marginTop: "6px", fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>
-                  Status:{" "}
-                  <span style={{ color: "#111827" }}>
-                    {currentCheckStatus ? String(currentCheckStatus).toUpperCase() : "—"}
-                  </span>
-                  {currentCheckId ? ` • Check ID: ${currentCheckId}` : ""}
-                </div>
-
-                <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                  <button type="button" style={tabBtn(activeTab === "enter")} onClick={() => setActiveTab("enter")}>
-                    Enter counts
-                  </button>
-
-                  <button
-                    type="button"
-                    style={tabBtn(activeTab === "history")}
-                    onClick={() => {
-                      setActiveTab("history");
-                      loadHistory(true);
-                    }}
-                  >
-                    History &amp; differences
-                  </button>
-                </div>
-              </div>
+            <div style={{ marginTop: "2px", fontSize: "13px", fontWeight: 600, color: "#2563eb" }}>
+              {shopName}
             </div>
 
-            {/* date picker */}
-            <div style={{ display: "inline-flex", alignItems: "center", gap: "10px", marginTop: "12px" }}>
-              <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>
-                Inventory check date
-              </div>
-              <input
-                type="date"
-                value={toISODate(inventoryDate)}
-                onChange={(e) => setInventoryDate(e.target.value)}
-                style={{
-                  padding: "8px 12px",
-                  borderRadius: "999px",
-                  border: "1px solid #d1d5db",
-                  fontSize: "13px",
-                  backgroundColor: "#ffffff",
+            <div style={{ marginTop: "8px", fontSize: "12px", color: "#6b7280", fontWeight: 800 }}>
+              Status:{" "}
+              <span style={{ color: "#111827" }}>
+                {currentCheckStatus ? String(currentCheckStatus).toUpperCase() : "—"}
+              </span>
+              {currentCheckId ? ` • Check ID: ${currentCheckId}` : ""}
+              {sessionStatus ? ` • Session: ${sessionStatus}` : ""}
+              {startedHM ? ` • Started: ${toISODate(inventoryDate)} ${startedHM} CAT` : ""}
+            </div>
+
+            <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              <button type="button" style={tabBtn(activeTab === "enter")} onClick={() => setActiveTab("enter")}>
+                Enter counts
+              </button>
+
+              <button
+                type="button"
+                style={tabBtn(activeTab === "history")}
+                onClick={() => {
+                  setActiveTab("history");
+                  loadHistory(true);
                 }}
-              />
-              {loadingCheck && <div style={{ fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>Loading…</div>}
+              >
+                History &amp; differences
+              </button>
             </div>
           </div>
 
-          {(error || message) && (
-            <div
+          {/* date picker (right side) */}
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: 2, flexWrap: "wrap" }}>
+            <div style={{ fontSize: "13px", fontWeight: 800, color: "#111827" }}>Date</div>
+            <input
+              type="date"
+              value={toISODate(inventoryDate)}
+              onChange={(e) => setInventoryDate(e.target.value)}
               style={{
-                marginBottom: "1rem",
-                padding: "0.6rem 0.8rem",
-                borderRadius: "0.75rem",
-                backgroundColor: error ? "#fef2f2" : "#ecfdf3",
-                color: error ? "#b91c1c" : "#166534",
-                fontSize: "0.9rem",
-              }}
-            >
-              {error || message}
-            </div>
-          )}
-
-          {/* ================= TAB: Enter counts ================= */}
-          {activeTab === "enter" && (
-            <div
-              style={{
+                padding: "8px 12px",
+                borderRadius: "999px",
+                border: "1px solid #d1d5db",
+                fontSize: "13px",
                 backgroundColor: "#ffffff",
-                borderRadius: "20px",
-                boxShadow: "0 10px 30px rgba(15,37,128,0.06)",
-                padding: "16px 18px 18px",
               }}
-            >
-              <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>
-                Enter inventory counts for {toISODate(inventoryDate)}
-              </h2>
-
-              {/* PAD */}
-              <div
-                ref={padRef}
-                style={{
-                  marginTop: 12,
-                  marginBottom: "12px",
-                  padding: "14px 14px 16px",
-                  borderRadius: "18px",
-                  background: "#ffffff",
-                  border: "1px solid #e5e7eb",
-                  color: "#111827",
-                  opacity: disableEditing ? 0.9 : 1,
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: "13px",
-                    fontWeight: 700,
-                    marginBottom: "10px",
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    gap: "8px",
-                  }}
-                >
-                  <span>Pad: select item, enter counted pieces, then add to table</span>
-
-                  <button
-                    type="button"
-                    onClick={handleAddToList}
-                    disabled={!canAddToList}
-                    style={{
-                      padding: "0.55rem 1.3rem",
-                      borderRadius: "9999px",
-                      border: "none",
-                      backgroundColor: !canAddToList ? "#9ca3af" : "#2563eb",
-                      color: "white",
-                      fontWeight: 800,
-                      fontSize: "0.9rem",
-                      cursor: !canAddToList ? "not-allowed" : "pointer",
-                      opacity: !canAddToList ? 0.85 : 1,
-                    }}
-                  >
-                    + Add to table
-                  </button>
-                </div>
-
-                <div>
-                  <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#111827", marginBottom: "6px" }}>
-                    Item
-                  </label>
-                  <ItemComboBox
-                    items={pickerItems}
-                    valueId={pad.itemId === "" ? "" : String(pad.itemId)}
-                    onChangeId={(idStr) => handlePadChange("itemId", idStr)}
-                    disabled={disableEditing}
-                  />
-
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-                      columnGap: "14px",
-                      rowGap: "6px",
-                      marginTop: "10px",
-                      fontSize: "12px",
-                      color: "#6b7280",
-                    }}
-                  >
-                    <div>
-                      System pieces:{" "}
-                      <strong style={{ color: "#111827" }}>{pad.itemId ? formatQty(padSystemPieces) : "—"}</strong>
-                    </div>
-                    <div>
-                      Counted pieces:{" "}
-                      <strong style={{ color: "#111827" }}>
-                        {padCountedPieces === null ? "—" : formatQty(padCountedPieces)}
-                      </strong>
-                    </div>
-                    <div>
-                      Difference:{" "}
-                      <strong
-                        style={{
-                          color:
-                            padDiff === null
-                              ? "#111827"
-                              : padDiff > 0
-                              ? "#16a34a"
-                              : padDiff < 0
-                              ? "#b91c1c"
-                              : "#111827",
-                        }}
-                      >
-                        {padDiff === null ? "—" : formatDiff(padDiff)}
-                      </strong>
-                    </div>
-                  </div>
-                </div>
-
-                <div
-                  style={{
-                    marginTop: "12px",
-                    display: "grid",
-                    gridTemplateColumns: "minmax(140px, 1.5fr) minmax(140px, 1fr) minmax(140px, 1fr)",
-                    gap: "12px",
-                    alignItems: "end",
-                  }}
-                >
-                  <div>
-                    <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#111827", marginBottom: "6px" }}>
-                      System pieces
-                    </label>
-                    <input
-                      type="text"
-                      readOnly
-                      value={pad.itemId ? formatQty(padSystemPieces) : ""}
-                      style={{ ...inputBase, backgroundColor: "#f3f4f6", fontWeight: 600 }}
-                    />
-                  </div>
-
-                  <div>
-                    <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#111827", marginBottom: "6px" }}>
-                      Counted pieces (physical)
-                    </label>
-                    <input
-                      type="number"
-                      min={0}
-                      step="0.01"
-                      value={pad.countedPieces}
-                      disabled={disableEditing}
-                      onChange={(e) => handlePadChange("countedPieces", e.target.value)}
-                      style={{
-                        ...inputBase,
-                        backgroundColor: disableEditing ? "#f9fafb" : "#ffffff",
-                        cursor: disableEditing ? "not-allowed" : "text",
-                      }}
-                    />
-                  </div>
-
-                  <div>
-                    <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#111827", marginBottom: "6px" }}>
-                      Difference
-                    </label>
-                    <input
-                      type="text"
-                      readOnly
-                      value={padDiff === null ? "" : formatDiff(padDiff)}
-                      style={{ ...inputBase, backgroundColor: "#f3f4f6", fontWeight: 600 }}
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* DRAFT TABLE */}
-              {lines.length === 0 ? (
-                <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
-                  No items added yet. Use the pad above and click <strong>+ Add to table</strong>.
-                </div>
-              ) : (
-                <>
-                  <div style={{ fontSize: "12px", color: "#6b7280", marginBottom: "6px" }}>
-                    {lines.length} item{lines.length === 1 ? "" : "s"} in this table (latest per item).
-                  </div>
-
-                  <div
-                    style={{
-                      borderRadius: "14px",
-                      border: "1px solid #e5e7eb",
-                      backgroundColor: "#ffffff",
-                      overflow: "hidden",
-                      boxShadow: "0 6px 18px rgba(15, 23, 42, 0.05)",
-                    }}
-                  >
-                    <div
-                      style={{
-                        maxHeight: "420px",
-                        overflowY: "auto",
-                        overflowX: "auto",
-                        scrollbarGutter: "stable",
-                        backgroundColor: "#ffffff",
-                      }}
-                    >
-                      <div
-                        style={{
-                          display: "grid",
-                          gridTemplateColumns: "minmax(220px, 2.5fr) 1fr 1fr 1fr 1fr 60px",
-                          minWidth: "980px",
-                          alignItems: "center",
-                          padding: "8px 10px",
-                          borderBottom: "1px solid #e5e7eb",
-                          fontSize: "11px",
-                          textTransform: "uppercase",
-                          letterSpacing: "0.08em",
-                          color: "#6b7280",
-                          fontWeight: 700,
-                          backgroundColor: "#f9fafb",
-                        }}
-                      >
-                        <div>Item</div>
-                        <div style={{ textAlign: "right" }}>System pieces</div>
-                        <div style={{ textAlign: "right" }}>Cost / piece</div>
-                        <div style={{ textAlign: "right" }}>Counted pieces</div>
-                        <div style={{ textAlign: "right" }}>Difference</div>
-                        <div />
-                      </div>
-
-                      {lines.map((ln) => (
-                        <div
-                          key={ln.id}
-                          style={{
-                            display: "grid",
-                            gridTemplateColumns: "minmax(220px, 2.5fr) 1fr 1fr 1fr 1fr 60px",
-                            minWidth: "980px",
-                            alignItems: "center",
-                            padding: "9px 10px",
-                            borderBottom: "1px solid #f3f4f6",
-                            fontSize: "13px",
-                          }}
-                        >
-                          <div>
-                            <button
-                              type="button"
-                              onClick={() => handleEditLine(ln)}
-                              disabled={disableEditing}
-                              style={{
-                                padding: 0,
-                                margin: 0,
-                                border: "none",
-                                background: "transparent",
-                                color: "#111827",
-                                fontWeight: 600,
-                                fontSize: "13px",
-                                cursor: disableEditing ? "not-allowed" : "pointer",
-                                textAlign: "left",
-                                opacity: disableEditing ? 0.7 : 1,
-                              }}
-                              title="Edit this item in the pad"
-                            >
-                              {ln.itemName || "Unknown item"}
-                            </button>
-                          </div>
-
-                          <div style={{ textAlign: "right", ...numCell }}>{formatQty(ln.systemPieces)}</div>
-                          <div style={{ textAlign: "right", ...numCell }}>{formatMoney(ln.costPerPiece)}</div>
-                          <div style={{ textAlign: "right", ...numCell }}>{formatQty(ln.countedPieces)}</div>
-
-                          <div
-                            style={{
-                              textAlign: "right",
-                              ...numCell,
-                              color: ln.diffPieces > 0 ? "#16a34a" : ln.diffPieces < 0 ? "#b91c1c" : "#111827",
-                              fontWeight: 600,
-                            }}
-                          >
-                            {formatDiff(ln.diffPieces)}
-                          </div>
-
-                          <div style={{ textAlign: "center" }}>
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveLine(ln.id)}
-                              disabled={disableEditing}
-                              style={{
-                                width: "26px",
-                                height: "26px",
-                                borderRadius: "9999px",
-                                border: "1px solid #fee2e2",
-                                backgroundColor: disableEditing ? "#f3f4f6" : "#fef2f2",
-                                color: disableEditing ? "#9ca3af" : "#b91c1c",
-                                fontSize: "14px",
-                                cursor: disableEditing ? "not-allowed" : "pointer",
-                                opacity: disableEditing ? 0.7 : 1,
-                              }}
-                              title="Remove from table"
-                            >
-                              ✕
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {/* Actions */}
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: "12px", marginTop: "14px" }}>
-                <button
-                  type="button"
-                  onClick={handleSaveDraft}
-                  disabled={!canSaveDraft}
-                  style={{
-                    padding: "0.6rem 1.4rem",
-                    borderRadius: "999px",
-                    border: "1px solid #d1d5db",
-                    backgroundColor: "#ffffff",
-                    color: "#111827",
-                    fontWeight: 600,
-                    fontSize: "0.95rem",
-                    cursor: !canSaveDraft ? "not-allowed" : "pointer",
-                    opacity: !canSaveDraft ? 0.55 : 1,
-                  }}
-                >
-                  {savingDraft ? "Saving…" : "Save draft"}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handlePostInventory}
-                  disabled={!canPost}
-                  style={{
-                    padding: "0.6rem 1.8rem",
-                    borderRadius: "999px",
-                    border: "none",
-                    backgroundColor: !canPost ? "#9ca3af" : "#2563eb",
-                    color: "white",
-                    fontWeight: 700,
-                    fontSize: "0.95rem",
-                    cursor: !canPost ? "not-allowed" : "pointer",
-                    opacity: !canPost ? 0.85 : 1,
-                  }}
-                >
-                  {posting ? "Posting…" : "Post inventory check"}
-                </button>
-              </div>
-
-              {/* ✅ Posted items list (what you asked for) */}
-              <div style={{ marginTop: 18 }}>
-                <div style={{ fontSize: "14px", fontWeight: 800, color: "#111827" }}>
-                  Posted items (already normalized)
-                </div>
-                <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 4, fontWeight: 700 }}>
-                  Hour • Item • System • Counted • Diff • Cost/piece • Total diff cost
-                </div>
-
-                {postedRowsForTable.length === 0 ? (
-                  <div style={{ padding: "10px 4px 0", fontSize: "13px", color: "#6b7280" }}>
-                    No posted items for this date yet.
-                  </div>
-                ) : (
-                  <div
-                    style={{
-                      marginTop: 10,
-                      borderRadius: "14px",
-                      border: "1px solid #e5e7eb",
-                      backgroundColor: "#ffffff",
-                      overflow: "hidden",
-                      boxShadow: "0 6px 18px rgba(15, 23, 42, 0.05)",
-                    }}
-                  >
-                    <div style={{ maxHeight: "360px", overflowY: "auto", overflowX: "auto", scrollbarGutter: "stable" }}>
-                      <div
-                        style={{
-                          display: "grid",
-                          gridTemplateColumns: "110px minmax(220px, 2.2fr) 1fr 1fr 1fr 1fr 1.2fr",
-                          minWidth: "1100px",
-                          alignItems: "center",
-                          padding: "8px 10px",
-                          borderBottom: "1px solid #e5e7eb",
-                          fontSize: "11px",
-                          textTransform: "uppercase",
-                          letterSpacing: "0.08em",
-                          color: "#6b7280",
-                          fontWeight: 700,
-                          backgroundColor: "#f9fafb",
-                        }}
-                      >
-                        <div>Hour (CAT)</div>
-                        <div>Item</div>
-                        <div style={{ textAlign: "right" }}>System</div>
-                        <div style={{ textAlign: "right" }}>Counted</div>
-                        <div style={{ textAlign: "right" }}>Diff</div>
-                        <div style={{ textAlign: "right" }}>Cost/piece</div>
-                        <div style={{ textAlign: "right" }}>Total diff cost</div>
-                      </div>
-
-                      {postedRowsForTable.map((ln) => (
-                        <div
-                          key={`posted-${ln.id}`}
-                          style={{
-                            display: "grid",
-                            gridTemplateColumns: "110px minmax(220px, 2.2fr) 1fr 1fr 1fr 1fr 1.2fr",
-                            minWidth: "1100px",
-                            alignItems: "center",
-                            padding: "9px 10px",
-                            borderBottom: "1px solid #f3f4f6",
-                            fontSize: "13px",
-                          }}
-                        >
-                          <div style={{ fontWeight: 800, color: "#111827" }}>
-                            {ln.postedTimeIso ? formatCAT_HM_FromISO(ln.postedTimeIso) : "—"}
-                          </div>
-
-                          <div style={{ fontWeight: 700, color: "#111827" }}>{ln.itemName}</div>
-
-                          <div style={{ textAlign: "right", ...numCell }}>{formatQty(ln.systemPieces)}</div>
-                          <div style={{ textAlign: "right", ...numCell }}>{formatQty(ln.countedPieces)}</div>
-
-                          <div
-                            style={{
-                              textAlign: "right",
-                              ...numCell,
-                              color: ln.diffPieces > 0 ? "#16a34a" : ln.diffPieces < 0 ? "#b91c1c" : "#111827",
-                              fontWeight: 700,
-                            }}
-                          >
-                            {formatDiff(ln.diffPieces)}
-                          </div>
-
-                          <div style={{ textAlign: "right", ...numCell, fontWeight: 700 }}>
-                            {formatMoney(ln.costPerPiece)}
-                          </div>
-
-                          <div
-                            style={{
-                              textAlign: "right",
-                              ...numCell,
-                              fontWeight: 800,
-                              color: ln.diffValue > 0 ? "#16a34a" : ln.diffValue < 0 ? "#b91c1c" : "#111827",
-                            }}
-                          >
-                            {ln.diffValue === 0 ? "0" : `${ln.diffValue > 0 ? "+" : ""}${formatMoney(ln.diffValue)}`}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* refresh row */}
-              <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end", gap: 10, flexWrap: "wrap" }}>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    await reloadStock();
-                    await loadTimeline(toISODate(inventoryDate));
-                    const seq = ++checkSeqRef.current;
-                    setLoadingCheck(true);
-                    try {
-                      await loadCheckForDateFast(toISODate(inventoryDate), seq);
-                    } finally {
-                      if (seq === checkSeqRef.current) setLoadingCheck(false);
-                    }
-                  }}
-                  style={{
-                    padding: "0.5rem 1rem",
-                    borderRadius: "999px",
-                    border: "1px solid #d1d5db",
-                    backgroundColor: "#ffffff",
-                    fontWeight: 800,
-                    fontSize: "12px",
-                    cursor: "pointer",
-                  }}
-                >
-                  Refresh stock & posted list
-                </button>
-              </div>
+            />
+            <div style={{ fontSize: "12px", color: "#6b7280", fontWeight: 800 }}>
+              Time (CAT): <span style={{ color: "#111827" }}>{catNowHM}</span>
             </div>
-          )}
+            {loadingCheck && (
+              <div style={{ fontSize: "12px", color: "#6b7280", fontWeight: 800 }}>Loading…</div>
+            )}
+          </div>
+        </div>
+      </div>
 
-          {/* ================= TAB: History & differences ================= */}
-          {activeTab === "history" && (
-            <div
-              style={{
-                backgroundColor: "#ffffff",
-                borderRadius: "20px",
-                boxShadow: "0 10px 30px rgba(15,37,128,0.06)",
-                padding: "16px 18px 18px",
-              }}
-            >
-              <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>Previous inventory checks</h2>
-              <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 4 }}>
-                One row per date. Click a date to open it.
-              </div>
+      {(error || message) && (
+        <div
+          style={{
+            marginBottom: "10px",
+            padding: "0.6rem 0.8rem",
+            borderRadius: "0.75rem",
+            backgroundColor: error ? "#fef2f2" : "#ecfdf3",
+            color: error ? "#b91c1c" : "#166534",
+            fontSize: "0.9rem",
+          }}
+        >
+          {error || message}
+        </div>
+      )}
 
-              {groupedHistory.length === 0 ? (
-                <div style={{ marginTop: 10, fontSize: "13px", color: "#6b7280" }}>
-                  No inventory checks recorded yet.
-                </div>
-              ) : (
-                <div style={{ marginTop: 12, borderRadius: "14px", border: "1px solid #e5e7eb", overflow: "hidden" }}>
-                  <div style={{ maxHeight: "420px", overflowY: "auto" }}>
-                    <div
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "160px 1fr 1fr 1fr 120px",
-                        minWidth: "720px",
-                        alignItems: "center",
-                        padding: "8px 10px",
-                        borderBottom: "1px solid #e5e7eb",
-                        fontSize: "11px",
-                        textTransform: "uppercase",
-                        letterSpacing: "0.08em",
-                        color: "#6b7280",
-                        fontWeight: 700,
-                        backgroundColor: "#f9fafb",
-                      }}
-                    >
-                      <div>Date</div>
-                      <div style={{ textAlign: "right" }}>Items</div>
-                      <div style={{ textAlign: "right" }}>System pieces</div>
-                      <div style={{ textAlign: "right" }}>Counted pieces</div>
-                      <div style={{ textAlign: "right" }}>Diff (pieces)</div>
-                    </div>
+      {/* ✅ OPTION C: Inventory summary strip (wide + compact) */}
+      <div
+        style={{
+          backgroundColor: "#ffffff",
+          borderRadius: "18px",
+          boxShadow: "0 10px 30px rgba(15,37,128,0.06)",
+          padding: "12px 14px",
+          marginBottom: "14px",
+          border: "1px solid #eef2ff",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "baseline",
+            gap: 12,
+            flexWrap: "wrap",
+            marginBottom: 10,
+          }}
+        >
+          <div style={{ fontSize: "13px", fontWeight: 900, color: "#111827" }}>Inventory summary</div>
 
-                    {groupedHistory.map((g) => (
-                      <div
-                        key={g.date}
-                        style={{
-                          display: "grid",
-                          gridTemplateColumns: "160px 1fr 1fr 1fr 120px",
-                          minWidth: "720px",
-                          alignItems: "center",
-                          padding: "9px 10px",
-                          borderBottom: "1px solid #f3f4f6",
-                          fontSize: "13px",
-                        }}
-                      >
-                        <div>
-                          <button
-                            type="button"
-                            onClick={() => openHistoryCheck(g.date)}
-                            style={{
-                              padding: 0,
-                              margin: 0,
-                              border: "none",
-                              background: "transparent",
-                              color: "#2563eb",
-                              fontWeight: 700,
-                              cursor: "pointer",
-                            }}
-                          >
-                            {g.date}
-                          </button>
-                          <div style={{ fontSize: "11px", color: "#6b7280", marginTop: 2 }}>
-                            {g.status === "POSTED" ? "Posted" : "Draft"}
-                            {g.last_created_at ? ` • ${formatCAT_HM_FromISO(g.last_created_at)} CAT` : ""}
-                          </div>
-                        </div>
-                        <div style={{ textAlign: "right", ...numCell }}>{g.total_items}</div>
-                        <div style={{ textAlign: "right", ...numCell }}>{formatQty(g.total_system_pieces)}</div>
-                        <div style={{ textAlign: "right", ...numCell }}>{formatQty(g.total_counted_pieces)}</div>
-                        <div
-                          style={{
-                            textAlign: "right",
-                            ...numCell,
-                            color:
-                              Number(g.total_diff_pieces || 0) > 0
-                                ? "#16a34a"
-                                : Number(g.total_diff_pieces || 0) < 0
-                                ? "#b91c1c"
-                                : "#111827",
-                            fontWeight: 600,
-                          }}
-                        >
-                          {formatDiff(g.total_diff_pieces)}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
+          <div style={{ fontSize: "12px", color: "#6b7280", fontWeight: 800 }}>
+            {timelineTotals.totalAdj} post(s) • {lines.length} item(s) • {timelineTotals.checks} check(s) • Draft items:{" "}
+            {draftLinesCount} • Posted items: {postedLinesCount}
+            {progressTotal > 0 ? ` • Progress: ${progressCounted}/${progressTotal}` : ""}
+          </div>
         </div>
 
-        {/* ================= RIGHT COLUMN: SUMMARY (kept intact) ================= */}
-        <div style={!isNarrow ? { position: "sticky", top: 12, alignSelf: "start" } : undefined}>
-          <div
-            style={{
-              backgroundColor: "#ffffff",
-              borderRadius: "16px",
-              padding: "10px 14px",
-              boxShadow: "0 6px 18px rgba(15,37,128,0.06)",
-              display: "grid",
-              gridTemplateColumns: "1fr",
-              rowGap: "6px",
-              fontSize: "12px",
-            }}
-          >
-            <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>
-              Inventory summary
-            </div>
-
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
+            gap: "10px",
+            alignItems: "stretch",
+          }}
+        >
+          <div style={statTile}>
+            <div style={statLabel}>Draft table diff (pieces)</div>
             <div
-              style={{
-                fontSize: "10px",
-                textTransform: "uppercase",
-                letterSpacing: "0.14em",
-                color: "#9ca3af",
-                marginBottom: "2px",
-              }}
+              style={statValue(
+                totalDiffPieces === 0 ? "#111827" : totalDiffPieces > 0 ? "#16a34a" : "#b91c1c"
+              )}
             >
-              Date: {toISODate(inventoryDate)} • Time (CAT): {catNowHM}
+              {formatDiff(totalDiffPieces)}
             </div>
-
-            {/* ✅ Keep your original summary line, but we add draft/posted counts in a clean way */}
-            <div style={{ fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>
-              {timelineTotals.totalAdj} post(s) • Draft items: {lines.length} • Posted items: {postedLines.length}
+            <div style={{ fontSize: "11px", color: "#6b7280", fontWeight: 700 }}>
+              From current table (latest per item)
             </div>
+          </div>
 
-            <div style={{ fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>
-              Progress: {progress.counted}/{progress.total} • {(progress.pct * 100).toFixed(4)}%
+          <div style={statTile}>
+            <div style={statLabel}>Draft value diff (RWF)</div>
+            <div
+              style={statValue(
+                totalSystemValueDiff === 0 ? "#111827" : totalSystemValueDiff > 0 ? "#16a34a" : "#b91c1c"
+              )}
+            >
+              {totalSystemValueDiff === 0
+                ? "0"
+                : `${totalSystemValueDiff > 0 ? "+" : ""}${formatMoney(totalSystemValueDiff)}`}
             </div>
+            <div style={{ fontSize: "11px", color: "#6b7280", fontWeight: 700 }}>
+              Using current cost/piece
+            </div>
+          </div>
 
-            <div>
+          <div style={statTile}>
+            <div style={statLabel}>Posted impact (RWF) shrink</div>
+            <div style={statValue(shrinkValue === 0 ? "#111827" : "#b91c1c")}>
+              {formatMoney(shrinkValue)}
+            </div>
+            <div style={{ fontSize: "11px", color: "#6b7280", fontWeight: 700 }}>This check posted lines</div>
+          </div>
+
+          <div style={statTile}>
+            <div style={statLabel}>Posted impact (RWF) gain</div>
+            <div style={statValue(gainValue === 0 ? "#111827" : "#16a34a")}>
+              {gainValue === 0 ? "0" : `+${formatMoney(gainValue)}`}
+            </div>
+            <div style={{ fontSize: "11px", color: "#6b7280", fontWeight: 700 }}>This check posted lines</div>
+          </div>
+
+          <div style={statTile}>
+            <div style={statLabel}>Posted impact (RWF) net</div>
+            <div style={statValue(netValue === 0 ? "#111827" : netValue > 0 ? "#16a34a" : "#b91c1c")}>
+              {netValue === 0 ? "0" : `${netValue > 0 ? "+" : ""}${formatMoney(netValue)}`}
+            </div>
+            <div style={{ fontSize: "11px", color: "#6b7280", fontWeight: 700 }}>This check net result</div>
+          </div>
+
+          <div style={statTile}>
+            <div style={statLabel}>Whole day posted</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 2 }}>
               <div
                 style={{
-                  fontSize: "10px",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.1em",
-                  color: "#6b7280",
-                }}
-              >
-                Current table: total pieces diff
-              </div>
-              <div
-                style={{
-                  fontSize: "18px",
-                  fontWeight: 800,
+                  fontSize: "13px",
+                  fontWeight: 900,
                   color:
-                    totalDiffPieces === 0
+                    timelineTotals.pieces === 0
                       ? "#111827"
-                      : totalDiffPieces > 0
+                      : timelineTotals.pieces > 0
                       ? "#16a34a"
                       : "#b91c1c",
                 }}
               >
-                {formatDiff(totalDiffPieces)}
+                Pieces: {formatDiff(timelineTotals.pieces)}
+              </div>
+              <div
+                style={{
+                  fontSize: "13px",
+                  fontWeight: 900,
+                  color:
+                    timelineTotals.value === 0
+                      ? "#111827"
+                      : timelineTotals.value > 0
+                      ? "#16a34a"
+                      : "#b91c1c",
+                }}
+              >
+                Value:{" "}
+                {timelineTotals.value === 0
+                  ? "0"
+                  : `${timelineTotals.value > 0 ? "+" : ""}${formatMoney(timelineTotals.value)}`}
+              </div>
+
+              {progressTotal > 0 ? (
+                <div style={{ marginTop: 6 }}>
+                  <div style={{ fontSize: "11px", color: "#6b7280", fontWeight: 800, marginBottom: 4 }}>
+                    Progress {Math.round(progressPercent * 10000) / 100}%
+                  </div>
+                  <div
+                    style={{
+                      height: 8,
+                      borderRadius: 999,
+                      background: "#eef2ff",
+                      overflow: "hidden",
+                      border: "1px solid #e5e7eb",
+                    }}
+                  >
+                    <div
+                      style={{
+                        height: "100%",
+                        width: `${Math.round(progressPercent * 1000) / 10}%`,
+                        background: "#2563eb",
+                      }}
+                    />
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 10, display: "flex", justifyContent: "flex-end", gap: 10, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            onClick={async () => {
+              await reloadStock();
+              await loadTimeline(toISODate(inventoryDate));
+            }}
+            style={{
+              padding: "0.5rem 1rem",
+              borderRadius: "999px",
+              border: "1px solid #d1d5db",
+              backgroundColor: "#ffffff",
+              fontWeight: 900,
+              fontSize: "12px",
+              cursor: "pointer",
+            }}
+          >
+            Refresh stock & day totals
+          </button>
+        </div>
+      </div>
+
+      {/* ================= TAB: Enter counts ================= */}
+      {activeTab === "enter" && (
+        <div
+          style={{
+            backgroundColor: "#ffffff",
+            borderRadius: "20px",
+            boxShadow: "0 10px 30px rgba(15,37,128,0.06)",
+            padding: "16px 18px 18px",
+          }}
+        >
+          <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>
+            Enter inventory counts for {toISODate(inventoryDate)}
+          </h2>
+
+          {/* PAD */}
+          <div
+            ref={padRef}
+            style={{
+              marginTop: 12,
+              marginBottom: "12px",
+              padding: "14px 14px 16px",
+              borderRadius: "18px",
+              background: "#ffffff",
+              border: "1px solid #e5e7eb",
+              color: "#111827",
+              opacity: disableEditing ? 0.9 : 1,
+            }}
+          >
+            <div
+              style={{
+                fontSize: "13px",
+                fontWeight: 700,
+                marginBottom: "10px",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: "8px",
+              }}
+            >
+              <span>Pad: select item, enter counted pieces, then add to table</span>
+
+              <button
+                type="button"
+                onClick={handleAddToList}
+                disabled={!canAddToList}
+                style={{
+                  padding: "0.55rem 1.3rem",
+                  borderRadius: "9999px",
+                  border: "none",
+                  backgroundColor: !canAddToList ? "#9ca3af" : "#2563eb",
+                  color: "white",
+                  fontWeight: 800,
+                  fontSize: "0.9rem",
+                  cursor: !canAddToList ? "not-allowed" : "pointer",
+                  opacity: !canAddToList ? 0.85 : 1,
+                }}
+              >
+                + Add to table
+              </button>
+            </div>
+
+            <div>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#111827", marginBottom: "6px" }}>
+                Item
+              </label>
+              <ItemComboBox
+                items={pickerItems}
+                valueId={pad.itemId === "" ? "" : String(pad.itemId)}
+                onChangeId={(idStr) => handlePadChange("itemId", idStr)}
+                disabled={disableEditing}
+              />
+
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                  columnGap: "14px",
+                  rowGap: "6px",
+                  marginTop: "10px",
+                  fontSize: "12px",
+                  color: "#6b7280",
+                }}
+              >
+                <div>
+                  System pieces:{" "}
+                  <strong style={{ color: "#111827" }}>{pad.itemId ? formatQty(padSystemPieces) : "—"}</strong>
+                </div>
+                <div>
+                  Counted pieces:{" "}
+                  <strong style={{ color: "#111827" }}>
+                    {padCountedPieces === null ? "—" : formatQty(padCountedPieces)}
+                  </strong>
+                </div>
+                <div>
+                  Difference:{" "}
+                  <strong
+                    style={{
+                      color:
+                        padDiff === null
+                          ? "#111827"
+                          : padDiff > 0
+                          ? "#16a34a"
+                          : padDiff < 0
+                          ? "#b91c1c"
+                          : "#111827",
+                    }}
+                  >
+                    {padDiff === null ? "—" : formatDiff(padDiff)}
+                  </strong>
+                </div>
               </div>
             </div>
 
             <div
               style={{
-                marginTop: "6px",
-                paddingTop: "6px",
-                borderTop: "1px dashed #e5e7eb",
+                marginTop: "12px",
                 display: "grid",
-                gridTemplateColumns: "1fr",
-                rowGap: "4px",
+                gridTemplateColumns: "minmax(140px, 1.5fr) minmax(140px, 1fr) minmax(140px, 1fr)",
+                gap: "12px",
+                alignItems: "end",
               }}
             >
-              <div
-                style={{
-                  fontSize: "10px",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.1em",
-                  color: "#6b7280",
-                }}
-              >
-                Stock value (RWF) using current cost/piece
+              <div>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#111827", marginBottom: "6px" }}>
+                  System pieces
+                </label>
+                <input
+                  type="text"
+                  readOnly
+                  value={pad.itemId ? formatQty(padSystemPieces) : ""}
+                  style={{ ...inputBase, backgroundColor: "#f3f4f6", fontWeight: 600 }}
+                />
               </div>
 
-              <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
-                <div style={{ fontSize: "11px", color: "#6b7280" }}>Before (system)</div>
-                <div style={{ fontWeight: 700, fontSize: "13px", color: "#111827" }}>
-                  {formatMoney(totalSystemValueBefore)}
-                </div>
-              </div>
-
-              <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
-                <div style={{ fontSize: "11px", color: "#6b7280" }}>After (counted)</div>
-                <div style={{ fontWeight: 700, fontSize: "13px", color: "#111827" }}>
-                  {formatMoney(totalSystemValueAfter)}
-                </div>
-              </div>
-
-              <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
-                <div style={{ fontSize: "11px", color: "#6b7280" }}>Difference</div>
-                <div
+              <div>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#111827", marginBottom: "6px" }}>
+                  Counted pieces (physical)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={pad.countedPieces}
+                  disabled={disableEditing}
+                  onChange={(e) => handlePadChange("countedPieces", e.target.value)}
                   style={{
-                    fontWeight: 700,
-                    fontSize: "13px",
-                    color:
-                      totalSystemValueDiff === 0
-                        ? "#111827"
-                        : totalSystemValueDiff > 0
-                        ? "#16a34a"
-                        : "#b91c1c",
+                    ...inputBase,
+                    backgroundColor: disableEditing ? "#f9fafb" : "#ffffff",
+                    cursor: disableEditing ? "not-allowed" : "text",
                   }}
-                >
-                  {totalSystemValueDiff === 0
-                    ? "0"
-                    : `${totalSystemValueDiff > 0 ? "+" : ""}${formatMoney(totalSystemValueDiff)}`}
-                </div>
-              </div>
-            </div>
-
-            {/* ✅ This is what you wanted in your summary earlier: posted impact */}
-            <div
-              style={{
-                marginTop: "6px",
-                paddingTop: "6px",
-                borderTop: "1px dashed #e5e7eb",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: "10px",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.1em",
-                  color: "#6b7280",
-                  textAlign: "center",
-                }}
-              >
-                Posted impact (RWF)
+                />
               </div>
 
-              <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", marginTop: 6 }}>
-                <div style={{ fontSize: "12px", color: "#6b7280" }}>Shrink (loss)</div>
-                <div style={{ fontWeight: 800, fontSize: "14px", color: "#b91c1c" }}>
-                  {formatMoney(postedImpact.shrink)}
-                </div>
-              </div>
-
-              <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", marginTop: 4 }}>
-                <div style={{ fontSize: "12px", color: "#6b7280" }}>Gain</div>
-                <div style={{ fontWeight: 800, fontSize: "14px", color: "#16a34a" }}>
-                  {formatMoney(postedImpact.gain)}
-                </div>
-              </div>
-
-              <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", marginTop: 6 }}>
-                <div style={{ fontSize: "12px", color: "#6b7280" }}>Net</div>
-                <div style={{ fontWeight: 900, fontSize: "16px", color: "#111827" }}>
-                  {formatMoney(postedImpact.net)}
-                </div>
-              </div>
-            </div>
-
-            <div
-              style={{
-                marginTop: "6px",
-                paddingTop: "6px",
-                borderTop: "1px dashed #e5e7eb",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: "10px",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.1em",
-                  color: "#6b7280",
-                }}
-              >
-                Whole day (posted): pieces & value
-              </div>
-
-              <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", marginTop: 4 }}>
-                <div style={{ fontSize: "11px", color: "#6b7280" }}>Pieces adjusted</div>
-                <div
-                  style={{
-                    fontWeight: 800,
-                    fontSize: "13px",
-                    color:
-                      timelineTotals.pieces === 0
-                        ? "#111827"
-                        : timelineTotals.pieces > 0
-                        ? "#16a34a"
-                        : "#b91c1c",
-                  }}
-                >
-                  {formatDiff(timelineTotals.pieces)}
-                </div>
-              </div>
-
-              <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
-                <div style={{ fontSize: "11px", color: "#6b7280" }}>Value (RWF)</div>
-                <div
-                  style={{
-                    fontWeight: 800,
-                    fontSize: "13px",
-                    color:
-                      timelineTotals.value === 0
-                        ? "#111827"
-                        : timelineTotals.value > 0
-                        ? "#16a34a"
-                        : "#b91c1c",
-                  }}
-                >
-                  {timelineTotals.value === 0
-                    ? "0"
-                    : `${timelineTotals.value > 0 ? "+" : ""}${formatMoney(timelineTotals.value)}`}
-                </div>
+              <div>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#111827", marginBottom: "6px" }}>
+                  Difference
+                </label>
+                <input
+                  type="text"
+                  readOnly
+                  value={padDiff === null ? "" : formatDiff(padDiff)}
+                  style={{ ...inputBase, backgroundColor: "#f3f4f6", fontWeight: 600 }}
+                />
               </div>
             </div>
           </div>
 
-          <div style={{ marginTop: 12, display: "flex", justifyContent: "flex-end" }}>
+          {/* TABLE */}
+          {lines.length === 0 ? (
+            <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
+              No items added yet. Use the pad above and click <strong>+ Add to table</strong>.
+            </div>
+          ) : (
+            <>
+              <div style={{ fontSize: "12px", color: "#6b7280", marginBottom: "6px" }}>
+                {lines.length} item{lines.length === 1 ? "" : "s"} in this table (latest per item).
+              </div>
+
+              <div
+                style={{
+                  borderRadius: "14px",
+                  border: "1px solid #e5e7eb",
+                  backgroundColor: "#ffffff",
+                  overflow: "hidden",
+                  boxShadow: "0 6px 18px rgba(15, 23, 42, 0.05)",
+                }}
+              >
+                <div
+                  style={{
+                    maxHeight: "420px",
+                    overflowY: "auto",
+                    overflowX: "auto",
+                    scrollbarGutter: "stable",
+                    backgroundColor: "#ffffff",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "minmax(220px, 2.5fr) 1fr 1fr 1fr 1fr 60px",
+                      minWidth: "980px",
+                      alignItems: "center",
+                      padding: "8px 10px",
+                      borderBottom: "1px solid #e5e7eb",
+                      fontSize: "11px",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.08em",
+                      color: "#6b7280",
+                      fontWeight: 700,
+                      backgroundColor: "#f9fafb",
+                    }}
+                  >
+                    <div>Item</div>
+                    <div style={{ textAlign: "right" }}>System pieces</div>
+                    <div style={{ textAlign: "right" }}>Cost / piece</div>
+                    <div style={{ textAlign: "right" }}>Counted pieces</div>
+                    <div style={{ textAlign: "right" }}>Difference</div>
+                    <div />
+                  </div>
+
+                  {lines.map((ln) => (
+                    <div
+                      key={ln.id}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "minmax(220px, 2.5fr) 1fr 1fr 1fr 1fr 60px",
+                        minWidth: "980px",
+                        alignItems: "center",
+                        padding: "9px 10px",
+                        borderBottom: "1px solid #f3f4f6",
+                        fontSize: "13px",
+                      }}
+                    >
+                      <div>
+                        <button
+                          type="button"
+                          onClick={() => handleEditLine(ln)}
+                          disabled={disableEditing}
+                          style={{
+                            padding: 0,
+                            margin: 0,
+                            border: "none",
+                            background: "transparent",
+                            color: "#111827",
+                            fontWeight: 600,
+                            fontSize: "13px",
+                            cursor: disableEditing ? "not-allowed" : "pointer",
+                            textAlign: "left",
+                            opacity: disableEditing ? 0.7 : 1,
+                          }}
+                          title="Edit this item in the pad"
+                        >
+                          {ln.itemName || "Unknown item"}
+                        </button>
+                      </div>
+
+                      <div style={{ textAlign: "right", ...numCell }}>{formatQty(ln.systemPieces)}</div>
+                      <div style={{ textAlign: "right", ...numCell }}>{formatMoney(ln.costPerPiece)}</div>
+                      <div style={{ textAlign: "right", ...numCell }}>{formatQty(ln.countedPieces)}</div>
+
+                      <div
+                        style={{
+                          textAlign: "right",
+                          ...numCell,
+                          color: ln.diffPieces > 0 ? "#16a34a" : ln.diffPieces < 0 ? "#b91c1c" : "#111827",
+                          fontWeight: 600,
+                        }}
+                      >
+                        {formatDiff(ln.diffPieces)}
+                      </div>
+
+                      <div style={{ textAlign: "center" }}>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveLine(ln.id)}
+                          disabled={disableEditing}
+                          style={{
+                            width: "26px",
+                            height: "26px",
+                            borderRadius: "9999px",
+                            border: "1px solid #fee2e2",
+                            backgroundColor: disableEditing ? "#f3f4f6" : "#fef2f2",
+                            color: disableEditing ? "#9ca3af" : "#b91c1c",
+                            fontSize: "14px",
+                            cursor: disableEditing ? "not-allowed" : "pointer",
+                            opacity: disableEditing ? 0.7 : 1,
+                          }}
+                          title="Remove from table"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Actions */}
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: "12px", marginTop: "14px" }}>
             <button
               type="button"
-              onClick={async () => {
-                await reloadStock();
-                await loadTimeline(toISODate(inventoryDate));
-              }}
+              onClick={handleSaveDraft}
+              disabled={!canSaveDraft}
               style={{
-                padding: "0.5rem 1rem",
+                padding: "0.6rem 1.4rem",
                 borderRadius: "999px",
                 border: "1px solid #d1d5db",
                 backgroundColor: "#ffffff",
-                fontWeight: 800,
-                fontSize: "12px",
-                cursor: "pointer",
+                color: "#111827",
+                fontWeight: 600,
+                fontSize: "0.95rem",
+                cursor: !canSaveDraft ? "not-allowed" : "pointer",
+                opacity: !canSaveDraft ? 0.55 : 1,
               }}
             >
-              Refresh stock & day totals
+              {savingDraft ? "Saving…" : "Save draft"}
+            </button>
+
+            <button
+              type="button"
+              onClick={handlePostInventory}
+              disabled={!canPost}
+              style={{
+                padding: "0.6rem 1.8rem",
+                borderRadius: "999px",
+                border: "none",
+                backgroundColor: !canPost ? "#9ca3af" : "#2563eb",
+                color: "white",
+                fontWeight: 700,
+                fontSize: "0.95rem",
+                cursor: !canPost ? "not-allowed" : "pointer",
+                opacity: !canPost ? 0.85 : 1,
+              }}
+            >
+              {posting ? "Posting…" : "Post inventory check"}
             </button>
           </div>
         </div>
-      </div>
+      )}
+
+      {/* ================= TAB: History & differences ================= */}
+      {activeTab === "history" && (
+        <div
+          style={{
+            backgroundColor: "#ffffff",
+            borderRadius: "20px",
+            boxShadow: "0 10px 30px rgba(15,37,128,0.06)",
+            padding: "16px 18px 18px",
+          }}
+        >
+          <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>Previous inventory checks</h2>
+          <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 4 }}>
+            One row per date. Click a date to open it.
+          </div>
+
+          {groupedHistory.length === 0 ? (
+            <div style={{ marginTop: 10, fontSize: "13px", color: "#6b7280" }}>
+              No inventory checks recorded yet.
+            </div>
+          ) : (
+            <div style={{ marginTop: 12, borderRadius: "14px", border: "1px solid #e5e7eb", overflow: "hidden" }}>
+              <div style={{ maxHeight: "420px", overflowY: "auto" }}>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "160px 1fr 1fr 1fr 120px",
+                    minWidth: "720px",
+                    alignItems: "center",
+                    padding: "8px 10px",
+                    borderBottom: "1px solid #e5e7eb",
+                    fontSize: "11px",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.08em",
+                    color: "#6b7280",
+                    fontWeight: 700,
+                    backgroundColor: "#f9fafb",
+                  }}
+                >
+                  <div>Date</div>
+                  <div style={{ textAlign: "right" }}>Items</div>
+                  <div style={{ textAlign: "right" }}>System pieces</div>
+                  <div style={{ textAlign: "right" }}>Counted pieces</div>
+                  <div style={{ textAlign: "right" }}>Diff (pieces)</div>
+                </div>
+
+                {groupedHistory.map((g) => (
+                  <div
+                    key={g.date}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "160px 1fr 1fr 1fr 120px",
+                      minWidth: "720px",
+                      alignItems: "center",
+                      padding: "9px 10px",
+                      borderBottom: "1px solid #f3f4f6",
+                      fontSize: "13px",
+                    }}
+                  >
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => openHistoryCheck(g.date)}
+                        style={{
+                          padding: 0,
+                          margin: 0,
+                          border: "none",
+                          background: "transparent",
+                          color: "#2563eb",
+                          fontWeight: 700,
+                          cursor: "pointer",
+                        }}
+                      >
+                        {g.date}
+                      </button>
+                      <div style={{ fontSize: "11px", color: "#6b7280", marginTop: 2 }}>
+                        {g.status === "POSTED" ? "Posted" : "Draft"}
+                        {g.last_created_at ? ` • ${formatCAT_HM_FromISO(g.last_created_at)} CAT` : ""}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "right", ...numCell }}>{g.total_items}</div>
+                    <div style={{ textAlign: "right", ...numCell }}>{formatQty(g.total_system_pieces)}</div>
+                    <div style={{ textAlign: "right", ...numCell }}>{formatQty(g.total_counted_pieces)}</div>
+                    <div
+                      style={{
+                        textAlign: "right",
+                        ...numCell,
+                        color:
+                          Number(g.total_diff_pieces || 0) > 0
+                            ? "#16a34a"
+                            : Number(g.total_diff_pieces || 0) < 0
+                            ? "#b91c1c"
+                            : "#111827",
+                        fontWeight: 600,
+                      }}
+                    >
+                      {formatDiff(g.total_diff_pieces)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
