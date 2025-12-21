@@ -8,9 +8,6 @@ import { API_BASE as CLIENT_API_BASE } from "../../api/client.jsx";
 
 const API_BASE = CLIENT_API_BASE;
 
-// ✅ BUILD TAG — so you can confirm you are seeing the NEW deployed file
-const BUILD_TAG = "InventoryCheckPage BUILD 2025-12-21 (posted list via timeline fallback)";
-
 // =========================
 // Timezone helpers (CAT)
 // Rwanda is CAT (UTC+2)
@@ -326,7 +323,7 @@ export default function InventoryCheckPage() {
   const [stockRows, setStockRows] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // ✅ date-level loading
+  // ✅ date-level loading (prevents “old day shows for seconds”)
   const [loadingCheck, setLoadingCheck] = useState(false);
 
   const [error, setError] = useState("");
@@ -334,11 +331,11 @@ export default function InventoryCheckPage() {
 
   const [inventoryDate, setInventoryDate] = useState(() => todayISO());
 
-  // current check loaded for selected date
+  // current check loaded for selected date (DRAFT / IN_PROGRESS)
   const [currentCheckId, setCurrentCheckId] = useState(null);
-  const [currentCheckStatus, setCurrentCheckStatus] = useState(null); // "DRAFT" | "IN_PROGRESS" | "POSTED" | null
+  const [currentCheckStatus, setCurrentCheckStatus] = useState(null); // "DRAFT" | "IN_PROGRESS" | null
 
-  // ✅ extra check meta
+  // ✅ extra check meta (from backend)
   const [checkMeta, setCheckMeta] = useState({
     session_status: null,
     started_at: null,
@@ -353,7 +350,7 @@ export default function InventoryCheckPage() {
     net_value: null,
   });
 
-  // timeline for the selected date (posted movements)
+  // timeline for the selected date (from stock movements)
   const [timelineRows, setTimelineRows] = useState([]);
 
   // pad state
@@ -362,10 +359,14 @@ export default function InventoryCheckPage() {
     countedPieces: "",
   });
 
-  // main table lines (one row per item)
+  // lines shown in the main table:
+  // ✅ ALWAYS one line per item (latest line wins) so summary does NOT double-count.
   const [lines, setLines] = useState([]);
 
-  // backend history list
+  // ✅ NEW: posted lines list (read-only list of posted items)
+  const [postedLines, setPostedLines] = useState([]);
+
+  // history list for "History & differences"
   const [historyChecks, setHistoryChecks] = useState([]);
   const historyLoadedAtRef = useRef(0);
   const historyAbortRef = useRef(null);
@@ -418,20 +419,21 @@ export default function InventoryCheckPage() {
     return Number.isFinite(n) ? n : 0;
   };
 
-  const _numOr = (v, fallback = 0) => {
-    const n = Number(v);
-    return Number.isFinite(n) ? n : fallback;
+  // ✅ NEW: detect posted line (best effort, does NOT affect existing table)
+  const isLinePosted = (ln) => {
+    if (!ln) return false;
+    if (ln.is_posted === true) return true;
+    if (ln.posted === true) return true;
+    if (ln.posted_at || ln.postedAt) return true;
+    if (ln.adjustment_movement_id || ln.adjustmentMovementId) return true;
+    if (ln.movement_id || ln.movementId) return true;
+    return false;
   };
 
-  const _firstDefined = (...vals) => {
-    for (const v of vals) {
-      if (v !== null && v !== undefined && v !== "") return v;
-    }
-    return null;
-  };
-
-  // ✅ Collapse detail.lines to ONE row per item (latest line id wins)
-  const collapseLinesToLatestPerItem = (rawLines) => {
+  // ✅ collapse detail.lines to ONE row per item (latest line id wins)
+  // ✅ optional: onlyPosted=true/false to filter for the posted list without touching existing table
+  const collapseLinesToLatestPerItem = (rawLines, opts = {}) => {
+    const { onlyPosted = null } = opts || {};
     const arr = Array.isArray(rawLines) ? rawLines : [];
     const byItem = new Map();
 
@@ -439,29 +441,26 @@ export default function InventoryCheckPage() {
       const itemId = Number(ln?.item_id);
       if (!Number.isFinite(itemId) || itemId <= 0) continue;
 
+      const posted = isLinePosted(ln);
+      if (onlyPosted === true && !posted) continue;
+      if (onlyPosted === false && posted) continue;
+
       const id = Number(ln?.id);
       const prev = byItem.get(itemId);
 
+      // choose the highest line.id as "latest"
       if (
         !prev ||
         (Number.isFinite(id) && Number.isFinite(prev._lineId) ? id > prev._lineId : true)
       ) {
-        const systemAtCount = _numOr(_firstDefined(ln?.system_pieces, ln?.systemPieces), 0);
-        const countedAtCount = _numOr(_firstDefined(ln?.counted_pieces, ln?.countedPieces), 0);
-
-        const diffAtCount = _numOr(
-          _firstDefined(ln?.diff_pieces, ln?.diffPieces, countedAtCount - systemAtCount),
-          countedAtCount - systemAtCount
-        );
-
         byItem.set(itemId, {
           _lineId: Number.isFinite(id) ? id : -1,
           id: ln?.id,
           itemId: itemId,
           itemName: ln?.item_name || `Item ${itemId}`,
-          systemPieces: systemAtCount,
-          countedPieces: countedAtCount,
-          diffPieces: diffAtCount,
+          systemPieces: Number(ln?.system_pieces || 0),
+          countedPieces: Number(ln?.counted_pieces || 0),
+          diffPieces: Number(ln?.diff_pieces || 0),
           costPerPiece: getCostPerPiece(itemId),
         });
       }
@@ -472,10 +471,10 @@ export default function InventoryCheckPage() {
     return out;
   };
 
-  // ---------- timeline posted list (robust, no backend changes) ----------
-  const postedRowsFromTimeline = useMemo(() => {
+  // ✅ NEW: hour map for posted items from timelineRows (best effort)
+  const postedTimeByItemId = useMemo(() => {
+    const map = new Map();
     const rows = Array.isArray(timelineRows) ? timelineRows : [];
-    const byItem = new Map();
 
     for (const r of rows) {
       const itemId = Number(r.item_id ?? r.itemId);
@@ -490,44 +489,43 @@ export default function InventoryCheckPage() {
         r.postedAt ??
         null;
 
-      // Use string compare as many ISO strings compare correctly
-      const prev = byItem.get(itemId);
-      if (!prev || (iso && String(iso) > String(prev.iso))) {
-        const diffBefore = _numOr(r.pieces_change ?? r.diff_pieces ?? r.diff ?? 0, 0);
-        const valueChange = _numOr(r.value_change ?? r.value_diff ?? r.value ?? 0, 0);
+      if (!iso) continue;
 
-        // After posting, stock is normalized -> remaining_pieces should equal counted pieces
-        const countedNow = _numOr(stockByItemId[itemId]?.remaining_pieces, 0);
-        const systemBefore = countedNow - diffBefore;
-
-        const cost = getCostPerPiece(itemId);
-        const calcTotal = diffBefore * cost;
-
-        byItem.set(itemId, {
-          itemId,
-          itemName: stockByItemId[itemId]?.item_name || `Item ${itemId}`,
-          iso: iso || null,
-          systemBefore,
-          countedNow,
-          diffBefore,
-          costPerPiece: cost,
-          totalDiffCost: calcTotal,
-          valueChange,
-        });
-      }
+      const prev = map.get(itemId);
+      if (!prev || String(iso) > String(prev)) map.set(itemId, iso);
     }
+    return map;
+  }, [timelineRows]);
 
-    const out = Array.from(byItem.values());
-    out.sort((a, b) => {
-      const ta = a.iso ? String(a.iso) : "";
-      const tb = b.iso ? String(b.iso) : "";
-      if (ta && tb && ta !== tb) return tb.localeCompare(ta);
+  const postedRowsForTable = useMemo(() => {
+    const arr = (postedLines || []).map((ln) => {
+      const timeIso = postedTimeByItemId.get(Number(ln.itemId)) || null;
+      const diffValue = Number(ln.diffPieces || 0) * Number(ln.costPerPiece || 0);
+      return { ...ln, postedTimeIso: timeIso, diffValue };
+    });
+
+    arr.sort((a, b) => {
+      const ta = a.postedTimeIso ? String(a.postedTimeIso) : "";
+      const tb = b.postedTimeIso ? String(b.postedTimeIso) : "";
+      if (ta && tb && ta !== tb) return tb.localeCompare(ta); // latest first
       return String(a.itemName || "").localeCompare(String(b.itemName || ""));
     });
-    return out;
-  }, [timelineRows, stockByItemId]);
 
-  // ---------- summary ----------
+    return arr;
+  }, [postedLines, postedTimeByItemId]);
+
+  // pad-derived
+  const padStock = pad.itemId ? stockByItemId[Number(pad.itemId)] : null;
+  const padSystemPieces = padStock ? Number(padStock.remaining_pieces || 0) : 0;
+
+  const padCountedPieces = pad.countedPieces === "" ? null : Number(pad.countedPieces || 0);
+
+  const padCountedIsValid =
+    padCountedPieces !== null && Number.isFinite(padCountedPieces) && padCountedPieces >= 0;
+
+  const padDiff = padCountedPieces === null ? null : padCountedPieces - padSystemPieces;
+
+  // ✅ Summary uses the ONE-row-per-item list => no double counting.
   const totalDiffPieces = useMemo(
     () => lines.reduce((sum, ln) => sum + Number(ln.diffPieces || 0), 0),
     [lines]
@@ -553,6 +551,7 @@ export default function InventoryCheckPage() {
 
   const totalSystemValueDiff = totalSystemValueAfter - totalSystemValueBefore;
 
+  // timeline totals for the whole day (sum of adjustments that were posted)
   const timelineTotals = useMemo(() => {
     const rows = Array.isArray(timelineRows) ? timelineRows : [];
     const totalAdj = rows.length;
@@ -601,6 +600,7 @@ export default function InventoryCheckPage() {
     return () => controller.abort();
   }, [shopId, authHeadersNoJson]);
 
+  // ✅ refresh stock (important after POST, because remaining_pieces changed)
   const reloadStock = async () => {
     try {
       const stockRes = await fetchWithSlashFallback(`${API_BASE}/stock/?shop_id=${shopId}`, {
@@ -614,7 +614,9 @@ export default function InventoryCheckPage() {
     }
   };
 
+  // load history list for the shop (ONLY when History tab is opened, or after save/post)
   const loadHistory = async (force = false) => {
+    // TTL cache
     if (!force && historyChecks.length > 0) {
       const ageMs = Date.now() - historyLoadedAtRef.current;
       if (ageMs < 20_000) return historyChecks;
@@ -650,6 +652,7 @@ export default function InventoryCheckPage() {
     }
   };
 
+  // load adjustment timeline (posted movements) for a date
   const loadTimeline = async (isoDate) => {
     const dateISO = toISODate(isoDate);
     if (!dateISO) {
@@ -696,12 +699,14 @@ export default function InventoryCheckPage() {
     }));
   };
 
+  // ✅ Fast detail loader
   const loadCheckForDateFast = async (isoDate, seq) => {
     const dateISO = toISODate(isoDate);
     if (!dateISO) {
       setCurrentCheckId(null);
       setCurrentCheckStatus(null);
       setLines([]);
+      setPostedLines([]); // ✅ NEW
       setCheckMeta({
         session_status: null,
         started_at: null,
@@ -718,6 +723,7 @@ export default function InventoryCheckPage() {
       return;
     }
 
+    // cancel prior detail request
     if (checkAbortRef.current) {
       try {
         checkAbortRef.current.abort();
@@ -751,6 +757,7 @@ export default function InventoryCheckPage() {
       setCurrentCheckId(null);
       setCurrentCheckStatus(null);
       setLines([]);
+      setPostedLines([]); // ✅ NEW
       return { fallbackNeeded: false };
     }
 
@@ -760,10 +767,16 @@ export default function InventoryCheckPage() {
     setCurrentCheckStatus(detail.status ?? null);
     setMetaFromDetail(detail);
 
+    // ✅ one row per item (latest line wins) — unchanged
     setLines(collapseLinesToLatestPerItem(detail.lines || []));
+
+    // ✅ NEW: posted list extracted from same detail.lines (does NOT alter existing table)
+    setPostedLines(collapseLinesToLatestPerItem(detail.lines || [], { onlyPosted: true }));
+
     return { fallbackNeeded: false };
   };
 
+  // Fallback loader (legacy)
   const loadCheckForDateLegacy = async (isoDate, seq) => {
     const dateISO = toISODate(isoDate);
     const list = await loadHistory(true);
@@ -775,6 +788,7 @@ export default function InventoryCheckPage() {
       setCurrentCheckId(null);
       setCurrentCheckStatus(null);
       setLines([]);
+      setPostedLines([]); // ✅ NEW
       return;
     }
 
@@ -802,7 +816,12 @@ export default function InventoryCheckPage() {
     setCurrentCheckId(detail.id || match.id);
     setCurrentCheckStatus(detail.status || match.status || null);
     setMetaFromDetail(detail);
+
+    // ✅ one row per item (latest line wins) — unchanged
     setLines(collapseLinesToLatestPerItem(detail.lines || []));
+
+    // ✅ NEW posted list
+    setPostedLines(collapseLinesToLatestPerItem(detail.lines || [], { onlyPosted: true }));
   };
 
   // when date changes
@@ -814,6 +833,7 @@ export default function InventoryCheckPage() {
     setCurrentCheckId(null);
     setCurrentCheckStatus(null);
     setLines([]);
+    setPostedLines([]); // ✅ NEW
     setTimelineRows([]);
     setPad({ itemId: "", countedPieces: "" });
     setCheckMeta({
@@ -875,16 +895,8 @@ export default function InventoryCheckPage() {
     }
   };
 
+  // ✅ Important: DO NOT lock editing after posting.
   const disableEditing = loadingCheck || posting || savingDraft;
-
-  const padStock = pad.itemId ? stockByItemId[Number(pad.itemId)] : null;
-  const padSystemPieces = padStock ? Number(padStock.remaining_pieces || 0) : 0;
-
-  const padCountedPieces = pad.countedPieces === "" ? null : Number(pad.countedPieces || 0);
-  const padCountedIsValid =
-    padCountedPieces !== null && Number.isFinite(padCountedPieces) && padCountedPieces >= 0;
-
-  const padDiff = padCountedPieces === null ? null : padCountedPieces - padSystemPieces;
 
   const canAddToList = !disableEditing && !!Number(pad.itemId || 0) && padStock && padCountedIsValid;
 
@@ -909,6 +921,7 @@ export default function InventoryCheckPage() {
       return;
     }
 
+    // ✅ Always compute system from CURRENT stock
     const system = Number(s.remaining_pieces || 0);
     const diff = counted - system;
     const costPerPiece = getCostPerPiece(itemId);
@@ -982,11 +995,16 @@ export default function InventoryCheckPage() {
 
       const data = await res.json();
 
-      setCurrentCheckId(data?.id ?? null);
+      const newId = data?.id ?? null;
+      setCurrentCheckId(newId);
       setCurrentCheckStatus(data.status || "DRAFT");
       setMetaFromDetail(data);
 
       setLines(collapseLinesToLatestPerItem(data.lines || []));
+
+      // ✅ NEW: keep posted list updated too
+      setPostedLines(collapseLinesToLatestPerItem(data.lines || [], { onlyPosted: true }));
+
       await loadHistory(true);
 
       if (!silent) setMessage("Inventory draft saved. Stock is NOT changed yet.");
@@ -1042,6 +1060,10 @@ export default function InventoryCheckPage() {
       setMetaFromDetail(data);
 
       setLines(collapseLinesToLatestPerItem(data.lines || []));
+
+      // ✅ NEW: refresh posted list after post
+      setPostedLines(collapseLinesToLatestPerItem(data.lines || [], { onlyPosted: true }));
+
       await reloadStock();
       await loadHistory(true);
       await loadTimeline(toISODate(inventoryDate));
@@ -1080,6 +1102,7 @@ export default function InventoryCheckPage() {
       g.total_counted_pieces += Number(c.total_counted_pieces || 0);
       g.total_diff_pieces += Number(c.total_diff_pieces || 0);
       if (String(c.status).toUpperCase() === "POSTED") g.status = "POSTED";
+
       if (c.created_at && (!g.last_created_at || String(c.created_at) > String(g.last_created_at))) {
         g.last_created_at = c.created_at;
       }
@@ -1133,6 +1156,7 @@ export default function InventoryCheckPage() {
 
   const numCell = { whiteSpace: "nowrap" };
 
+  // summary meta
   const progressCounted = Number(checkMeta?.progress_counted_items ?? 0);
   const progressTotal = Number(checkMeta?.progress_total_items ?? 0);
   const progressPercentRaw = Number(checkMeta?.progress_percent ?? 0);
@@ -1179,7 +1203,7 @@ export default function InventoryCheckPage() {
 
   return (
     <div style={{ width: "100%", maxWidth: "1500px", margin: "0 auto", boxSizing: "border-box" }}>
-      {/* Header */}
+      {/* Header (compact — no tall summary here) */}
       <div
         style={{
           paddingBottom: "10px",
@@ -1232,11 +1256,6 @@ export default function InventoryCheckPage() {
               {startedHM ? ` • Started: ${toISODate(inventoryDate)} ${startedHM} CAT` : ""}
             </div>
 
-            {/* ✅ Visible build tag so you can confirm the deployed file */}
-            <div style={{ marginTop: 6, fontSize: "11px", color: "#6b7280", fontWeight: 900 }}>
-              {BUILD_TAG}
-            </div>
-
             <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
               <button type="button" style={tabBtn(activeTab === "enter")} onClick={() => setActiveTab("enter")}>
                 Enter counts
@@ -1255,7 +1274,7 @@ export default function InventoryCheckPage() {
             </div>
           </div>
 
-          {/* date picker */}
+          {/* date picker (right side) */}
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: 2, flexWrap: "wrap" }}>
             <div style={{ fontSize: "13px", fontWeight: 800, color: "#111827" }}>Date</div>
             <input
@@ -1295,7 +1314,7 @@ export default function InventoryCheckPage() {
         </div>
       )}
 
-      {/* Summary strip */}
+      {/* ✅ OPTION C: Inventory summary strip (wide + compact) */}
       <div
         style={{
           backgroundColor: "#ffffff",
@@ -1347,8 +1366,27 @@ export default function InventoryCheckPage() {
             </div>
           </div>
 
+          {/* ✅ NEW: Amount before count */}
           <div style={statTile}>
-            <div style={statLabel}>Draft value diff (RWF)</div>
+            <div style={statLabel}>Amount before count (RWF)</div>
+            <div style={statValue("#111827")}>{formatMoney(totalSystemValueBefore)}</div>
+            <div style={{ fontSize: "11px", color: "#6b7280", fontWeight: 700 }}>
+              System pieces × cost/piece
+            </div>
+          </div>
+
+          {/* ✅ NEW: Amount after count */}
+          <div style={statTile}>
+            <div style={statLabel}>Amount after count (RWF)</div>
+            <div style={statValue("#111827")}>{formatMoney(totalSystemValueAfter)}</div>
+            <div style={{ fontSize: "11px", color: "#6b7280", fontWeight: 700 }}>
+              Counted pieces × cost/piece
+            </div>
+          </div>
+
+          {/* ✅ UPDATED: Total difference amount (red/green) */}
+          <div style={statTile}>
+            <div style={statLabel}>Total difference amount (RWF)</div>
             <div
               style={statValue(
                 totalSystemValueDiff === 0 ? "#111827" : totalSystemValueDiff > 0 ? "#16a34a" : "#b91c1c"
@@ -1359,7 +1397,7 @@ export default function InventoryCheckPage() {
                 : `${totalSystemValueDiff > 0 ? "+" : ""}${formatMoney(totalSystemValueDiff)}`}
             </div>
             <div style={{ fontSize: "11px", color: "#6b7280", fontWeight: 700 }}>
-              Using current cost/piece
+              Amount after − amount before
             </div>
           </div>
 
@@ -1368,6 +1406,7 @@ export default function InventoryCheckPage() {
             <div style={statValue(shrinkValue === 0 ? "#111827" : "#b91c1c")}>
               {formatMoney(shrinkValue)}
             </div>
+            <div style={{ fontSize: "11px", color: "#6b7280", fontWeight: 700 }}>This check posted lines</div>
           </div>
 
           <div style={statTile}>
@@ -1375,6 +1414,7 @@ export default function InventoryCheckPage() {
             <div style={statValue(gainValue === 0 ? "#111827" : "#16a34a")}>
               {gainValue === 0 ? "0" : `+${formatMoney(gainValue)}`}
             </div>
+            <div style={{ fontSize: "11px", color: "#6b7280", fontWeight: 700 }}>This check posted lines</div>
           </div>
 
           <div style={statTile}>
@@ -1382,6 +1422,7 @@ export default function InventoryCheckPage() {
             <div style={statValue(netValue === 0 ? "#111827" : netValue > 0 ? "#16a34a" : "#b91c1c")}>
               {netValue === 0 ? "0" : `${netValue > 0 ? "+" : ""}${formatMoney(netValue)}`}
             </div>
+            <div style={{ fontSize: "11px", color: "#6b7280", fontWeight: 700 }}>This check net result</div>
           </div>
 
           <div style={statTile}>
@@ -1469,7 +1510,7 @@ export default function InventoryCheckPage() {
         </div>
       </div>
 
-      {/* TAB: Enter counts */}
+      {/* ================= TAB: Enter counts ================= */}
       {activeTab === "enter" && (
         <div
           style={{
@@ -1636,15 +1677,15 @@ export default function InventoryCheckPage() {
             </div>
           </div>
 
-          {/* MAIN TABLE */}
+          {/* TABLE */}
           {lines.length === 0 ? (
             <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
               No items added yet. Use the pad above and click <strong>+ Add to table</strong>.
             </div>
           ) : (
             <>
-              <div style={{ fontSize: "12px", color: "#6b7280", marginBottom: "6px", fontWeight: 900 }}>
-                Tip: if you don’t see all columns, scroll horizontally inside the table → (it has more columns).
+              <div style={{ fontSize: "12px", color: "#6b7280", marginBottom: "6px" }}>
+                {lines.length} item{lines.length === 1 ? "" : "s"} in this table (latest per item).
               </div>
 
               <div
@@ -1809,19 +1850,18 @@ export default function InventoryCheckPage() {
             </button>
           </div>
 
-          {/* ✅ Posted items list (ROBUST: uses timeline) */}
+          {/* ✅ NEW: Posted items list (ONLY addition requested) */}
           <div style={{ marginTop: 18 }}>
             <div style={{ fontSize: "14px", fontWeight: 900, color: "#111827" }}>
-              Posted items (from timeline)
+              Posted items (already normalized)
+            </div>
+            <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 4, fontWeight: 800 }}>
+              Hour • Item • System • Counted • Diff • Cost/piece • Total diff cost
             </div>
 
-            <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 4, fontWeight: 900 }}>
-              Rows shown: {postedRowsFromTimeline.length} • (If this is 0, your backend returned 0 timeline rows for the date.)
-            </div>
-
-            {postedRowsFromTimeline.length === 0 ? (
+            {postedRowsForTable.length === 0 ? (
               <div style={{ padding: "10px 4px 0", fontSize: "13px", color: "#6b7280" }}>
-                No posted items found for this date in timeline.
+                No posted items for this date yet.
               </div>
             ) : (
               <div
@@ -1838,9 +1878,8 @@ export default function InventoryCheckPage() {
                   <div
                     style={{
                       display: "grid",
-                      gridTemplateColumns:
-                        "110px minmax(220px, 2.2fr) 1fr 1fr 1fr 1fr 1fr 1fr",
-                      minWidth: "1380px",
+                      gridTemplateColumns: "110px minmax(220px, 2.2fr) 1fr 1fr 1fr 1fr 1.2fr",
+                      minWidth: "1100px",
                       alignItems: "center",
                       padding: "8px 10px",
                       borderBottom: "1px solid #e5e7eb",
@@ -1848,90 +1887,68 @@ export default function InventoryCheckPage() {
                       textTransform: "uppercase",
                       letterSpacing: "0.08em",
                       color: "#6b7280",
-                      fontWeight: 900,
+                      fontWeight: 800,
                       backgroundColor: "#f9fafb",
                     }}
                   >
-                    <div>Count time</div>
+                    <div>Hour (CAT)</div>
                     <div>Item</div>
-                    <div style={{ textAlign: "right" }}>System before</div>
-                    <div style={{ textAlign: "right" }}>System now</div>
+                    <div style={{ textAlign: "right" }}>System</div>
                     <div style={{ textAlign: "right" }}>Counted</div>
-                    <div style={{ textAlign: "right" }}>Diff before norm</div>
+                    <div style={{ textAlign: "right" }}>Diff</div>
                     <div style={{ textAlign: "right" }}>Cost/piece</div>
                     <div style={{ textAlign: "right" }}>Total diff cost</div>
                   </div>
 
-                  {postedRowsFromTimeline.map((r) => {
-                    const diffBefore = Number(r.diffBefore || 0);
-                    const totalCost = Number(r.totalDiffCost || 0);
+                  {postedRowsForTable.map((ln) => (
+                    <div
+                      key={`posted-${ln.id}`}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "110px minmax(220px, 2.2fr) 1fr 1fr 1fr 1fr 1.2fr",
+                        minWidth: "1100px",
+                        alignItems: "center",
+                        padding: "9px 10px",
+                        borderBottom: "1px solid #f3f4f6",
+                        fontSize: "13px",
+                      }}
+                    >
+                      <div style={{ fontWeight: 900, color: "#111827" }}>
+                        {ln.postedTimeIso ? formatCAT_HM_FromISO(ln.postedTimeIso) : "—"}
+                      </div>
 
-                    return (
+                      <div style={{ fontWeight: 800, color: "#111827" }}>{ln.itemName}</div>
+
+                      <div style={{ textAlign: "right", ...numCell }}>{formatQty(ln.systemPieces)}</div>
+                      <div style={{ textAlign: "right", ...numCell }}>{formatQty(ln.countedPieces)}</div>
+
                       <div
-                        key={`posted-${r.itemId}`}
                         style={{
-                          display: "grid",
-                          gridTemplateColumns:
-                            "110px minmax(220px, 2.2fr) 1fr 1fr 1fr 1fr 1fr 1fr",
-                          minWidth: "1380px",
-                          alignItems: "center",
-                          padding: "9px 10px",
-                          borderBottom: "1px solid #f3f4f6",
-                          fontSize: "13px",
+                          textAlign: "right",
+                          ...numCell,
+                          color: ln.diffPieces > 0 ? "#16a34a" : ln.diffPieces < 0 ? "#b91c1c" : "#111827",
+                          fontWeight: 800,
                         }}
                       >
-                        <div style={{ fontWeight: 900, color: "#111827" }}>
-                          {r.iso ? formatCAT_HM_FromISO(r.iso) : "—"}
-                        </div>
-
-                        <div style={{ fontWeight: 800, color: "#111827" }}>{r.itemName}</div>
-
-                        <div style={{ textAlign: "right", ...numCell }}>
-                          {formatQty(r.systemBefore)}
-                        </div>
-
-                        <div style={{ textAlign: "right", ...numCell }}>
-                          {formatQty(r.countedNow)}
-                        </div>
-
-                        <div style={{ textAlign: "right", ...numCell, fontWeight: 900 }}>
-                          {formatQty(r.countedNow)}
-                        </div>
-
-                        <div
-                          style={{
-                            textAlign: "right",
-                            ...numCell,
-                            color: diffBefore > 0 ? "#16a34a" : diffBefore < 0 ? "#b91c1c" : "#111827",
-                            fontWeight: 900,
-                          }}
-                        >
-                          {formatDiff(diffBefore)}
-                        </div>
-
-                        <div style={{ textAlign: "right", ...numCell, fontWeight: 900 }}>
-                          {formatMoney(r.costPerPiece)}
-                        </div>
-
-                        <div
-                          style={{
-                            textAlign: "right",
-                            ...numCell,
-                            fontWeight: 900,
-                            color: totalCost > 0 ? "#16a34a" : totalCost < 0 ? "#b91c1c" : "#111827",
-                          }}
-                        >
-                          {totalCost === 0 ? "0" : `${totalCost > 0 ? "+" : ""}${formatMoney(totalCost)}`}
-                        </div>
+                        {formatDiff(ln.diffPieces)}
                       </div>
-                    );
-                  })}
-                </div>
 
-                {/* Extra info row (value_change if you want it visible) */}
-                <div style={{ padding: "8px 10px", fontSize: "12px", color: "#6b7280", fontWeight: 800 }}>
-                  Note: total diff cost = diff before normalization × cost/piece (from current stock).
-                  If your backend sends value_change, it is already used in the day totals above.
+                      <div style={{ textAlign: "right", ...numCell, fontWeight: 800 }}>
+                        {formatMoney(ln.costPerPiece)}
+                      </div>
+
+                      <div
+                        style={{
+                          textAlign: "right",
+                          ...numCell,
+                          fontWeight: 900,
+                          color: ln.diffValue > 0 ? "#16a34a" : ln.diffValue < 0 ? "#b91c1c" : "#111827",
+                        }}
+                      >
+                        {ln.diffValue === 0 ? "0" : `${ln.diffValue > 0 ? "+" : ""}${formatMoney(ln.diffValue)}`}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -1939,7 +1956,7 @@ export default function InventoryCheckPage() {
         </div>
       )}
 
-      {/* TAB: History */}
+      {/* ================= TAB: History & differences ================= */}
       {activeTab === "history" && (
         <div
           style={{
