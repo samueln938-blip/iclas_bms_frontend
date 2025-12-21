@@ -60,6 +60,13 @@ function formatCAT_HM_FromISO(isoLike) {
   return formatCAT_HM(d);
 }
 
+function formatCAT_YMD_FromISO(isoLike) {
+  if (!isoLike) return "";
+  const d = new Date(isoLike);
+  if (!Number.isFinite(d.getTime())) return "";
+  return _fmtPartsYMD(d);
+}
+
 function todayISO() {
   // ✅ CAT-safe today (no browser timezone drift)
   return _fmtPartsYMD(new Date());
@@ -105,11 +112,21 @@ function formatDiff(value) {
 function formatMoney(value) {
   if (value === null || value === undefined || value === "") return "0";
   const n = Number(value);
-  if (!Number.isFinite(n)) return String(value);
-  return n.toLocaleString("en-RW", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  });
+  if (Number.isFinite(n)) {
+    return n.toLocaleString("en-RW", {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    });
+  }
+  // backend sometimes returns Decimal as string
+  const asNum = Number(String(value));
+  if (Number.isFinite(asNum)) {
+    return asNum.toLocaleString("en-RW", {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    });
+  }
+  return String(value);
 }
 
 // =====================================================
@@ -331,9 +348,28 @@ export default function InventoryCheckPage() {
 
   const [inventoryDate, setInventoryDate] = useState(() => todayISO());
 
-  // current check loaded for selected date (DRAFT / IN_PROGRESS)
-  const [currentCheckId, setCurrentCheckId] = useState(null);
-  const [currentCheckStatus, setCurrentCheckStatus] = useState(null); // "DRAFT" | "IN_PROGRESS" | null
+  // current check loaded for selected date
+  const [checkMeta, setCheckMeta] = useState({
+    id: null,
+    status: null, // "DRAFT" | "IN_PROGRESS" | "POSTED" | ...
+    session_status: null, // "OPEN" | "CLOSED" | null
+    started_at: null,
+    closed_at: null,
+    progress_total_items: null,
+    progress_counted_items: null,
+    progress_percent: null,
+    posted_lines_count: null,
+    draft_lines_count: null,
+    shrink_value: null,
+    gain_value: null,
+    net_value: null,
+    created_at: null,
+    updated_at: null,
+  });
+
+  const currentCheckId = checkMeta.id;
+  const currentCheckStatus = checkMeta.status;
+  const sessionStatus = checkMeta.session_status;
 
   // timeline for the selected date (from stock movements)
   const [timelineRows, setTimelineRows] = useState([]);
@@ -344,17 +380,23 @@ export default function InventoryCheckPage() {
     countedPieces: "",
   });
 
-  // lines shown in the main table:
-  // ✅ ALWAYS one line per item (latest line wins) so summary does NOT double-count.
-  const [lines, setLines] = useState([]);
+  // ✅ DRAFT lines (editable table)
+  const [draftLines, setDraftLines] = useState([]);
 
-  // history list for "History & differences"
+  // ✅ POSTED lines (read-only table below pad)
+  const [postedLines, setPostedLines] = useState([]);
+
+  // ✅ draft dirtiness controls Save/Post buttons
+  const [draftDirty, setDraftDirty] = useState(false);
+
+  // history list
   const [historyChecks, setHistoryChecks] = useState([]);
   const historyLoadedAtRef = useRef(0);
   const historyAbortRef = useRef(null);
 
   const [savingDraft, setSavingDraft] = useState(false);
   const [posting, setPosting] = useState(false);
+  const [togglingSession, setTogglingSession] = useState(false);
 
   const padRef = useRef(null);
 
@@ -401,29 +443,49 @@ export default function InventoryCheckPage() {
     return Number.isFinite(n) ? n : 0;
   };
 
-  // ✅ collapse detail.lines to ONE row per item (latest line id wins)
-  const collapseLinesToLatestPerItem = (rawLines) => {
+  // ✅ normalize backend lines into UI shape
+  const normalizeLinesFromDetail = (rawLines) => {
     const arr = Array.isArray(rawLines) ? rawLines : [];
-    const byItem = new Map();
+    const out = [];
 
     for (const ln of arr) {
       const itemId = Number(ln?.item_id);
       if (!Number.isFinite(itemId) || itemId <= 0) continue;
 
+      const costPerPiece = getCostPerPiece(itemId);
+
+      out.push({
+        id: ln?.id,
+        itemId,
+        itemName: ln?.item_name || `Item ${itemId}`,
+        systemPieces: Number(ln?.system_pieces || 0),
+        countedPieces: Number(ln?.counted_pieces || 0),
+        diffPieces: Number(ln?.diff_pieces || 0),
+        costPerPiece,
+        isPosted: Boolean(ln?.is_posted),
+        differenceDirection: ln?.difference_direction || null,
+      });
+    }
+
+    return out;
+  };
+
+  // ✅ collapse DRAFT lines to ONE row per item (latest line id wins)
+  const collapseToLatestPerItem = (rawLines) => {
+    const arr = Array.isArray(rawLines) ? rawLines : [];
+    const byItem = new Map();
+
+    for (const ln of arr) {
+      const itemId = Number(ln?.itemId);
+      if (!Number.isFinite(itemId) || itemId <= 0) continue;
+
       const id = Number(ln?.id);
       const prev = byItem.get(itemId);
 
-      // choose the highest line.id as "latest"
       if (!prev || (Number.isFinite(id) && Number.isFinite(prev._lineId) ? id > prev._lineId : true)) {
         byItem.set(itemId, {
           _lineId: Number.isFinite(id) ? id : -1,
-          id: ln?.id,
-          itemId: itemId,
-          itemName: ln?.item_name || `Item ${itemId}`,
-          systemPieces: Number(ln?.system_pieces || 0),
-          countedPieces: Number(ln?.counted_pieces || 0),
-          diffPieces: Number(ln?.diff_pieces || 0),
-          costPerPiece: getCostPerPiece(itemId),
+          ...ln,
         });
       }
     }
@@ -444,31 +506,31 @@ export default function InventoryCheckPage() {
 
   const padDiff = padCountedPieces === null ? null : padCountedPieces - padSystemPieces;
 
-  // ✅ Summary uses the ONE-row-per-item list => no double counting.
-  const totalDiffPieces = useMemo(
-    () => lines.reduce((sum, ln) => sum + Number(ln.diffPieces || 0), 0),
-    [lines]
+  // ✅ Summary for DRAFT table only (editable)
+  const totalDraftDiffPieces = useMemo(
+    () => draftLines.reduce((sum, ln) => sum + Number(ln.diffPieces || 0), 0),
+    [draftLines]
   );
 
-  const totalSystemValueBefore = useMemo(
+  const totalDraftValueBefore = useMemo(
     () =>
-      lines.reduce(
+      draftLines.reduce(
         (sum, ln) => sum + Number(ln.costPerPiece || 0) * Number(ln.systemPieces || 0),
         0
       ),
-    [lines]
+    [draftLines]
   );
 
-  const totalSystemValueAfter = useMemo(
+  const totalDraftValueAfter = useMemo(
     () =>
-      lines.reduce(
+      draftLines.reduce(
         (sum, ln) => sum + Number(ln.costPerPiece || 0) * Number(ln.countedPieces || 0),
         0
       ),
-    [lines]
+    [draftLines]
   );
 
-  const totalSystemValueDiff = totalSystemValueAfter - totalSystemValueBefore;
+  const totalDraftValueDiff = totalDraftValueAfter - totalDraftValueBefore;
 
   // timeline totals for the whole day (sum of adjustments that were posted)
   const timelineTotals = useMemo(() => {
@@ -490,7 +552,6 @@ export default function InventoryCheckPage() {
       setMessage("");
 
       try {
-        // ✅ FIX: use slash fallback to avoid 307->CORS block
         const shopRes = await fetchWithSlashFallback(`${API_BASE}/shops/${shopId}`, {
           headers: authHeadersNoJson,
           signal: controller.signal,
@@ -498,7 +559,6 @@ export default function InventoryCheckPage() {
         if (!shopRes.ok) throw new Error(`Failed to load shop. Status: ${shopRes.status}`);
         const shopData = await shopRes.json();
 
-        // ✅ FIX: use slash fallback too (safe even if already correct)
         const stockRes = await fetchWithSlashFallback(`${API_BASE}/stock/?shop_id=${shopId}`, {
           headers: authHeadersNoJson,
           signal: controller.signal,
@@ -524,7 +584,6 @@ export default function InventoryCheckPage() {
   // ✅ refresh stock (important after POST, because remaining_pieces changed)
   const reloadStock = async () => {
     try {
-      // ✅ FIX: use slash fallback to avoid 307->CORS block
       const stockRes = await fetchWithSlashFallback(`${API_BASE}/stock/?shop_id=${shopId}`, {
         headers: authHeadersNoJson,
       });
@@ -532,13 +591,12 @@ export default function InventoryCheckPage() {
       const stockData = await stockRes.json().catch(() => []);
       setStockRows(Array.isArray(stockData) ? stockData : []);
     } catch {
-      // ignore (do not block inventory check)
+      // ignore
     }
   };
 
-  // load history list for the shop (ONLY when History tab is opened, or after save/post)
+  // load history list for the shop
   const loadHistory = async (force = false) => {
-    // TTL cache
     if (!force && historyChecks.length > 0) {
       const ageMs = Date.now() - historyLoadedAtRef.current;
       if (ageMs < 20_000) return historyChecks;
@@ -593,23 +651,74 @@ export default function InventoryCheckPage() {
       return list;
     } catch (err) {
       console.error(err);
-      // timeline should never block the page
       setTimelineRows([]);
       return [];
     }
   };
 
-  // ✅ Fast detail loader
+  const applyDetailToState = (detail) => {
+    const normalized = normalizeLinesFromDetail(detail?.lines || []);
+
+    const posted = normalized
+      .filter((x) => x.isPosted)
+      .sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
+
+    const draft = normalized.filter((x) => !x.isPosted);
+
+    setCheckMeta({
+      id: detail?.id ?? null,
+      status: detail?.status ?? null,
+      session_status: detail?.session_status ?? null,
+      started_at: detail?.started_at ?? null,
+      closed_at: detail?.closed_at ?? null,
+      progress_total_items: detail?.progress_total_items ?? null,
+      progress_counted_items: detail?.progress_counted_items ?? null,
+      progress_percent: detail?.progress_percent ?? null,
+      posted_lines_count: detail?.posted_lines_count ?? null,
+      draft_lines_count: detail?.draft_lines_count ?? null,
+      shrink_value: detail?.shrink_value ?? null,
+      gain_value: detail?.gain_value ?? null,
+      net_value: detail?.net_value ?? null,
+      created_at: detail?.created_at ?? null,
+      updated_at: detail?.updated_at ?? null,
+    });
+
+    setPostedLines(posted);
+
+    // Editable table should only be DRAFT (not posted)
+    setDraftLines(collapseToLatestPerItem(draft));
+
+    // When we load from server, it is the baseline => not dirty
+    setDraftDirty(false);
+  };
+
+  // ✅ Load check for date (preferred) with posted lines included
   const loadCheckForDateFast = async (isoDate, seq) => {
     const dateISO = toISODate(isoDate);
     if (!dateISO) {
-      setCurrentCheckId(null);
-      setCurrentCheckStatus(null);
-      setLines([]);
+      setCheckMeta({
+        id: null,
+        status: null,
+        session_status: null,
+        started_at: null,
+        closed_at: null,
+        progress_total_items: null,
+        progress_counted_items: null,
+        progress_percent: null,
+        posted_lines_count: null,
+        draft_lines_count: null,
+        shrink_value: null,
+        gain_value: null,
+        net_value: null,
+        created_at: null,
+        updated_at: null,
+      });
+      setDraftLines([]);
+      setPostedLines([]);
+      setDraftDirty(false);
       return;
     }
 
-    // cancel prior detail request
     if (checkAbortRef.current) {
       try {
         checkAbortRef.current.abort();
@@ -618,11 +727,15 @@ export default function InventoryCheckPage() {
     const controller = new AbortController();
     checkAbortRef.current = controller;
 
-    const url = `${API_BASE}/inventory-checks/for-date?shop_id=${shopId}&check_date=${encodeURIComponent(
-      dateISO
-    )}`;
+    const url =
+      `${API_BASE}/inventory-checks/for-date?shop_id=${shopId}` +
+      `&check_date=${encodeURIComponent(dateISO)}` +
+      `&include_posted_lines=true`;
 
-    const res = await fetchWithSlashFallback(url, { headers: authHeadersNoJson, signal: controller.signal });
+    const res = await fetchWithSlashFallback(url, {
+      headers: authHeadersNoJson,
+      signal: controller.signal,
+    });
 
     if (res.status === 404) {
       return { fallbackNeeded: true };
@@ -635,26 +748,37 @@ export default function InventoryCheckPage() {
 
     const detail = await res.json().catch(() => null);
 
+    if (seq !== checkSeqRef.current) return { fallbackNeeded: false };
+
     if (!detail) {
-      if (seq !== checkSeqRef.current) return { fallbackNeeded: false };
-      setCurrentCheckId(null);
-      setCurrentCheckStatus(null);
-      setLines([]);
+      setCheckMeta({
+        id: null,
+        status: null,
+        session_status: null,
+        started_at: null,
+        closed_at: null,
+        progress_total_items: null,
+        progress_counted_items: null,
+        progress_percent: null,
+        posted_lines_count: null,
+        draft_lines_count: null,
+        shrink_value: null,
+        gain_value: null,
+        net_value: null,
+        created_at: null,
+        updated_at: null,
+      });
+      setDraftLines([]);
+      setPostedLines([]);
+      setDraftDirty(false);
       return { fallbackNeeded: false };
     }
 
-    if (seq !== checkSeqRef.current) return { fallbackNeeded: false };
-
-    setCurrentCheckId(detail.id ?? null);
-    setCurrentCheckStatus(detail.status ?? null);
-
-    // ✅ one row per item (latest line wins)
-    setLines(collapseLinesToLatestPerItem(detail.lines || []));
-
+    applyDetailToState(detail);
     return { fallbackNeeded: false };
   };
 
-  // Fallback loader (legacy)
+  // Legacy fallback: find check in summary then load detail by id
   const loadCheckForDateLegacy = async (isoDate, seq) => {
     const dateISO = toISODate(isoDate);
     const list = await loadHistory(true);
@@ -663,9 +787,26 @@ export default function InventoryCheckPage() {
     const sameDateChecks = (list || []).filter((c) => toISODate(c.check_date) === dateISO);
 
     if (!sameDateChecks.length) {
-      setCurrentCheckId(null);
-      setCurrentCheckStatus(null);
-      setLines([]);
+      setCheckMeta({
+        id: null,
+        status: null,
+        session_status: null,
+        started_at: null,
+        closed_at: null,
+        progress_total_items: null,
+        progress_counted_items: null,
+        progress_percent: null,
+        posted_lines_count: null,
+        draft_lines_count: null,
+        shrink_value: null,
+        gain_value: null,
+        net_value: null,
+        created_at: null,
+        updated_at: null,
+      });
+      setDraftLines([]);
+      setPostedLines([]);
+      setDraftDirty(false);
       return;
     }
 
@@ -679,22 +820,46 @@ export default function InventoryCheckPage() {
     const controller = new AbortController();
     checkAbortRef.current = controller;
 
-    const detailRes = await fetchWithSlashFallback(`${API_BASE}/inventory-checks/${match.id}`, {
-      headers: authHeadersNoJson,
-      signal: controller.signal,
-    });
+    const detailRes = await fetchWithSlashFallback(
+      `${API_BASE}/inventory-checks/${match.id}?include_posted_lines=true`,
+      {
+        headers: authHeadersNoJson,
+        signal: controller.signal,
+      }
+    );
     if (!detailRes.ok) {
       throw new Error(`Failed to load inventory check details. Status: ${detailRes.status}`);
     }
 
-    const detail = await detailRes.json();
+    const detail = await detailRes.json().catch(() => null);
     if (seq !== checkSeqRef.current) return;
 
-    setCurrentCheckId(detail.id || match.id);
-    setCurrentCheckStatus(detail.status || match.status || null);
+    if (!detail) return;
 
-    // ✅ one row per item (latest line wins)
-    setLines(collapseLinesToLatestPerItem(detail.lines || []));
+    applyDetailToState(detail);
+  };
+
+  // reload current check detail (after save/post/open/close)
+  const reloadCurrentDetail = async (opts = {}) => {
+    const seq = ++checkSeqRef.current;
+    const iso = toISODate(inventoryDate);
+    setLoadingCheck(true);
+    try {
+      if (opts.reloadTimeline) await loadTimeline(iso);
+
+      // Always prefer for-date
+      const fast = await loadCheckForDateFast(iso, seq);
+      if (seq !== checkSeqRef.current) return;
+
+      if (fast?.fallbackNeeded) {
+        await loadCheckForDateLegacy(iso, seq);
+      }
+    } catch (err) {
+      console.error(err);
+      setError(err?.message || "Failed to refresh inventory check.");
+    } finally {
+      if (seq === checkSeqRef.current) setLoadingCheck(false);
+    }
   };
 
   // when date changes
@@ -703,9 +868,9 @@ export default function InventoryCheckPage() {
 
     setError("");
     setMessage("");
-    setCurrentCheckId(null);
-    setCurrentCheckStatus(null);
-    setLines([]);
+    setDraftLines([]);
+    setPostedLines([]);
+    setDraftDirty(false);
     setTimelineRows([]);
     setPad({ itemId: "", countedPieces: "" });
 
@@ -716,7 +881,6 @@ export default function InventoryCheckPage() {
       setLoadingCheck(true);
       try {
         await loadTimeline(iso);
-
         const fast = await loadCheckForDateFast(iso, seq);
         if (seq !== checkSeqRef.current) return;
 
@@ -736,7 +900,7 @@ export default function InventoryCheckPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inventoryDate, loading]);
 
-  // ---------- Pad + list logic ----------
+  // ---------- Pad + draft list logic ----------
   const resetPad = () => setPad({ itemId: "", countedPieces: "" });
 
   const handlePadChange = (field, value) => {
@@ -753,12 +917,12 @@ export default function InventoryCheckPage() {
     }
   };
 
-  // ✅ Important: DO NOT lock editing after posting.
-  const disableEditing = loadingCheck || posting || savingDraft;
+  // ✅ DO NOT lock editing after posting; only block during active request
+  const disableEditing = loadingCheck || posting || savingDraft || togglingSession;
 
-  const canAddToList = !disableEditing && !!Number(pad.itemId || 0) && padStock && padCountedIsValid;
+  const canAddToDraft = !disableEditing && !!Number(pad.itemId || 0) && padStock && padCountedIsValid;
 
-  const handleAddToList = () => {
+  const handleAddToDraft = () => {
     if (loadingCheck) return;
 
     const itemId = Number(pad.itemId || 0);
@@ -779,12 +943,11 @@ export default function InventoryCheckPage() {
       return;
     }
 
-    // ✅ Always compute system from CURRENT stock
     const system = Number(s.remaining_pieces || 0);
     const diff = counted - system;
     const costPerPiece = getCostPerPiece(itemId);
 
-    setLines((prev) => {
+    setDraftLines((prev) => {
       const existingIndex = prev.findIndex((ln) => Number(ln.itemId) === itemId);
       const base = {
         id: prev[existingIndex]?.id ?? `local-${Date.now()}-${Math.random()}`,
@@ -794,6 +957,7 @@ export default function InventoryCheckPage() {
         countedPieces: counted,
         diffPieces: diff,
         costPerPiece,
+        isPosted: false,
       };
 
       if (existingIndex === -1)
@@ -804,24 +968,27 @@ export default function InventoryCheckPage() {
       return copy;
     });
 
+    setDraftDirty(true);
     resetPad();
+
     if (padRef.current) padRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
-  const handleEditLine = (line) => {
+  const handleEditDraftLine = (line) => {
     if (loadingCheck) return;
     setPad({ itemId: line.itemId, countedPieces: line.countedPieces });
     if (padRef.current) padRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
-  const handleRemoveLine = (id) => {
+  const handleRemoveDraftLine = (id) => {
     if (loadingCheck) return;
-    setLines((prev) => prev.filter((ln) => ln.id !== id));
+    setDraftLines((prev) => prev.filter((ln) => ln.id !== id));
+    setDraftDirty(true);
   };
 
   // ---------- Save draft / post ----------
   const saveDraftInternal = async ({ silent = false } = {}) => {
-    if (!lines.length) return null;
+    if (!draftLines.length) return null;
     if (loadingCheck) return null;
 
     setSavingDraft(true);
@@ -834,13 +1001,12 @@ export default function InventoryCheckPage() {
         shop_id: Number(shopId),
         check_date: toISODate(inventoryDate),
         notes: null,
-        lines: lines.map((ln) => ({
+        lines: draftLines.map((ln) => ({
           item_id: ln.itemId,
           counted_pieces: ln.countedPieces,
         })),
       };
 
-      // ✅ FIX: use slash fallback (POST can also get 307->CORS block)
       const res = await fetchWithSlashFallback(`${API_BASE}/inventory-checks/draft`, {
         method: "POST",
         headers: authHeaders,
@@ -852,18 +1018,14 @@ export default function InventoryCheckPage() {
         throw new Error(errData?.detail || `Failed to save inventory draft. Status: ${res.status}`);
       }
 
-      const data = await res.json();
-
-      const newId = data?.id ?? null;
-      setCurrentCheckId(newId);
-      setCurrentCheckStatus(data.status || "DRAFT");
-
-      setLines(collapseLinesToLatestPerItem(data.lines || []));
+      // We still refresh after this to guarantee posted table is correct
+      await res.json().catch(() => null);
 
       await loadHistory(true);
+      await reloadCurrentDetail({ reloadTimeline: false });
 
-      if (!silent) setMessage("Inventory draft saved. Stock is NOT changed yet.");
-      return data;
+      if (!silent) setMessage("Draft saved. (Nothing posted yet)");
+      return true;
     } catch (err) {
       console.error(err);
       setError(err?.message || "Failed to save inventory draft.");
@@ -879,7 +1041,7 @@ export default function InventoryCheckPage() {
   };
 
   const handlePostInventory = async () => {
-    if (!lines.length) return;
+    if (!draftLines.length) return;
     if (loadingCheck) return;
 
     setPosting(true);
@@ -891,17 +1053,24 @@ export default function InventoryCheckPage() {
 
       if (!idToPost) {
         const saved = await saveDraftInternal({ silent: true });
-        idToPost = saved?.id ?? null;
+        if (!saved) throw new Error("Cannot post: failed to save draft.");
+        // reloadCurrentDetail will set the id
+        idToPost = checkMeta.id;
+      }
+
+      // If still missing, refresh once
+      if (!idToPost) {
+        await reloadCurrentDetail({ reloadTimeline: false });
+        idToPost = checkMeta.id;
       }
 
       if (!idToPost) {
-        throw new Error("Cannot post: draft was not created. Please click Save draft and try again.");
+        throw new Error("Cannot post: no inventory check ID found for this date.");
       }
 
-      // ✅ FIX: use slash fallback (POST can also get 307->CORS block)
       const res = await fetchWithSlashFallback(`${API_BASE}/inventory-checks/${idToPost}/post`, {
         method: "POST",
-        headers: authHeaders,
+        headers: authHeadersNoJson,
       });
 
       if (!res.ok) {
@@ -909,17 +1078,11 @@ export default function InventoryCheckPage() {
         throw new Error(errData?.detail || `Failed to post inventory check. Status: ${res.status}`);
       }
 
-      const data = await res.json();
-
-      setCurrentCheckId(data.id ?? idToPost);
-      setCurrentCheckStatus(data.status || null);
-
-      setLines(collapseLinesToLatestPerItem(data.lines || []));
+      await res.json().catch(() => null);
 
       await reloadStock();
-
       await loadHistory(true);
-      await loadTimeline(toISODate(inventoryDate));
+      await reloadCurrentDetail({ reloadTimeline: true });
 
       setMessage("Posted. Stock is normalized. You can continue counting and post again anytime.");
     } catch (err) {
@@ -931,8 +1094,73 @@ export default function InventoryCheckPage() {
     }
   };
 
+  // ---------- Session OPEN/CLOSE controls ----------
+  // NOTE: endpoints used:
+  // - POST /inventory-checks/{id}/close
+  // - POST /inventory-checks/{id}/open
+  // If your backend names differ, adjust here only (frontend UI stays same).
+  const handleCloseSession = async () => {
+    if (!currentCheckId) return;
+    setTogglingSession(true);
+    setError("");
+    setMessage("");
+    try {
+      const res = await fetchWithSlashFallback(`${API_BASE}/inventory-checks/${currentCheckId}/close`, {
+        method: "POST",
+        headers: authHeadersNoJson,
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => null);
+        throw new Error(errData?.detail || `Failed to close inventory. Status: ${res.status}`);
+      }
+      await res.json().catch(() => null);
+      await loadHistory(true);
+      await reloadCurrentDetail({ reloadTimeline: true });
+      setMessage("Inventory closed.");
+    } catch (err) {
+      console.error(err);
+      setError(err?.message || "Failed to close inventory.");
+    } finally {
+      setTogglingSession(false);
+    }
+  };
+
+  const handleOpenSession = async () => {
+    if (!currentCheckId) return;
+    setTogglingSession(true);
+    setError("");
+    setMessage("");
+    try {
+      const res = await fetchWithSlashFallback(`${API_BASE}/inventory-checks/${currentCheckId}/open`, {
+        method: "POST",
+        headers: authHeadersNoJson,
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => null);
+        throw new Error(errData?.detail || `Failed to open inventory. Status: ${res.status}`);
+      }
+      await res.json().catch(() => null);
+      await loadHistory(true);
+      await reloadCurrentDetail({ reloadTimeline: false });
+      setMessage("Inventory opened.");
+    } catch (err) {
+      console.error(err);
+      setError(err?.message || "Failed to open inventory.");
+    } finally {
+      setTogglingSession(false);
+    }
+  };
+
   // ---------- History tab helpers ----------
-  const groupedHistory = useMemo(() => {
+  // Prefer showing CLOSED sessions as ranges when fields exist
+  const sessionHistory = useMemo(() => {
+    const list = Array.isArray(historyChecks) ? historyChecks : [];
+    const closed = list.filter((c) => c?.closed_at || String(c?.session_status || "").toUpperCase() === "CLOSED");
+    closed.sort((a, b) => String(b?.closed_at || b?.check_date || "").localeCompare(String(a?.closed_at || a?.check_date || "")));
+    return closed;
+  }, [historyChecks]);
+
+  const groupedHistoryByDate = useMemo(() => {
     const map = new Map();
     for (const c of historyChecks || []) {
       const dateISO = toISODate(c.check_date);
@@ -1004,10 +1232,18 @@ export default function InventoryCheckPage() {
     color: "#111827",
   };
 
-  const canSaveDraft = lines.length > 0 && !savingDraft && !loadingCheck && !posting;
-  const canPost = lines.length > 0 && !posting && !loadingCheck && !savingDraft;
+  // ✅ Button rules you requested:
+  // - Save draft only when there are NEW/changed draft lines
+  // - Post only when there are draft lines to post
+  const canSaveDraft = draftLines.length > 0 && draftDirty && !savingDraft && !loadingCheck && !posting && !togglingSession;
+  const canPost = draftLines.length > 0 && !posting && !loadingCheck && !savingDraft && !togglingSession;
 
   const numCell = { whiteSpace: "nowrap" };
+
+  // show shrink/gain/net from backend if present
+  const shrinkValue = checkMeta.shrink_value;
+  const gainValue = checkMeta.gain_value;
+  const netValue = checkMeta.net_value;
 
   return (
     <div style={{ width: "100%", maxWidth: "1500px", margin: "0 auto", boxSizing: "border-box" }}>
@@ -1060,7 +1296,30 @@ export default function InventoryCheckPage() {
                 {currentCheckStatus ? String(currentCheckStatus).toUpperCase() : "—"}
               </span>
               {currentCheckId ? ` • Check ID: ${currentCheckId}` : ""}
+              {sessionStatus ? ` • Session: ${String(sessionStatus).toUpperCase()}` : ""}
             </div>
+
+            {(checkMeta.started_at || checkMeta.closed_at) && (
+              <div style={{ marginTop: "6px", fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>
+                {checkMeta.started_at ? (
+                  <span>
+                    Started:{" "}
+                    <span style={{ color: "#111827" }}>
+                      {formatCAT_YMD_FromISO(checkMeta.started_at)} {formatCAT_HM_FromISO(checkMeta.started_at)} CAT
+                    </span>
+                  </span>
+                ) : null}
+                {checkMeta.closed_at ? (
+                  <span>
+                    {" "}
+                    • Closed:{" "}
+                    <span style={{ color: "#111827" }}>
+                      {formatCAT_YMD_FromISO(checkMeta.closed_at)} {formatCAT_HM_FromISO(checkMeta.closed_at)} CAT
+                    </span>
+                  </span>
+                ) : null}
+              </div>
+            )}
 
             <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
               <button type="button" style={tabBtn(activeTab === "enter")} onClick={() => setActiveTab("enter")}>
@@ -1084,7 +1343,7 @@ export default function InventoryCheckPage() {
           <div
             style={{
               minWidth: "260px",
-              maxWidth: "380px",
+              maxWidth: "420px",
               backgroundColor: "#ffffff",
               borderRadius: "16px",
               padding: "10px 14px",
@@ -1095,9 +1354,7 @@ export default function InventoryCheckPage() {
               fontSize: "12px",
             }}
           >
-            <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>
-              Inventory summary
-            </div>
+            <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>Inventory summary</div>
 
             <div
               style={{
@@ -1112,9 +1369,27 @@ export default function InventoryCheckPage() {
             </div>
 
             <div style={{ fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>
-              {timelineTotals.totalAdj} post(s) • {lines.length} item(s) • {timelineTotals.checks} check(s)
+              {timelineTotals.totalAdj} post(s) • Draft items: {draftLines.length} • Posted items:{" "}
+              {postedLines.length}
             </div>
 
+            {/* Progress */}
+            {(checkMeta.progress_total_items !== null || checkMeta.progress_counted_items !== null) && (
+              <div style={{ fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>
+                Progress:{" "}
+                <span style={{ color: "#111827" }}>
+                  {Number(checkMeta.progress_counted_items || 0)}/{Number(checkMeta.progress_total_items || 0)}
+                </span>
+                {checkMeta.progress_percent ? (
+                  <span style={{ color: "#6b7280" }}>
+                    {" "}
+                    • {String(checkMeta.progress_percent).slice(0, 6)}%
+                  </span>
+                ) : null}
+              </div>
+            )}
+
+            {/* Draft table summary */}
             <div>
               <div
                 style={{
@@ -1124,21 +1399,21 @@ export default function InventoryCheckPage() {
                   color: "#6b7280",
                 }}
               >
-                Current table: total pieces diff
+                Draft table: total pieces diff
               </div>
               <div
                 style={{
                   fontSize: "18px",
                   fontWeight: 800,
                   color:
-                    totalDiffPieces === 0
+                    totalDraftDiffPieces === 0
                       ? "#111827"
-                      : totalDiffPieces > 0
+                      : totalDraftDiffPieces > 0
                       ? "#16a34a"
                       : "#b91c1c",
                 }}
               >
-                {formatDiff(totalDiffPieces)}
+                {formatDiff(totalDraftDiffPieces)}
               </div>
             </div>
 
@@ -1160,20 +1435,20 @@ export default function InventoryCheckPage() {
                   color: "#6b7280",
                 }}
               >
-                Stock value (RWF) using current cost/piece
+                Draft value (RWF) using current cost/piece
               </div>
 
               <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
                 <div style={{ fontSize: "11px", color: "#6b7280" }}>Before (system)</div>
                 <div style={{ fontWeight: 700, fontSize: "13px", color: "#111827" }}>
-                  {formatMoney(totalSystemValueBefore)}
+                  {formatMoney(totalDraftValueBefore)}
                 </div>
               </div>
 
               <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
                 <div style={{ fontSize: "11px", color: "#6b7280" }}>After (counted)</div>
                 <div style={{ fontWeight: 700, fontSize: "13px", color: "#111827" }}>
-                  {formatMoney(totalSystemValueAfter)}
+                  {formatMoney(totalDraftValueAfter)}
                 </div>
               </div>
 
@@ -1184,20 +1459,64 @@ export default function InventoryCheckPage() {
                     fontWeight: 700,
                     fontSize: "13px",
                     color:
-                      totalSystemValueDiff === 0
+                      totalDraftValueDiff === 0
                         ? "#111827"
-                        : totalSystemValueDiff > 0
+                        : totalDraftValueDiff > 0
                         ? "#16a34a"
                         : "#b91c1c",
                   }}
                 >
-                  {totalSystemValueDiff === 0
+                  {totalDraftValueDiff === 0
                     ? "0"
-                    : `${totalSystemValueDiff > 0 ? "+" : ""}${formatMoney(totalSystemValueDiff)}`}
+                    : `${totalDraftValueDiff > 0 ? "+" : ""}${formatMoney(totalDraftValueDiff)}`}
                 </div>
               </div>
             </div>
 
+            {/* Posted shrink / gain (from backend) */}
+            {(shrinkValue !== null || gainValue !== null || netValue !== null) && (
+              <div
+                style={{
+                  marginTop: "6px",
+                  paddingTop: "6px",
+                  borderTop: "1px dashed #e5e7eb",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: "10px",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.1em",
+                    color: "#6b7280",
+                  }}
+                >
+                  Posted impact (RWF)
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", marginTop: 4 }}>
+                  <div style={{ fontSize: "11px", color: "#6b7280" }}>Shrink (loss)</div>
+                  <div style={{ fontWeight: 800, fontSize: "13px", color: "#b91c1c" }}>
+                    {shrinkValue ? formatMoney(shrinkValue) : "0"}
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
+                  <div style={{ fontSize: "11px", color: "#6b7280" }}>Gain</div>
+                  <div style={{ fontWeight: 800, fontSize: "13px", color: "#16a34a" }}>
+                    {gainValue ? formatMoney(gainValue) : "0"}
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
+                  <div style={{ fontSize: "11px", color: "#6b7280" }}>Net</div>
+                  <div style={{ fontWeight: 900, fontSize: "13px", color: "#111827" }}>
+                    {netValue ? formatMoney(netValue) : "0"}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Whole day posted movement totals */}
             <div
               style={{
                 marginTop: "6px",
@@ -1254,14 +1573,53 @@ export default function InventoryCheckPage() {
                 </div>
               </div>
             </div>
+
+            {/* Session controls */}
+            <div style={{ marginTop: "10px", display: "flex", gap: "10px", justifyContent: "flex-end" }}>
+              {sessionStatus && String(sessionStatus).toUpperCase() === "OPEN" ? (
+                <button
+                  type="button"
+                  onClick={handleCloseSession}
+                  disabled={!currentCheckId || disableEditing}
+                  style={{
+                    padding: "0.55rem 1rem",
+                    borderRadius: "999px",
+                    border: "1px solid #fecaca",
+                    backgroundColor: disableEditing ? "#f3f4f6" : "#fef2f2",
+                    color: disableEditing ? "#9ca3af" : "#b91c1c",
+                    fontWeight: 900,
+                    fontSize: "12px",
+                    cursor: disableEditing ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {togglingSession ? "Closing…" : "Close inventory"}
+                </button>
+              ) : sessionStatus && String(sessionStatus).toUpperCase() === "CLOSED" ? (
+                <button
+                  type="button"
+                  onClick={handleOpenSession}
+                  disabled={!currentCheckId || disableEditing}
+                  style={{
+                    padding: "0.55rem 1rem",
+                    borderRadius: "999px",
+                    border: "1px solid #bbf7d0",
+                    backgroundColor: disableEditing ? "#f3f4f6" : "#ecfdf3",
+                    color: disableEditing ? "#9ca3af" : "#166534",
+                    fontWeight: 900,
+                    fontSize: "12px",
+                    cursor: disableEditing ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {togglingSession ? "Opening…" : "Open inventory"}
+                </button>
+              ) : null}
+            </div>
           </div>
         </div>
 
         {/* date picker */}
         <div style={{ display: "inline-flex", alignItems: "center", gap: "10px", marginBottom: "10px" }}>
-          <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>
-            Inventory check date
-          </div>
+          <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>Inventory check date</div>
           <input
             type="date"
             value={toISODate(inventoryDate)}
@@ -1275,7 +1633,9 @@ export default function InventoryCheckPage() {
             }}
           />
 
-          {loadingCheck && <div style={{ fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>Loading…</div>}
+          {loadingCheck && (
+            <div style={{ fontSize: "12px", color: "#6b7280", fontWeight: 700 }}>Loading…</div>
+          )}
         </div>
       </div>
 
@@ -1333,30 +1693,38 @@ export default function InventoryCheckPage() {
                 gap: "8px",
               }}
             >
-              <span>Pad: select item, enter counted pieces, then add to table</span>
+              <span>Pad: select item, enter counted pieces, then add to draft table</span>
 
               <button
                 type="button"
-                onClick={handleAddToList}
-                disabled={!canAddToList}
+                onClick={handleAddToDraft}
+                disabled={!canAddToDraft}
                 style={{
                   padding: "0.55rem 1.3rem",
                   borderRadius: "9999px",
                   border: "none",
-                  backgroundColor: !canAddToList ? "#9ca3af" : "#2563eb",
+                  backgroundColor: !canAddToDraft ? "#9ca3af" : "#2563eb",
                   color: "white",
                   fontWeight: 800,
                   fontSize: "0.9rem",
-                  cursor: !canAddToList ? "not-allowed" : "pointer",
-                  opacity: !canAddToList ? 0.85 : 1,
+                  cursor: !canAddToDraft ? "not-allowed" : "pointer",
+                  opacity: !canAddToDraft ? 0.85 : 1,
                 }}
               >
-                + Add to table
+                + Add to draft
               </button>
             </div>
 
             <div>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#111827", marginBottom: "6px" }}>
+              <label
+                style={{
+                  display: "block",
+                  fontSize: "12px",
+                  fontWeight: 700,
+                  color: "#111827",
+                  marginBottom: "6px",
+                }}
+              >
                 Item
               </label>
               <ItemComboBox
@@ -1379,7 +1747,9 @@ export default function InventoryCheckPage() {
               >
                 <div>
                   System pieces:{" "}
-                  <strong style={{ color: "#111827" }}>{pad.itemId ? formatQty(padSystemPieces) : "—"}</strong>
+                  <strong style={{ color: "#111827" }}>
+                    {pad.itemId ? formatQty(padSystemPieces) : "—"}
+                  </strong>
                 </div>
                 <div>
                   Counted pieces:{" "}
@@ -1411,13 +1781,22 @@ export default function InventoryCheckPage() {
               style={{
                 marginTop: "12px",
                 display: "grid",
-                gridTemplateColumns: "minmax(140px, 1.5fr) minmax(140px, 1fr) minmax(140px, 1fr)",
+                gridTemplateColumns:
+                  "minmax(140px, 1.5fr) minmax(140px, 1fr) minmax(140px, 1fr)",
                 gap: "12px",
                 alignItems: "end",
               }}
             >
               <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#111827", marginBottom: "6px" }}>
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: "12px",
+                    fontWeight: 700,
+                    color: "#111827",
+                    marginBottom: "6px",
+                  }}
+                >
                   System pieces
                 </label>
                 <input
@@ -1429,7 +1808,15 @@ export default function InventoryCheckPage() {
               </div>
 
               <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#111827", marginBottom: "6px" }}>
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: "12px",
+                    fontWeight: 700,
+                    color: "#111827",
+                    marginBottom: "6px",
+                  }}
+                >
                   Counted pieces (physical)
                 </label>
                 <input
@@ -1448,7 +1835,15 @@ export default function InventoryCheckPage() {
               </div>
 
               <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#111827", marginBottom: "6px" }}>
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: "12px",
+                    fontWeight: 700,
+                    color: "#111827",
+                    marginBottom: "6px",
+                  }}
+                >
                   Difference
                 </label>
                 <input
@@ -1461,15 +1856,121 @@ export default function InventoryCheckPage() {
             </div>
           </div>
 
-          {/* TABLE */}
-          {lines.length === 0 ? (
+          {/* ✅ POSTED ITEMS TABLE (below pad) */}
+          <div style={{ marginTop: 8, marginBottom: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "end", gap: 10 }}>
+              <div>
+                <div style={{ fontSize: "13px", fontWeight: 900, color: "#111827" }}>
+                  Posted items (this session)
+                </div>
+                <div style={{ fontSize: "12px", color: "#6b7280" }}>
+                  {postedLines.length === 0
+                    ? "No posted items yet."
+                    : `${postedLines.length} posted line${postedLines.length === 1 ? "" : "s"} (latest first).`}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={async () => {
+                  setError("");
+                  setMessage("");
+                  await reloadStock();
+                  await reloadCurrentDetail({ reloadTimeline: true });
+                }}
+                style={{
+                  padding: "0.5rem 1rem",
+                  borderRadius: "999px",
+                  border: "1px solid #d1d5db",
+                  backgroundColor: "#ffffff",
+                  fontWeight: 900,
+                  fontSize: "12px",
+                  cursor: "pointer",
+                }}
+              >
+                Refresh
+              </button>
+            </div>
+
+            {postedLines.length > 0 && (
+              <div
+                style={{
+                  marginTop: 10,
+                  borderRadius: "14px",
+                  border: "1px solid #e5e7eb",
+                  backgroundColor: "#ffffff",
+                  overflow: "hidden",
+                  boxShadow: "0 6px 18px rgba(15, 23, 42, 0.05)",
+                }}
+              >
+                <div style={{ maxHeight: "280px", overflowY: "auto", overflowX: "auto", minWidth: "980px" }}>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "minmax(220px, 2.5fr) 1fr 1fr 1fr 1fr",
+                      alignItems: "center",
+                      padding: "8px 10px",
+                      borderBottom: "1px solid #e5e7eb",
+                      fontSize: "11px",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.08em",
+                      color: "#6b7280",
+                      fontWeight: 700,
+                      backgroundColor: "#f9fafb",
+                    }}
+                  >
+                    <div>Item</div>
+                    <div style={{ textAlign: "right" }}>System</div>
+                    <div style={{ textAlign: "right" }}>Counted</div>
+                    <div style={{ textAlign: "right" }}>Diff</div>
+                    <div style={{ textAlign: "right" }}>Direction</div>
+                  </div>
+
+                  {postedLines.map((ln) => (
+                    <div
+                      key={`posted-${ln.id}`}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "minmax(220px, 2.5fr) 1fr 1fr 1fr 1fr",
+                        alignItems: "center",
+                        padding: "9px 10px",
+                        borderBottom: "1px solid #f3f4f6",
+                        fontSize: "13px",
+                      }}
+                    >
+                      <div style={{ fontWeight: 700 }}>{ln.itemName || "Unknown item"}</div>
+                      <div style={{ textAlign: "right", ...numCell }}>{formatQty(ln.systemPieces)}</div>
+                      <div style={{ textAlign: "right", ...numCell }}>{formatQty(ln.countedPieces)}</div>
+                      <div
+                        style={{
+                          textAlign: "right",
+                          ...numCell,
+                          color: ln.diffPieces > 0 ? "#16a34a" : ln.diffPieces < 0 ? "#b91c1c" : "#111827",
+                          fontWeight: 800,
+                        }}
+                      >
+                        {formatDiff(ln.diffPieces)}
+                      </div>
+                      <div style={{ textAlign: "right", ...numCell, color: "#6b7280", fontWeight: 800 }}>
+                        {ln.differenceDirection ? String(ln.differenceDirection) : "—"}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* ✅ DRAFT TABLE (editable) */}
+          {draftLines.length === 0 ? (
             <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
-              No items added yet. Use the pad above and click <strong>+ Add to table</strong>.
+              No draft items yet. Use the pad above and click <strong>+ Add to draft</strong>.
             </div>
           ) : (
             <>
               <div style={{ fontSize: "12px", color: "#6b7280", marginBottom: "6px" }}>
-                {lines.length} item{lines.length === 1 ? "" : "s"} in this table (latest per item).
+                Draft items: {draftLines.length} (latest per item).{" "}
+                {draftDirty ? <strong style={{ color: "#111827" }}>Unsaved changes</strong> : null}
               </div>
 
               <div
@@ -1514,7 +2015,7 @@ export default function InventoryCheckPage() {
                     <div />
                   </div>
 
-                  {lines.map((ln) => (
+                  {draftLines.map((ln) => (
                     <div
                       key={ln.id}
                       style={{
@@ -1530,7 +2031,7 @@ export default function InventoryCheckPage() {
                       <div>
                         <button
                           type="button"
-                          onClick={() => handleEditLine(ln)}
+                          onClick={() => handleEditDraftLine(ln)}
                           disabled={disableEditing}
                           style={{
                             padding: 0,
@@ -1538,7 +2039,7 @@ export default function InventoryCheckPage() {
                             border: "none",
                             background: "transparent",
                             color: "#111827",
-                            fontWeight: 600,
+                            fontWeight: 700,
                             fontSize: "13px",
                             cursor: disableEditing ? "not-allowed" : "pointer",
                             textAlign: "left",
@@ -1559,7 +2060,7 @@ export default function InventoryCheckPage() {
                           textAlign: "right",
                           ...numCell,
                           color: ln.diffPieces > 0 ? "#16a34a" : ln.diffPieces < 0 ? "#b91c1c" : "#111827",
-                          fontWeight: 600,
+                          fontWeight: 800,
                         }}
                       >
                         {formatDiff(ln.diffPieces)}
@@ -1568,7 +2069,7 @@ export default function InventoryCheckPage() {
                       <div style={{ textAlign: "center" }}>
                         <button
                           type="button"
-                          onClick={() => handleRemoveLine(ln.id)}
+                          onClick={() => handleRemoveDraftLine(ln.id)}
                           disabled={disableEditing}
                           style={{
                             width: "26px",
@@ -1581,7 +2082,7 @@ export default function InventoryCheckPage() {
                             cursor: disableEditing ? "not-allowed" : "pointer",
                             opacity: disableEditing ? 0.7 : 1,
                           }}
-                          title="Remove from table"
+                          title="Remove from draft"
                         >
                           ✕
                         </button>
@@ -1605,7 +2106,7 @@ export default function InventoryCheckPage() {
                 border: "1px solid #d1d5db",
                 backgroundColor: "#ffffff",
                 color: "#111827",
-                fontWeight: 600,
+                fontWeight: 700,
                 fontSize: "0.95rem",
                 cursor: !canSaveDraft ? "not-allowed" : "pointer",
                 opacity: !canSaveDraft ? 0.55 : 1,
@@ -1624,7 +2125,7 @@ export default function InventoryCheckPage() {
                 border: "none",
                 backgroundColor: !canPost ? "#9ca3af" : "#2563eb",
                 color: "white",
-                fontWeight: 700,
+                fontWeight: 900,
                 fontSize: "0.95rem",
                 cursor: !canPost ? "not-allowed" : "pointer",
                 opacity: !canPost ? 0.85 : 1,
@@ -1634,20 +2135,20 @@ export default function InventoryCheckPage() {
             </button>
           </div>
 
-          {/* small refresh row (no second table) */}
+          {/* small refresh row */}
           <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end", gap: 10, flexWrap: "wrap" }}>
             <button
               type="button"
               onClick={async () => {
                 await reloadStock();
-                await loadTimeline(toISODate(inventoryDate));
+                await reloadCurrentDetail({ reloadTimeline: true });
               }}
               style={{
                 padding: "0.5rem 1rem",
                 borderRadius: "999px",
                 border: "1px solid #d1d5db",
                 backgroundColor: "#ffffff",
-                fontWeight: 800,
+                fontWeight: 900,
                 fontSize: "12px",
                 cursor: "pointer",
               }}
@@ -1668,15 +2169,81 @@ export default function InventoryCheckPage() {
             padding: "16px 18px 18px",
           }}
         >
-          <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>Previous inventory checks</h2>
+          <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>Inventory history</h2>
           <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 4 }}>
-            One row per date. Click a date to open it.
+            Shows closed sessions (when available). Click a date to open it.
           </div>
 
-          {groupedHistory.length === 0 ? (
-            <div style={{ marginTop: 10, fontSize: "13px", color: "#6b7280" }}>
-              No inventory checks recorded yet.
+          {sessionHistory.length > 0 ? (
+            <div style={{ marginTop: 12, borderRadius: "14px", border: "1px solid #e5e7eb", overflow: "hidden" }}>
+              <div style={{ maxHeight: "420px", overflowY: "auto" }}>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "260px 260px 1fr 1fr 1fr",
+                    minWidth: "920px",
+                    alignItems: "center",
+                    padding: "8px 10px",
+                    borderBottom: "1px solid #e5e7eb",
+                    fontSize: "11px",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.08em",
+                    color: "#6b7280",
+                    fontWeight: 700,
+                    backgroundColor: "#f9fafb",
+                  }}
+                >
+                  <div>Started</div>
+                  <div>Closed</div>
+                  <div style={{ textAlign: "right" }}>Items</div>
+                  <div style={{ textAlign: "right" }}>Diff (pieces)</div>
+                  <div style={{ textAlign: "right" }}>Net (RWF)</div>
+                </div>
+
+                {sessionHistory.map((c) => {
+                  const start = c.started_at ? `${formatCAT_YMD_FromISO(c.started_at)} ${formatCAT_HM_FromISO(c.started_at)} CAT` : "—";
+                  const end = c.closed_at ? `${formatCAT_YMD_FromISO(c.closed_at)} ${formatCAT_HM_FromISO(c.closed_at)} CAT` : "—";
+                  const net = c.net_value ?? c.value_change ?? null;
+
+                  return (
+                    <div
+                      key={`sess-${c.id}`}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "260px 260px 1fr 1fr 1fr",
+                        minWidth: "920px",
+                        alignItems: "center",
+                        padding: "9px 10px",
+                        borderBottom: "1px solid #f3f4f6",
+                        fontSize: "13px",
+                      }}
+                    >
+                      <div style={{ fontWeight: 700, color: "#111827" }}>{start}</div>
+                      <div style={{ fontWeight: 700, color: "#111827" }}>{end}</div>
+                      <div style={{ textAlign: "right", ...numCell }}>{Number(c.total_items || 0)}</div>
+                      <div
+                        style={{
+                          textAlign: "right",
+                          ...numCell,
+                          color:
+                            Number(c.total_diff_pieces || 0) > 0
+                              ? "#16a34a"
+                              : Number(c.total_diff_pieces || 0) < 0
+                              ? "#b91c1c"
+                              : "#111827",
+                          fontWeight: 800,
+                        }}
+                      >
+                        {formatDiff(c.total_diff_pieces)}
+                      </div>
+                      <div style={{ textAlign: "right", ...numCell, fontWeight: 900 }}>{net ? formatMoney(net) : "—"}</div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
+          ) : groupedHistoryByDate.length === 0 ? (
+            <div style={{ marginTop: 10, fontSize: "13px", color: "#6b7280" }}>No inventory checks recorded yet.</div>
           ) : (
             <div style={{ marginTop: 12, borderRadius: "14px", border: "1px solid #e5e7eb", overflow: "hidden" }}>
               <div style={{ maxHeight: "420px", overflowY: "auto" }}>
@@ -1703,7 +2270,7 @@ export default function InventoryCheckPage() {
                   <div style={{ textAlign: "right" }}>Diff (pieces)</div>
                 </div>
 
-                {groupedHistory.map((g) => (
+                {groupedHistoryByDate.map((g) => (
                   <div
                     key={g.date}
                     style={{
@@ -1726,7 +2293,7 @@ export default function InventoryCheckPage() {
                           border: "none",
                           background: "transparent",
                           color: "#2563eb",
-                          fontWeight: 700,
+                          fontWeight: 800,
                           cursor: "pointer",
                         }}
                       >
@@ -1750,7 +2317,7 @@ export default function InventoryCheckPage() {
                             : Number(g.total_diff_pieces || 0) < 0
                             ? "#b91c1c"
                             : "#111827",
-                        fontWeight: 600,
+                        fontWeight: 800,
                       }}
                     >
                       {formatDiff(g.total_diff_pieces)}
