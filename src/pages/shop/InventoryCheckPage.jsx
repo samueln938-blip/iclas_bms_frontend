@@ -373,7 +373,7 @@ export default function InventoryCheckPage() {
     countedPieces: "",
   });
 
-  // lines shown in the main table (one row per item)
+  // lines shown in the main table (draft-only list for editing)
   const [lines, setLines] = useState([]);
 
   // ✅ posted lines from backend + sticky cache
@@ -518,7 +518,9 @@ export default function InventoryCheckPage() {
     const s = ln?.raw || ln || {};
     const statusStr = String(s?.status || s?.line_status || s?.lineStatus || "").toUpperCase();
 
+    // ✅ Your backend sends is_posted on line out
     if (s.is_posted === true || s.posted === true) return true;
+
     if (statusStr === "POSTED") return true;
     if (s.posted_at || s.postedAt) return true;
 
@@ -680,7 +682,7 @@ export default function InventoryCheckPage() {
 
   const totalSystemValueDiff = totalSystemValueAfter - totalSystemValueBefore;
 
-  // timeline totals for the whole day
+  // timeline totals for the whole session/day (depending on timeline filter)
   const timelineTotals = useMemo(() => {
     const rows = Array.isArray(timelineRows) ? timelineRows : [];
     const totalAdj = rows.length;
@@ -778,19 +780,25 @@ export default function InventoryCheckPage() {
     }
   };
 
-  const loadTimeline = async (isoDate) => {
+  // ✅ Timeline now supports multi-day sessions:
+  // Prefer check_id when we have it (shows full session history),
+  // otherwise fall back to check_date for legacy behavior.
+  const loadTimeline = async ({ isoDate, checkId } = {}) => {
     const dateISO = toISODate(isoDate);
-    if (!dateISO) {
-      setTimelineRows([]);
-      return [];
-    }
+    const cid = Number(checkId || 0);
+
     try {
-      const res = await fetchWithSlashFallback(
-        `${API_BASE}/inventory-checks/timeline?shop_id=${shopId}&check_date=${encodeURIComponent(
-          dateISO
-        )}`,
-        { headers: authHeadersNoJson }
-      );
+      let url = "";
+      if (cid > 0) {
+        url = `${API_BASE}/inventory-checks/timeline?shop_id=${shopId}&check_id=${encodeURIComponent(cid)}`;
+      } else if (dateISO) {
+        url = `${API_BASE}/inventory-checks/timeline?shop_id=${shopId}&check_date=${encodeURIComponent(dateISO)}`;
+      } else {
+        setTimelineRows([]);
+        return [];
+      }
+
+      const res = await fetchWithSlashFallback(url, { headers: authHeadersNoJson });
       if (!res.ok) {
         // timeline might not exist in some backends => don't fail the page
         setTimelineRows([]);
@@ -861,7 +869,16 @@ export default function InventoryCheckPage() {
     }
   };
 
-  // ✅ Fast detail loader
+  // ✅ Build correct backend URL for /for-date
+  const forDateUrl = (dateISO, includePostedLines) => {
+    const d = toISODate(dateISO);
+    const inc = includePostedLines ? "true" : "false";
+    return `${API_BASE}/inventory-checks/for-date?shop_id=${shopId}&check_date=${encodeURIComponent(d)}&include_posted_lines=${inc}`;
+  };
+
+  // ✅ Fast detail loader:
+  // 1) fetch include_posted_lines=false for draft-edit table
+  // 2) fetch include_posted_lines=true for posted table
   const loadCheckForDateFast = async (isoDate, seq) => {
     const dateISO = toISODate(isoDate);
     if (!dateISO) {
@@ -879,7 +896,7 @@ export default function InventoryCheckPage() {
         posted_lines_count: null,
         draft_lines_count: null,
       });
-      return;
+      return { fallbackNeeded: false, checkId: null };
     }
 
     if (checkAbortRef.current) {
@@ -890,68 +907,81 @@ export default function InventoryCheckPage() {
     const controller = new AbortController();
     checkAbortRef.current = controller;
 
-    const url = `${API_BASE}/inventory-checks/for-date?shop_id=${shopId}&check_date=${encodeURIComponent(
-      dateISO
-    )}`;
+    // 1) Draft-only request
+    const urlDraft = forDateUrl(dateISO, false);
 
-    const res = await fetchWithSlashFallback(url, {
+    const resDraft = await fetchWithSlashFallback(urlDraft, {
       headers: authHeadersNoJson,
       signal: controller.signal,
     });
 
-    if (res.status === 404) {
-      return { fallbackNeeded: true };
+    if (resDraft.status === 404) {
+      return { fallbackNeeded: true, checkId: null };
     }
 
-    if (!res.ok) {
-      const errData = await res.json().catch(() => null);
-      throw new Error(errData?.detail || `Failed to load inventory check. Status: ${res.status}`);
+    if (!resDraft.ok) {
+      const errData = await resDraft.json().catch(() => null);
+      throw new Error(errData?.detail || `Failed to load inventory check. Status: ${resDraft.status}`);
     }
 
-    const detail = await res.json().catch(() => null);
+    const draftDetail = await resDraft.json().catch(() => null);
 
-    if (seq !== checkSeqRef.current) return { fallbackNeeded: false };
+    if (seq !== checkSeqRef.current) return { fallbackNeeded: false, checkId: null };
 
-    if (!detail) {
+    if (!draftDetail) {
       setCurrentCheckId(null);
       setCurrentCheckStatus(null);
       setLines([]);
       setPostedLines([]);
-      return { fallbackNeeded: false };
+      return { fallbackNeeded: false, checkId: null };
     }
 
-    const checkId = detail.id ?? detail.check_id ?? detail.checkId ?? null;
+    const checkId = draftDetail.id ?? draftDetail.check_id ?? draftDetail.checkId ?? null;
 
     setCurrentCheckId(checkId);
-    setCurrentCheckStatus(detail.status ?? detail.check_status ?? detail.checkStatus ?? null);
-    setMetaFromDetail(detail);
+    setCurrentCheckStatus(draftDetail.status ?? draftDetail.check_status ?? draftDetail.checkStatus ?? null);
+    setMetaFromDetail(draftDetail);
 
-    ensureStickyKey(checkId);
+    if (checkId) ensureStickyKey(checkId);
 
-    // ✅ lines
-    const rawLines = detail.lines || detail.check_lines || detail.checkLines || [];
-    setLines(collapseLinesToLatestPerItem(rawLines));
+    // Draft-edit lines are from include_posted_lines=false
+    const rawDraftLines = draftDetail.lines || draftDetail.check_lines || draftDetail.checkLines || [];
+    setLines(collapseLinesToLatestPerItem(rawDraftLines, { onlyPosted: false }));
 
-    // ✅ posted lines: try posted_lines first, then filter lines
-    const rawPosted =
-      detail.posted_lines || detail.postedLines || detail.lines_posted || detail.linesPosted || null;
+    // 2) Posted+draft request for posted table (so posted lines exist)
+    // If this call fails, we keep sticky cache as fallback and page still works.
+    try {
+      const urlAll = forDateUrl(dateISO, true);
+      const resAll = await fetchWithSlashFallback(urlAll, {
+        headers: authHeadersNoJson,
+        signal: controller.signal,
+      });
 
-    const freshPosted =
-      Array.isArray(rawPosted) && rawPosted.length > 0
-        ? collapseLinesToLatestPerItem(rawPosted, { onlyPosted: null })
-        : collapseLinesToLatestPerItem(rawLines, { onlyPosted: true });
+      if (resAll.ok) {
+        const allDetail = await resAll.json().catch(() => null);
+        if (seq === checkSeqRef.current && allDetail) {
+          // Use meta from "all" detail too (same fields, but safe)
+          setMetaFromDetail(allDetail);
 
-    setPostedLines(freshPosted);
-    updateSticky(checkId, detail, freshPosted);
+          const allLines = allDetail.lines || allDetail.check_lines || allDetail.checkLines || [];
+          const freshPosted = collapseLinesToLatestPerItem(allLines, { onlyPosted: true });
 
-    return { fallbackNeeded: false };
+          setPostedLines(freshPosted);
+          if (checkId) updateSticky(checkId, allDetail, freshPosted);
+        }
+      }
+    } catch {
+      // ignore posted fetch; sticky cache remains
+    }
+
+    return { fallbackNeeded: false, checkId };
   };
 
   // Fallback loader (legacy)
   const loadCheckForDateLegacy = async (isoDate, seq) => {
     const dateISO = toISODate(isoDate);
     const list = await loadHistory(true);
-    if (seq !== checkSeqRef.current) return;
+    if (seq !== checkSeqRef.current) return { fallbackNeeded: false, checkId: null };
 
     const sameDateChecks = (list || []).filter((c) => toISODate(c.check_date) === dateISO);
 
@@ -960,7 +990,7 @@ export default function InventoryCheckPage() {
       setCurrentCheckStatus(null);
       setLines([]);
       setPostedLines([]);
-      return;
+      return { fallbackNeeded: false, checkId: null };
     }
 
     const match = sameDateChecks[sameDateChecks.length - 1];
@@ -973,38 +1003,81 @@ export default function InventoryCheckPage() {
     const controller = new AbortController();
     checkAbortRef.current = controller;
 
-    const detailRes = await fetchWithSlashFallback(`${API_BASE}/inventory-checks/${match.id}`, {
-      headers: authHeadersNoJson,
-      signal: controller.signal,
-    });
-    if (!detailRes.ok) {
-      throw new Error(`Failed to load inventory check details. Status: ${detailRes.status}`);
+    // 1) draft-only detail
+    const detailResDraft = await fetchWithSlashFallback(
+      `${API_BASE}/inventory-checks/${match.id}?include_posted_lines=false`,
+      {
+        headers: authHeadersNoJson,
+        signal: controller.signal,
+      }
+    );
+    if (!detailResDraft.ok) {
+      throw new Error(`Failed to load inventory check details. Status: ${detailResDraft.status}`);
     }
 
-    const detail = await detailRes.json();
-    if (seq !== checkSeqRef.current) return;
+    const draftDetail = await detailResDraft.json();
+    if (seq !== checkSeqRef.current) return { fallbackNeeded: false, checkId: null };
 
-    const checkId = detail?.id ?? match.id ?? null;
+    const checkId = draftDetail?.id ?? match.id ?? null;
 
     setCurrentCheckId(checkId);
-    setCurrentCheckStatus(detail?.status || match.status || null);
-    setMetaFromDetail(detail);
+    setCurrentCheckStatus(draftDetail?.status || match.status || null);
+    setMetaFromDetail(draftDetail);
 
-    ensureStickyKey(checkId);
+    if (checkId) ensureStickyKey(checkId);
 
-    const rawLines = detail.lines || detail.check_lines || detail.checkLines || [];
-    setLines(collapseLinesToLatestPerItem(rawLines));
+    const rawDraftLines = draftDetail.lines || draftDetail.check_lines || draftDetail.checkLines || [];
+    setLines(collapseLinesToLatestPerItem(rawDraftLines, { onlyPosted: false }));
 
-    const rawPosted =
-      detail.posted_lines || detail.postedLines || detail.lines_posted || detail.linesPosted || null;
+    // 2) include posted for posted table
+    try {
+      const detailResAll = await fetchWithSlashFallback(
+        `${API_BASE}/inventory-checks/${match.id}?include_posted_lines=true`,
+        {
+          headers: authHeadersNoJson,
+          signal: controller.signal,
+        }
+      );
+      if (detailResAll.ok) {
+        const allDetail = await detailResAll.json().catch(() => null);
+        if (seq === checkSeqRef.current && allDetail) {
+          setMetaFromDetail(allDetail);
+          const allLines = allDetail.lines || allDetail.check_lines || allDetail.checkLines || [];
+          const freshPosted = collapseLinesToLatestPerItem(allLines, { onlyPosted: true });
 
-    const freshPosted =
-      Array.isArray(rawPosted) && rawPosted.length > 0
-        ? collapseLinesToLatestPerItem(rawPosted, { onlyPosted: null })
-        : collapseLinesToLatestPerItem(rawLines, { onlyPosted: true });
+          setPostedLines(freshPosted);
+          if (checkId) updateSticky(checkId, allDetail, freshPosted);
+        }
+      }
+    } catch {
+      // ignore posted fetch; sticky cache remains
+    }
 
-    setPostedLines(freshPosted);
-    updateSticky(checkId, detail, freshPosted);
+    return { fallbackNeeded: false, checkId };
+  };
+
+  const refreshCurrentDate = async () => {
+    const seq = ++checkSeqRef.current;
+    setLoadingCheck(true);
+    try {
+      const iso = toISODate(inventoryDate);
+      const fast = await loadCheckForDateFast(iso, seq);
+      if (seq !== checkSeqRef.current) return;
+
+      let resolvedCheckId = fast?.checkId ?? null;
+
+      if (fast?.fallbackNeeded) {
+        const legacy = await loadCheckForDateLegacy(iso, seq);
+        resolvedCheckId = legacy?.checkId ?? resolvedCheckId ?? null;
+      }
+
+      if (seq !== checkSeqRef.current) return;
+
+      // timeline after check is known (so we can use check_id for multi-day sessions)
+      await loadTimeline({ isoDate: iso, checkId: resolvedCheckId });
+    } finally {
+      if (seq === checkSeqRef.current) setLoadingCheck(false);
+    }
   };
 
   // when date changes
@@ -1036,14 +1109,19 @@ export default function InventoryCheckPage() {
     (async () => {
       setLoadingCheck(true);
       try {
-        await loadTimeline(iso);
-
         const fast = await loadCheckForDateFast(iso, seq);
         if (seq !== checkSeqRef.current) return;
 
+        let resolvedCheckId = fast?.checkId ?? null;
+
         if (fast?.fallbackNeeded) {
-          await loadCheckForDateLegacy(iso, seq);
+          const legacy = await loadCheckForDateLegacy(iso, seq);
+          resolvedCheckId = legacy?.checkId ?? resolvedCheckId ?? null;
         }
+
+        if (seq !== checkSeqRef.current) return;
+
+        await loadTimeline({ isoDate: iso, checkId: resolvedCheckId });
       } catch (err) {
         const aborted =
           (checkAbortRef.current && checkAbortRef.current.signal?.aborted) || false;
@@ -1179,21 +1257,14 @@ export default function InventoryCheckPage() {
       setMetaFromDetail(data);
 
       const rawLines = data.lines || data.check_lines || data.checkLines || [];
-      setLines(collapseLinesToLatestPerItem(rawLines));
+      setLines(collapseLinesToLatestPerItem(rawLines, { onlyPosted: false }));
 
-      const rawPosted =
-        data.posted_lines || data.postedLines || data.lines_posted || data.linesPosted || null;
-
-      const freshPosted =
-        Array.isArray(rawPosted) && rawPosted.length > 0
-          ? collapseLinesToLatestPerItem(rawPosted, { onlyPosted: null })
-          : collapseLinesToLatestPerItem(rawLines, { onlyPosted: true });
-
-      setPostedLines(freshPosted);
+      // ✅ backend draft/post responses do not include posted lines;
+      // refresh current date to pick up posted lines via include_posted_lines=true
       ensureStickyKey(newId);
-      updateSticky(newId, data, freshPosted);
 
       await loadHistory(true);
+      await refreshCurrentDate();
 
       if (!silent) setMessage("Inventory draft saved. Stock is NOT changed yet.");
       return data;
@@ -1249,23 +1320,13 @@ export default function InventoryCheckPage() {
       setMetaFromDetail(data);
 
       const rawLines = data.lines || data.check_lines || data.checkLines || [];
-      setLines(collapseLinesToLatestPerItem(rawLines));
-
-      const rawPosted =
-        data.posted_lines || data.postedLines || data.lines_posted || data.linesPosted || null;
-
-      const freshPosted =
-        Array.isArray(rawPosted) && rawPosted.length > 0
-          ? collapseLinesToLatestPerItem(rawPosted, { onlyPosted: null })
-          : collapseLinesToLatestPerItem(rawLines, { onlyPosted: true });
-
-      setPostedLines(freshPosted);
-      ensureStickyKey(checkId);
-      updateSticky(checkId, data, freshPosted);
+      setLines(collapseLinesToLatestPerItem(rawLines, { onlyPosted: false }));
 
       await reloadStock();
       await loadHistory(true);
-      await loadTimeline(toISODate(inventoryDate));
+
+      // ✅ refresh to pull posted lines + timeline using check_id (multi-day sessions)
+      await refreshCurrentDate();
 
       setMessage("Posted. Stock is normalized. You can continue counting and post again anytime.");
     } catch (err) {
@@ -1277,105 +1338,32 @@ export default function InventoryCheckPage() {
     }
   };
 
-  // ---------- Session Open / Close (tries multiple endpoints) ----------
-  const postFirstWorking = async (candidates, { method = "POST", body = null } = {}) => {
-    let lastError = null;
-
-    for (const c of candidates) {
-      try {
-        const url = c.url;
-        const useJson = c.useJson !== false;
-
-        const res = await fetchWithSlashFallback(url, {
-          method,
-          headers: useJson ? authHeaders : authHeadersNoJson,
-          body: useJson && body ? JSON.stringify(body) : body ? body : undefined,
-        });
-
-        // try next candidate if endpoint not found / method not allowed
-        if (res.status === 404 || res.status === 405) continue;
-
-        if (!res.ok) {
-          const errData = await res.json().catch(() => null);
-          lastError = new Error(errData?.detail || `Request failed. Status: ${res.status}`);
-          continue;
-        }
-
-        const data = await res.json().catch(() => ({}));
-        return data;
-      } catch (e) {
-        lastError = e;
-        // try next
-      }
-    }
-
-    throw lastError || new Error("No compatible session endpoint found in backend.");
-  };
-
-  const refreshCurrentDate = async () => {
-    const seq = ++checkSeqRef.current;
-    setLoadingCheck(true);
-    try {
-      await loadTimeline(toISODate(inventoryDate));
-      const fast = await loadCheckForDateFast(toISODate(inventoryDate), seq);
-      if (seq === checkSeqRef.current && fast?.fallbackNeeded) {
-        await loadCheckForDateLegacy(toISODate(inventoryDate), seq);
-      }
-    } finally {
-      if (seq === checkSeqRef.current) setLoadingCheck(false);
-    }
-  };
-
+  // ---------- Session Open / Close (now aligned with your backend) ----------
   const handleOpenSession = async () => {
     setSessionBusy(true);
     setError("");
     setMessage("");
 
     try {
-      const dateISO = toISODate(inventoryDate);
+      // ✅ Your backend: POST /inventory-checks/open with {shop_id, notes?}
+      const body = { shop_id: Number(shopId), notes: null };
 
-      // If we already have a check id, try ID-based endpoints first
-      const id = currentCheckId;
+      const res = await fetchWithSlashFallback(`${API_BASE}/inventory-checks/open`, {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify(body),
+      });
 
-      const body = { shop_id: Number(shopId), check_date: dateISO };
+      if (!res.ok) {
+        const errData = await res.json().catch(() => null);
+        throw new Error(errData?.detail || `Failed to open session. Status: ${res.status}`);
+      }
 
-      const candidates = [
-        ...(id
-          ? [
-              { url: `${API_BASE}/inventory-checks/${id}/open-session` },
-              { url: `${API_BASE}/inventory-checks/${id}/start-session` },
-              { url: `${API_BASE}/inventory-checks/${id}/start` },
-              { url: `${API_BASE}/inventory-checks/${id}/open` },
-            ]
-          : []),
-
-        // shop/date endpoints
-        { url: `${API_BASE}/inventory-checks/open-session`, useJson: true },
-        { url: `${API_BASE}/inventory-checks/start-session`, useJson: true },
-        { url: `${API_BASE}/inventory-checks/start`, useJson: true },
-        { url: `${API_BASE}/inventory-checks/open`, useJson: true },
-
-        // query-string variants (no JSON)
-        {
-          url: `${API_BASE}/inventory-checks/open-session?shop_id=${encodeURIComponent(
-            shopId
-          )}&check_date=${encodeURIComponent(dateISO)}`,
-          useJson: false,
-        },
-        {
-          url: `${API_BASE}/inventory-checks/start-session?shop_id=${encodeURIComponent(
-            shopId
-          )}&check_date=${encodeURIComponent(dateISO)}`,
-          useJson: false,
-        },
-      ];
-
-      await postFirstWorking(candidates, { method: "POST", body });
-
-      setMessage("Session opened (if your backend supports it).");
+      await res.json().catch(() => ({})); // response is InventoryCheckOut
+      setMessage("Session opened.");
       await refreshCurrentDate();
     } catch (e) {
-      setError(e?.message || "Failed to open inventory session (backend endpoint missing).");
+      setError(e?.message || "Failed to open inventory session.");
     } finally {
       setSessionBusy(false);
     }
@@ -1387,39 +1375,58 @@ export default function InventoryCheckPage() {
     setMessage("");
 
     try {
-      const dateISO = toISODate(inventoryDate);
-      const id = currentCheckId;
+      // Need a check id to close. If missing, try to refresh first.
+      if (!currentCheckId) {
+        await refreshCurrentDate();
+      }
 
-      const body = { shop_id: Number(shopId), check_date: dateISO };
+      const cid = Number(currentCheckId || 0);
+      if (!cid) {
+        throw new Error("No active inventory check to close. Open a session first.");
+      }
 
-      const candidates = [
-        ...(id
-          ? [
-              { url: `${API_BASE}/inventory-checks/${id}/close-session` },
-              { url: `${API_BASE}/inventory-checks/${id}/end-session` },
-              { url: `${API_BASE}/inventory-checks/${id}/close` },
-              { url: `${API_BASE}/inventory-checks/${id}/finish` },
-            ]
-          : []),
+      // ✅ Your backend: POST /inventory-checks/{check_id}/close?auto_post=true|false
+      const closeOnce = async (autoPost) => {
+        const url = `${API_BASE}/inventory-checks/${cid}/close?auto_post=${autoPost ? "true" : "false"}`;
+        const res = await fetchWithSlashFallback(url, {
+          method: "POST",
+          headers: authHeadersNoJson,
+        });
 
-        { url: `${API_BASE}/inventory-checks/close-session`, useJson: true },
-        { url: `${API_BASE}/inventory-checks/end-session`, useJson: true },
-        { url: `${API_BASE}/inventory-checks/close`, useJson: true },
+        if (!res.ok) {
+          const errData = await res.json().catch(() => null);
+          const msg = errData?.detail || `Failed to close session. Status: ${res.status}`;
+          const errorObj = new Error(msg);
+          errorObj._status = res.status;
+          throw errorObj;
+        }
+        return await res.json().catch(() => ({}));
+      };
 
-        {
-          url: `${API_BASE}/inventory-checks/close-session?shop_id=${encodeURIComponent(
-            shopId
-          )}&check_date=${encodeURIComponent(dateISO)}`,
-          useJson: false,
-        },
-      ];
+      try {
+        await closeOnce(false);
+      } catch (err) {
+        // If backend says "you still have draft lines", optionally auto-post them
+        const msg = String(err?.message || "");
+        if (msg.toLowerCase().includes("draft lines")) {
+          const ok = window.confirm(
+            "You still have draft lines. Close with auto_post=true (this will post remaining draft lines and normalize stock) ?"
+          );
+          if (ok) {
+            await closeOnce(true);
+          } else {
+            throw err;
+          }
+        } else {
+          throw err;
+        }
+      }
 
-      await postFirstWorking(candidates, { method: "POST", body });
-
-      setMessage("Session closed (if your backend supports it).");
+      setMessage("Session closed.");
+      await loadHistory(true);
       await refreshCurrentDate();
     } catch (e) {
-      setError(e?.message || "Failed to close inventory session (backend endpoint missing).");
+      setError(e?.message || "Failed to close inventory session.");
     } finally {
       setSessionBusy(false);
     }
@@ -1500,8 +1507,6 @@ export default function InventoryCheckPage() {
 
   const canSaveDraft = lines.length > 0 && !savingDraft && !loadingCheck && !posting && !sessionBusy;
   const canPost = lines.length > 0 && !posting && !loadingCheck && !savingDraft && !sessionBusy;
-
-  const numCell = { whiteSpace: "nowrap" };
 
   // summary meta
   const progressCounted = Number(checkMeta?.progress_counted_items ?? 0);
@@ -2162,11 +2167,7 @@ export default function InventoryCheckPage() {
 
             {postedRowsForTable.length === 0 ? (
               <div style={{ padding: "10px 4px 0", fontSize: "13px", color: "#6b7280" }}>
-                No posted items for this date yet.
-                <div style={{ marginTop: 6, fontSize: "12px", color: "#6b7280" }}>
-                  If you already posted and still see this, it means your backend is not returning posted markers.
-                  The fastest fix is to share your backend <strong>routers/inventory_checks.py</strong> so I match your real endpoints.
-                </div>
+                No posted items for this date/session yet.
               </div>
             ) : (
               <div
