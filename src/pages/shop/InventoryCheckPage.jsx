@@ -1,5 +1,5 @@
 // FILE: src/pages/shop/InventoryCheckPage.jsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext.jsx";
 
@@ -109,6 +109,13 @@ function formatMoney(value) {
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
   });
+}
+
+// ✅ normalize tiny decimals to 0 (prevents "-0")
+function zeroish(n, eps = 1e-9) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return 0;
+  return Math.abs(x) < eps ? 0 : x;
 }
 
 // ===============================
@@ -617,11 +624,14 @@ export default function InventoryCheckPage() {
       const itemId = Number(ln.itemId);
       const timeIso = postedTimeByItemId.get(itemId) || ln.postedAt || null;
 
+      // locked (history at post time)
       const diffBefore = Number(ln.diffPieces || 0);
 
-      // current stock now
+      // live stock now
       const nowSystem = Number(stockByItemId[itemId]?.remaining_pieces || 0);
-      const diffNow = Number(ln.countedPieces || 0) - nowSystem;
+
+      // current diff should be 0 after normalization (if stock refreshed)
+      const diffNow = zeroish(Number(ln.countedPieces || 0) - nowSystem);
 
       const cost = Number(ln.costPerPiece || 0);
       const totalDiffCost = diffBefore * cost;
@@ -630,7 +640,7 @@ export default function InventoryCheckPage() {
         ...ln,
         postedTimeIso: timeIso,
         diffBeforeNormalization: diffBefore,
-        systemPiecesNow: nowSystem,
+        systemPiecesNow: nowSystem, // ✅ show live stock now
         diffNow,
         totalDiffCost,
       };
@@ -775,7 +785,7 @@ export default function InventoryCheckPage() {
     return () => controller.abort();
   }, [shopId, authHeadersNoJson]);
 
-  const reloadStock = async () => {
+  const reloadStock = useCallback(async () => {
     try {
       const stockRes = await fetchWithSlashFallback(`${API_BASE}/stock/?shop_id=${shopId}`, {
         headers: authHeadersNoJson,
@@ -786,7 +796,22 @@ export default function InventoryCheckPage() {
     } catch {
       // ignore
     }
-  };
+  }, [shopId, authHeadersNoJson]);
+
+  // ✅ Live stock polling (best practice): while session OPEN + Enter tab, keep stock fresh
+  useEffect(() => {
+    if (activeTab !== "enter") return;
+    if (loading) return;
+
+    const open = isSessionOpen(checkMeta) && !isSessionClosed(checkMeta);
+    if (!open) return;
+
+    const t = setInterval(() => {
+      reloadStock();
+    }, 10_000);
+
+    return () => clearInterval(t);
+  }, [activeTab, loading, checkMeta, reloadStock]);
 
   const loadHistory = async (force = false) => {
     if (!force && historyChecks.length > 0) {
@@ -1119,6 +1144,9 @@ export default function InventoryCheckPage() {
 
       // timeline after check is known (so we can use check_id for multi-day sessions)
       await loadTimeline({ isoDate: iso, checkId: resolvedCheckId });
+
+      // ✅ IMPORTANT: refresh stock AFTER posting / loading so "diff now" becomes 0 immediately
+      await reloadStock();
     } finally {
       if (seq === checkSeqRef.current) setLoadingCheck(false);
     }
@@ -1166,6 +1194,9 @@ export default function InventoryCheckPage() {
         if (seq !== checkSeqRef.current) return;
 
         await loadTimeline({ isoDate: iso, checkId: resolvedCheckId });
+
+        // keep live stock fresh for the new view too
+        await reloadStock();
       } catch (err) {
         const aborted =
           (checkAbortRef.current && checkAbortRef.current.signal?.aborted) || false;
@@ -1222,19 +1253,28 @@ export default function InventoryCheckPage() {
       return;
     }
 
-    const system = Number(s.remaining_pieces || 0);
-    const diff = counted - system;
+    const liveSystem = Number(s.remaining_pieces || 0);
     const costPerPiece = getCostPerPiece(itemId);
 
     setLines((prev) => {
       const existingIndex = prev.findIndex((ln) => Number(ln.itemId) === itemId);
+
+      // ✅ IMPORTANT: lock the baseline (systemPieces) once the line exists.
+      // This preserves history even if live stock changes later.
+      const lockedSystem =
+        existingIndex >= 0 && Number.isFinite(Number(prev[existingIndex]?.systemPieces))
+          ? Number(prev[existingIndex]?.systemPieces)
+          : liveSystem;
+
+      const diff = counted - lockedSystem;
+
       const base = {
         id: prev[existingIndex]?.id ?? `local-${Date.now()}-${Math.random()}`,
         itemId,
         itemName: s.item_name || `Item ${itemId}`,
-        systemPieces: system,
+        systemPieces: lockedSystem, // ✅ locked snapshot
         countedPieces: counted,
-        diffPieces: diff,
+        diffPieces: diff, // ✅ locked diff vs snapshot
         costPerPiece,
       };
 
@@ -1303,8 +1343,6 @@ export default function InventoryCheckPage() {
       const rawLines = data.lines || data.check_lines || data.checkLines || [];
       setLines(collapseLinesToLatestPerItem(rawLines, { onlyPosted: false }));
 
-      // ✅ backend draft/post responses do not include posted lines;
-      // refresh current date to pick up posted lines via include_posted_lines=true
       ensureStickyKey(newId);
 
       await loadHistory(true);
@@ -1366,10 +1404,9 @@ export default function InventoryCheckPage() {
       const rawLines = data.lines || data.check_lines || data.checkLines || [];
       setLines(collapseLinesToLatestPerItem(rawLines, { onlyPosted: false }));
 
+      // ✅ After posting, refresh stock so diff-now becomes 0 immediately
       await reloadStock();
       await loadHistory(true);
-
-      // ✅ refresh to pull posted lines + timeline using check_id (multi-day sessions)
       await refreshCurrentDate();
 
       setMessage("Posted. Stock is normalized. You can continue counting and post again anytime.");
@@ -1382,14 +1419,13 @@ export default function InventoryCheckPage() {
     }
   };
 
-  // ---------- Session Open / Close (now aligned with your backend) ----------
+  // ---------- Session Open / Close ----------
   const handleOpenSession = async () => {
     setSessionBusy(true);
     setError("");
     setMessage("");
 
     try {
-      // ✅ Your backend: POST /inventory-checks/open with {shop_id, notes?}
       const body = { shop_id: Number(shopId), notes: null };
 
       const res = await fetchWithSlashFallback(`${API_BASE}/inventory-checks/open`, {
@@ -1403,7 +1439,7 @@ export default function InventoryCheckPage() {
         throw new Error(errData?.detail || `Failed to open session. Status: ${res.status}`);
       }
 
-      await res.json().catch(() => ({})); // response is InventoryCheckOut
+      await res.json().catch(() => ({}));
       setMessage("Session opened.");
       await refreshCurrentDate();
     } catch (e) {
@@ -1419,7 +1455,6 @@ export default function InventoryCheckPage() {
     setMessage("");
 
     try {
-      // Need a check id to close. If missing, try to refresh first.
       if (!currentCheckId) {
         await refreshCurrentDate();
       }
@@ -1429,7 +1464,6 @@ export default function InventoryCheckPage() {
         throw new Error("No active inventory check to close. Open a session first.");
       }
 
-      // ✅ Your backend: POST /inventory-checks/{check_id}/close?auto_post=true|false
       const closeOnce = async (autoPost) => {
         const url = `${API_BASE}/inventory-checks/${cid}/close?auto_post=${autoPost ? "true" : "false"}`;
         const res = await fetchWithSlashFallback(url, {
@@ -1450,7 +1484,6 @@ export default function InventoryCheckPage() {
       try {
         await closeOnce(false);
       } catch (err) {
-        // If backend says "you still have draft lines", optionally auto-post them
         const msg = String(err?.message || "");
         if (msg.toLowerCase().includes("draft lines")) {
           const ok = window.confirm(
@@ -1931,7 +1964,7 @@ export default function InventoryCheckPage() {
                 }}
               >
                 <div>
-                  System pieces:{" "}
+                  System pieces (live):{" "}
                   <strong style={{ color: "#111827" }}>{pad.itemId ? formatQty(padSystemPieces) : "—"}</strong>
                 </div>
                 <div>
@@ -1941,7 +1974,7 @@ export default function InventoryCheckPage() {
                   </strong>
                 </div>
                 <div>
-                  Difference:{" "}
+                  Difference (vs live):{" "}
                   <strong
                     style={{
                       color:
@@ -1971,7 +2004,7 @@ export default function InventoryCheckPage() {
             >
               <div>
                 <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#111827", marginBottom: "6px" }}>
-                  System pieces
+                  System pieces (live)
                 </label>
                 <input
                   type="text"
@@ -2002,7 +2035,7 @@ export default function InventoryCheckPage() {
 
               <div>
                 <label style={{ display: "block", fontSize: "12px", fontWeight: 700, color: "#111827", marginBottom: "6px" }}>
-                  Difference
+                  Difference (vs live)
                 </label>
                 <input
                   type="text"
@@ -2046,8 +2079,8 @@ export default function InventoryCheckPage() {
                   <div
                     style={{
                       display: "grid",
-                      gridTemplateColumns: "minmax(220px, 2.5fr) 1fr 1fr 1fr 1fr 60px",
-                      minWidth: "980px",
+                      gridTemplateColumns: "minmax(220px, 2.5fr) 1fr 1fr 1fr 1fr 1fr 60px",
+                      minWidth: "1120px",
                       alignItems: "center",
                       padding: "8px 10px",
                       borderBottom: "1px solid #e5e7eb",
@@ -2060,87 +2093,100 @@ export default function InventoryCheckPage() {
                     }}
                   >
                     <div style={{ textAlign: "left" }}>Item</div>
-                    <div style={{ textAlign: "right" }}>System pieces</div>
+                    <div style={{ textAlign: "right" }}>System (locked)</div>
+                    <div style={{ textAlign: "right" }}>Live stock now</div>
                     <div style={{ textAlign: "right" }}>Cost / piece</div>
-                    <div style={{ textAlign: "right" }}>Counted pieces</div>
-                    <div style={{ textAlign: "right" }}>Difference</div>
+                    <div style={{ textAlign: "right" }}>Counted</div>
+                    <div style={{ textAlign: "right" }}>Difference (locked)</div>
                     <div />
                   </div>
 
-                  {lines.map((ln) => (
-                    <div
-                      key={ln.id}
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "minmax(220px, 2.5fr) 1fr 1fr 1fr 1fr 60px",
-                        minWidth: "980px",
-                        alignItems: "center",
-                        padding: "9px 10px",
-                        borderBottom: "1px solid #f3f4f6",
-                        fontSize: "13px",
-                      }}
-                    >
-                      <div style={{ textAlign: "left" }}>
-                        <button
-                          type="button"
-                          onClick={() => handleEditLine(ln)}
-                          disabled={disableEditing}
-                          style={{
-                            padding: 0,
-                            margin: 0,
-                            border: "none",
-                            background: "transparent",
-                            color: "#111827",
-                            fontWeight: 600,
-                            fontSize: "13px",
-                            cursor: disableEditing ? "not-allowed" : "pointer",
-                            textAlign: "left",
-                            opacity: disableEditing ? 0.7 : 1,
-                          }}
-                          title="Edit this item in the pad"
-                        >
-                          {ln.itemName || "Unknown item"}
-                        </button>
-                      </div>
+                  {lines.map((ln) => {
+                    const liveNow = Number(stockByItemId[Number(ln.itemId)]?.remaining_pieces || 0);
 
-                      <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>{formatQty(ln.systemPieces)}</div>
-                      <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>{formatMoney(ln.costPerPiece)}</div>
-                      <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>{formatQty(ln.countedPieces)}</div>
-
+                    return (
                       <div
+                        key={ln.id}
                         style={{
-                          textAlign: "right",
-                          whiteSpace: "nowrap",
-                          color: ln.diffPieces > 0 ? "#16a34a" : ln.diffPieces < 0 ? "#b91c1c" : "#111827",
-                          fontWeight: 600,
+                          display: "grid",
+                          gridTemplateColumns: "minmax(220px, 2.5fr) 1fr 1fr 1fr 1fr 1fr 60px",
+                          minWidth: "1120px",
+                          alignItems: "center",
+                          padding: "9px 10px",
+                          borderBottom: "1px solid #f3f4f6",
+                          fontSize: "13px",
                         }}
                       >
-                        {formatDiff(ln.diffPieces)}
-                      </div>
+                        <div style={{ textAlign: "left" }}>
+                          <button
+                            type="button"
+                            onClick={() => handleEditLine(ln)}
+                            disabled={disableEditing}
+                            style={{
+                              padding: 0,
+                              margin: 0,
+                              border: "none",
+                              background: "transparent",
+                              color: "#111827",
+                              fontWeight: 600,
+                              fontSize: "13px",
+                              cursor: disableEditing ? "not-allowed" : "pointer",
+                              textAlign: "left",
+                              opacity: disableEditing ? 0.7 : 1,
+                            }}
+                            title="Edit this item in the pad"
+                          >
+                            {ln.itemName || "Unknown item"}
+                          </button>
+                        </div>
 
-                      <div style={{ textAlign: "center" }}>
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveLine(ln.id)}
-                          disabled={disableEditing}
+                        <div style={{ textAlign: "right", whiteSpace: "nowrap" }} title="Locked snapshot at time you added/updated this line">
+                          {formatQty(ln.systemPieces)}
+                        </div>
+
+                        <div style={{ textAlign: "right", whiteSpace: "nowrap" }} title="Live stock now (updates automatically)">
+                          {formatQty(liveNow)}
+                        </div>
+
+                        <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>{formatMoney(ln.costPerPiece)}</div>
+                        <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>{formatQty(ln.countedPieces)}</div>
+
+                        <div
                           style={{
-                            width: "26px",
-                            height: "26px",
-                            borderRadius: "9999px",
-                            border: "1px solid #fee2e2",
-                            backgroundColor: disableEditing ? "#f3f4f6" : "#fef2f2",
-                            color: disableEditing ? "#9ca3af" : "#b91c1c",
-                            fontSize: "14px",
-                            cursor: disableEditing ? "not-allowed" : "pointer",
-                            opacity: disableEditing ? 0.7 : 1,
+                            textAlign: "right",
+                            whiteSpace: "nowrap",
+                            color: ln.diffPieces > 0 ? "#16a34a" : ln.diffPieces < 0 ? "#b91c1c" : "#111827",
+                            fontWeight: 600,
                           }}
-                          title="Remove from table"
+                          title="Locked difference vs locked system snapshot"
                         >
-                          ✕
-                        </button>
+                          {formatDiff(ln.diffPieces)}
+                        </div>
+
+                        <div style={{ textAlign: "center" }}>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveLine(ln.id)}
+                            disabled={disableEditing}
+                            style={{
+                              width: "26px",
+                              height: "26px",
+                              borderRadius: "9999px",
+                              border: "1px solid #fee2e2",
+                              backgroundColor: disableEditing ? "#f3f4f6" : "#fef2f2",
+                              color: disableEditing ? "#9ca3af" : "#b91c1c",
+                              fontSize: "14px",
+                              cursor: disableEditing ? "not-allowed" : "pointer",
+                              opacity: disableEditing ? 0.7 : 1,
+                            }}
+                            title="Remove from table"
+                          >
+                            ✕
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             </>
@@ -2193,7 +2239,7 @@ export default function InventoryCheckPage() {
               Posted items (keep visible until inventory is closed)
             </div>
             <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 4, fontWeight: 800 }}>
-              Count time • Item • System • Counted • Difference • Diff before normalization • Cost/piece • Total difference cost
+              Count time • Item • System (locked) • Live stock now • Counted • Difference (now) • Diff before normalization • Cost/piece • Total difference cost
             </div>
 
             {postedRowsForTable.length === 0 ? (
@@ -2215,8 +2261,9 @@ export default function InventoryCheckPage() {
                   <div
                     style={{
                       display: "grid",
-                      gridTemplateColumns: "120px minmax(220px, 2.2fr) 1fr 1fr 1fr 1.3fr 1fr 1.3fr",
-                      minWidth: "1320px",
+                      gridTemplateColumns:
+                        "120px minmax(220px, 2.2fr) 1fr 1fr 1fr 1fr 1.3fr 1fr 1.3fr",
+                      minWidth: "1460px",
                       alignItems: "center",
                       padding: "8px 10px",
                       borderBottom: "1px solid #e5e7eb",
@@ -2230,9 +2277,10 @@ export default function InventoryCheckPage() {
                   >
                     <div>Count time (CAT)</div>
                     <div style={{ textAlign: "left" }}>Item</div>
-                    <div style={{ textAlign: "right" }}>System</div>
+                    <div style={{ textAlign: "right" }}>System (locked)</div>
+                    <div style={{ textAlign: "right" }}>Live stock now</div>
                     <div style={{ textAlign: "right" }}>Counted</div>
-                    <div style={{ textAlign: "right" }}>Difference</div>
+                    <div style={{ textAlign: "right" }}>Difference (now)</div>
                     <div style={{ textAlign: "right" }}>Diff before norm</div>
                     <div style={{ textAlign: "right" }}>Cost/piece</div>
                     <div style={{ textAlign: "right" }}>Total diff cost</div>
@@ -2243,8 +2291,9 @@ export default function InventoryCheckPage() {
                       key={`posted-${ln.id}`}
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "120px minmax(220px, 2.2fr) 1fr 1fr 1fr 1.3fr 1fr 1.3fr",
-                        minWidth: "1320px",
+                        gridTemplateColumns:
+                          "120px minmax(220px, 2.2fr) 1fr 1fr 1fr 1fr 1.3fr 1fr 1.3fr",
+                        minWidth: "1460px",
                         alignItems: "center",
                         padding: "9px 10px",
                         borderBottom: "1px solid #f3f4f6",
@@ -2257,7 +2306,14 @@ export default function InventoryCheckPage() {
 
                       <div style={{ fontWeight: 800, color: "#111827", textAlign: "left" }}>{ln.itemName}</div>
 
-                      <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>{formatQty(ln.systemPieces)}</div>
+                      <div style={{ textAlign: "right", whiteSpace: "nowrap" }} title="Locked snapshot at post time">
+                        {formatQty(ln.systemPieces)}
+                      </div>
+
+                      <div style={{ textAlign: "right", whiteSpace: "nowrap" }} title="Live stock now">
+                        {formatQty(ln.systemPiecesNow)}
+                      </div>
+
                       <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>{formatQty(ln.countedPieces)}</div>
 
                       <div
@@ -2265,9 +2321,9 @@ export default function InventoryCheckPage() {
                           textAlign: "right",
                           whiteSpace: "nowrap",
                           color: ln.diffNow > 0 ? "#16a34a" : ln.diffNow < 0 ? "#b91c1c" : "#111827",
-                          fontWeight: 800,
+                          fontWeight: 900,
                         }}
-                        title="Counted minus current system now"
+                        title="Counted minus live stock now (should be 0 after normalization)"
                       >
                         {formatDiff(ln.diffNow)}
                       </div>
@@ -2282,7 +2338,7 @@ export default function InventoryCheckPage() {
                               : ln.diffBeforeNormalization < 0
                               ? "#b91c1c"
                               : "#111827",
-                          fontWeight: 800,
+                          fontWeight: 900,
                         }}
                         title="Difference at the time you posted (before normalization)"
                       >
