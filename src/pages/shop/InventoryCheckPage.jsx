@@ -380,7 +380,7 @@ export default function InventoryCheckPage() {
     countedPieces: "",
   });
 
-  // lines shown in the main table (draft-only list for editing)
+  // lines shown in the main table (buffer list to post)
   const [lines, setLines] = useState([]);
 
   // ✅ posted lines from backend + sticky cache
@@ -393,7 +393,6 @@ export default function InventoryCheckPage() {
   const historyLoadedAtRef = useRef(0);
   const historyAbortRef = useRef(null);
 
-  const [savingDraft, setSavingDraft] = useState(false);
   const [posting, setPosting] = useState(false);
 
   const [sessionBusy, setSessionBusy] = useState(false);
@@ -616,6 +615,7 @@ export default function InventoryCheckPage() {
   }, [postedLines, postedLinesSticky, timelineRows]);
 
   // ✅ posted list rows (keep sticky until CLOSED)
+  // IMPORTANT: removed "Difference (now)" because it's confusing/useless after normalization.
   const postedRowsForTable = useMemo(() => {
     const sourceLines =
       (postedLines && postedLines.length > 0 ? postedLines : postedLinesSticky) || [];
@@ -627,11 +627,8 @@ export default function InventoryCheckPage() {
       // locked (history at post time)
       const diffBefore = Number(ln.diffPieces || 0);
 
-      // live stock now
+      // live stock now (for reassurance)
       const nowSystem = Number(stockByItemId[itemId]?.remaining_pieces || 0);
-
-      // current diff should be 0 after normalization (if stock refreshed)
-      const diffNow = zeroish(Number(ln.countedPieces || 0) - nowSystem);
 
       const cost = Number(ln.costPerPiece || 0);
       const totalDiffCost = diffBefore * cost;
@@ -640,8 +637,7 @@ export default function InventoryCheckPage() {
         ...ln,
         postedTimeIso: timeIso,
         diffBeforeNormalization: diffBefore,
-        systemPiecesNow: nowSystem, // ✅ show live stock now
-        diffNow,
+        systemPiecesNow: nowSystem,
         totalDiffCost,
       };
     });
@@ -669,14 +665,14 @@ export default function InventoryCheckPage() {
 
   // =========================================================
   // ✅ Summary should include posted items too
-  // - draft lines (lines) are draft-only
+  // - draft lines (lines) are local buffer list
   // - posted rows are in postedRowsForTable
-  // - we merge them per item: draft overrides posted
+  // - we merge them per item: local buffer overrides posted
   // =========================================================
   const summaryLatestRows = useMemo(() => {
     const byItem = new Map();
 
-    // 1) seed from posted (so summary works even when draft table is empty)
+    // 1) seed from posted (so summary works even when buffer table is empty)
     for (const p of postedRowsForTable || []) {
       const itemId = Number(p.itemId);
       if (!Number.isFinite(itemId) || itemId <= 0) continue;
@@ -699,7 +695,7 @@ export default function InventoryCheckPage() {
       });
     }
 
-    // 2) overlay draft lines (latest per item) if present
+    // 2) overlay local buffer lines (latest per item) if present
     for (const d of lines || []) {
       const itemId = Number(d.itemId);
       if (!Number.isFinite(itemId) || itemId <= 0) continue;
@@ -798,7 +794,7 @@ export default function InventoryCheckPage() {
     }
   }, [shopId, authHeadersNoJson]);
 
-  // ✅ Live stock polling (best practice): while session OPEN + Enter tab, keep stock fresh
+  // ✅ Live stock polling: while session OPEN + Enter tab, keep stock fresh
   useEffect(() => {
     if (activeTab !== "enter") return;
     if (loading) return;
@@ -849,7 +845,7 @@ export default function InventoryCheckPage() {
     }
   };
 
-  // ✅ Timeline now supports multi-day sessions:
+  // ✅ Timeline supports multi-day sessions:
   // Prefer check_id when we have it (shows full session history),
   // otherwise fall back to check_date for legacy behavior.
   const loadTimeline = async ({ isoDate, checkId } = {}) => {
@@ -869,7 +865,6 @@ export default function InventoryCheckPage() {
 
       const res = await fetchWithSlashFallback(url, { headers: authHeadersNoJson });
       if (!res.ok) {
-        // timeline might not exist in some backends => don't fail the page
         setTimelineRows([]);
         return [];
       }
@@ -942,7 +937,9 @@ export default function InventoryCheckPage() {
   const forDateUrl = (dateISO, includePostedLines) => {
     const d = toISODate(dateISO);
     const inc = includePostedLines ? "true" : "false";
-    return `${API_BASE}/inventory-checks/for-date?shop_id=${shopId}&check_date=${encodeURIComponent(d)}&include_posted_lines=${inc}`;
+    return `${API_BASE}/inventory-checks/for-date?shop_id=${shopId}&check_date=${encodeURIComponent(
+      d
+    )}&include_posted_lines=${inc}`;
   };
 
   // ✅ Fast detail loader:
@@ -1018,7 +1015,6 @@ export default function InventoryCheckPage() {
     setLines(collapseLinesToLatestPerItem(rawDraftLines, { onlyPosted: false }));
 
     // 2) Posted+draft request for posted table (so posted lines exist)
-    // If this call fails, we keep sticky cache as fallback and page still works.
     try {
       const urlAll = forDateUrl(dateISO, true);
       const resAll = await fetchWithSlashFallback(urlAll, {
@@ -1029,7 +1025,6 @@ export default function InventoryCheckPage() {
       if (resAll.ok) {
         const allDetail = await resAll.json().catch(() => null);
         if (seq === checkSeqRef.current && allDetail) {
-          // Use meta from "all" detail too (same fields, but safe)
           setMetaFromDetail(allDetail);
 
           const allLines = allDetail.lines || allDetail.check_lines || allDetail.checkLines || [];
@@ -1145,7 +1140,7 @@ export default function InventoryCheckPage() {
       // timeline after check is known (so we can use check_id for multi-day sessions)
       await loadTimeline({ isoDate: iso, checkId: resolvedCheckId });
 
-      // ✅ IMPORTANT: refresh stock AFTER posting / loading so "diff now" becomes 0 immediately
+      // refresh stock for "live stock now" column
       await reloadStock();
     } finally {
       if (seq === checkSeqRef.current) setLoadingCheck(false);
@@ -1194,12 +1189,9 @@ export default function InventoryCheckPage() {
         if (seq !== checkSeqRef.current) return;
 
         await loadTimeline({ isoDate: iso, checkId: resolvedCheckId });
-
-        // keep live stock fresh for the new view too
         await reloadStock();
       } catch (err) {
-        const aborted =
-          (checkAbortRef.current && checkAbortRef.current.signal?.aborted) || false;
+        const aborted = (checkAbortRef.current && checkAbortRef.current.signal?.aborted) || false;
         if (aborted) return;
         console.error(err);
         setError(err?.message || "Failed to fetch inventory check for selected date.");
@@ -1228,7 +1220,7 @@ export default function InventoryCheckPage() {
     }
   };
 
-  const disableEditing = loadingCheck || posting || savingDraft || sessionBusy;
+  const disableEditing = loadingCheck || posting || sessionBusy;
 
   const canAddToList = !disableEditing && !!Number(pad.itemId || 0) && padStock && padCountedIsValid;
 
@@ -1259,8 +1251,7 @@ export default function InventoryCheckPage() {
     setLines((prev) => {
       const existingIndex = prev.findIndex((ln) => Number(ln.itemId) === itemId);
 
-      // ✅ IMPORTANT: lock the baseline (systemPieces) once the line exists.
-      // This preserves history even if live stock changes later.
+      // ✅ lock the baseline (systemPieces) once the line exists
       const lockedSystem =
         existingIndex >= 0 && Number.isFinite(Number(prev[existingIndex]?.systemPieces))
           ? Number(prev[existingIndex]?.systemPieces)
@@ -1272,9 +1263,9 @@ export default function InventoryCheckPage() {
         id: prev[existingIndex]?.id ?? `local-${Date.now()}-${Math.random()}`,
         itemId,
         itemName: s.item_name || `Item ${itemId}`,
-        systemPieces: lockedSystem, // ✅ locked snapshot
+        systemPieces: lockedSystem,
         countedPieces: counted,
-        diffPieces: diff, // ✅ locked diff vs snapshot
+        diffPieces: diff,
         costPerPiece,
       };
 
@@ -1301,69 +1292,7 @@ export default function InventoryCheckPage() {
     setLines((prev) => prev.filter((ln) => ln.id !== id));
   };
 
-  // ---------- Save draft / post ----------
-  const saveDraftInternal = async ({ silent = false } = {}) => {
-    if (!lines.length) return null;
-    if (loadingCheck) return null;
-
-    setSavingDraft(true);
-    setError("");
-    if (!silent) setMessage("");
-
-    try {
-      const payload = {
-        id: currentCheckId,
-        shop_id: Number(shopId),
-        check_date: toISODate(inventoryDate),
-        notes: null,
-        lines: lines.map((ln) => ({
-          item_id: ln.itemId,
-          counted_pieces: ln.countedPieces,
-        })),
-      };
-
-      const res = await fetchWithSlashFallback(`${API_BASE}/inventory-checks/draft`, {
-        method: "POST",
-        headers: authHeaders,
-        body: JSON.stringify(payload),
-      });
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => null);
-        throw new Error(errData?.detail || `Failed to save inventory draft. Status: ${res.status}`);
-      }
-
-      const data = await res.json();
-      const newId = data?.id ?? data?.check_id ?? data?.checkId ?? null;
-
-      setCurrentCheckId(newId);
-      setCurrentCheckStatus(data.status || "DRAFT");
-      setMetaFromDetail(data);
-
-      const rawLines = data.lines || data.check_lines || data.checkLines || [];
-      setLines(collapseLinesToLatestPerItem(rawLines, { onlyPosted: false }));
-
-      ensureStickyKey(newId);
-
-      await loadHistory(true);
-      await refreshCurrentDate();
-
-      if (!silent) setMessage("Inventory draft saved. Stock is NOT changed yet.");
-      return data;
-    } catch (err) {
-      console.error(err);
-      setError(err?.message || "Failed to save inventory draft.");
-      if (!silent) setMessage("");
-      return null;
-    } finally {
-      setSavingDraft(false);
-    }
-  };
-
-  const handleSaveDraft = async () => {
-    await saveDraftInternal({ silent: false });
-  };
-
+  // ---------- POST-ONLY (Option B) ----------
   const handlePostInventory = async () => {
     if (!lines.length) return;
     if (loadingCheck) return;
@@ -1373,20 +1302,23 @@ export default function InventoryCheckPage() {
     setMessage("");
 
     try {
-      let idToPost = currentCheckId;
+      const iso = toISODate(inventoryDate);
 
-      if (!idToPost) {
-        const saved = await saveDraftInternal({ silent: true });
-        idToPost = saved?.id ?? saved?.check_id ?? saved?.checkId ?? null;
-      }
+      const payload = {
+        shop_id: Number(shopId),
+        check_date: iso,
+        notes: null,
+        lines: lines.map((ln) => ({
+          item_id: ln.itemId,
+          counted_pieces: ln.countedPieces,
+        })),
+      };
 
-      if (!idToPost) {
-        throw new Error("Cannot post: draft was not created. Please click Save draft and try again.");
-      }
-
-      const res = await fetchWithSlashFallback(`${API_BASE}/inventory-checks/${idToPost}/post`, {
+      // ✅ single fast endpoint (no draft step)
+      const res = await fetchWithSlashFallback(`${API_BASE}/inventory-checks/post-with-lines`, {
         method: "POST",
         headers: authHeaders,
+        body: JSON.stringify(payload),
       });
 
       if (!res.ok) {
@@ -1394,22 +1326,28 @@ export default function InventoryCheckPage() {
         throw new Error(errData?.detail || `Failed to post inventory check. Status: ${res.status}`);
       }
 
-      const data = await res.json();
-      const checkId = data?.id ?? idToPost;
+      const data = await res.json().catch(() => ({}));
+      const checkId = data?.id ?? data?.check_id ?? data?.checkId ?? null;
 
       setCurrentCheckId(checkId);
-      setCurrentCheckStatus(data.status || null);
+      setCurrentCheckStatus(data?.status || "IN_PROGRESS");
       setMetaFromDetail(data);
 
-      const rawLines = data.lines || data.check_lines || data.checkLines || [];
-      setLines(collapseLinesToLatestPerItem(rawLines, { onlyPosted: false }));
+      if (checkId) ensureStickyKey(checkId);
 
-      // ✅ After posting, refresh stock so diff-now becomes 0 immediately
+      // ✅ clear buffer list after posting (since it's already applied)
+      setLines([]);
+      resetPad();
+
+      // ✅ reload everything needed for UI (keep it light)
+      // - posted lines come from /for-date include_posted_lines=true
+      // - count time comes from timeline
+      const seq = ++checkSeqRef.current;
+      await loadCheckForDateFast(iso, seq);
+      await loadTimeline({ isoDate: iso, checkId });
       await reloadStock();
-      await loadHistory(true);
-      await refreshCurrentDate();
 
-      setMessage("Posted. Stock is normalized. You can continue counting and post again anytime.");
+      setMessage("Posted. Stock updated instantly. You can continue counting and post again anytime.");
     } catch (err) {
       console.error(err);
       setError(err?.message || "Failed to post inventory check.");
@@ -1500,6 +1438,7 @@ export default function InventoryCheckPage() {
       }
 
       setMessage("Session closed.");
+      // refresh + clear sticky cache happens inside refresh (via updateSticky)
       await loadHistory(true);
       await refreshCurrentDate();
     } catch (e) {
@@ -1582,15 +1521,11 @@ export default function InventoryCheckPage() {
     color: "#111827",
   };
 
-  const canSaveDraft = lines.length > 0 && !savingDraft && !loadingCheck && !posting && !sessionBusy;
-  const canPost = lines.length > 0 && !posting && !loadingCheck && !savingDraft && !sessionBusy;
+  const canPost = lines.length > 0 && !posting && !loadingCheck && !sessionBusy;
 
   // summary meta
   const progressCounted = Number(checkMeta?.progress_counted_items ?? 0);
   const progressTotal = Number(checkMeta?.progress_total_items ?? 0);
-  const progressPercentRaw = Number(checkMeta?.progress_percent ?? 0);
-  const progressPercent =
-    Number.isFinite(progressPercentRaw) ? Math.max(0, Math.min(1, progressPercentRaw)) : 0;
 
   const postedLinesCount = Number(checkMeta?.posted_lines_count ?? 0);
   const draftLinesCount = Number(checkMeta?.draft_lines_count ?? 0);
@@ -1698,7 +1633,7 @@ export default function InventoryCheckPage() {
                   loadHistory(true);
                 }}
               >
-                History &amp; differences
+                History
               </button>
             </div>
           </div>
@@ -1808,7 +1743,7 @@ export default function InventoryCheckPage() {
         </button>
       </div>
 
-      {/* ✅ Inventory summary strip (now includes posted rows too) */}
+      {/* ✅ Inventory summary strip (includes posted rows too) */}
       <div
         style={{
           backgroundColor: "#ffffff",
@@ -2192,27 +2127,8 @@ export default function InventoryCheckPage() {
             </>
           )}
 
-          {/* Actions */}
+          {/* Actions (POST ONLY) */}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: "12px", marginTop: "14px" }}>
-            <button
-              type="button"
-              onClick={handleSaveDraft}
-              disabled={!canSaveDraft}
-              style={{
-                padding: "0.6rem 1.4rem",
-                borderRadius: "999px",
-                border: "1px solid #d1d5db",
-                backgroundColor: "#ffffff",
-                color: "#111827",
-                fontWeight: 600,
-                fontSize: "0.95rem",
-                cursor: !canSaveDraft ? "not-allowed" : "pointer",
-                opacity: !canSaveDraft ? 0.55 : 1,
-              }}
-            >
-              {savingDraft ? "Saving…" : "Save draft"}
-            </button>
-
             <button
               type="button"
               onClick={handlePostInventory}
@@ -2229,7 +2145,7 @@ export default function InventoryCheckPage() {
                 opacity: !canPost ? 0.85 : 1,
               }}
             >
-              {posting ? "Posting…" : "Post inventory check"}
+              {posting ? "Posting…" : "Post counted items"}
             </button>
           </div>
 
@@ -2239,7 +2155,7 @@ export default function InventoryCheckPage() {
               Posted items (keep visible until inventory is closed)
             </div>
             <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 4, fontWeight: 800 }}>
-              Count time • Item • System (locked) • Live stock now • Counted • Difference (now) • Diff before normalization • Cost/piece • Total difference cost
+              Count time • Item • System (locked) • Live stock now • Counted • Diff before normalization • Cost/piece • Total difference cost
             </div>
 
             {postedRowsForTable.length === 0 ? (
@@ -2262,8 +2178,8 @@ export default function InventoryCheckPage() {
                     style={{
                       display: "grid",
                       gridTemplateColumns:
-                        "120px minmax(220px, 2.2fr) 1fr 1fr 1fr 1fr 1.3fr 1fr 1.3fr",
-                      minWidth: "1460px",
+                        "120px minmax(220px, 2.2fr) 1fr 1fr 1fr 1.3fr 1fr 1.3fr",
+                      minWidth: "1320px",
                       alignItems: "center",
                       padding: "8px 10px",
                       borderBottom: "1px solid #e5e7eb",
@@ -2280,7 +2196,6 @@ export default function InventoryCheckPage() {
                     <div style={{ textAlign: "right" }}>System (locked)</div>
                     <div style={{ textAlign: "right" }}>Live stock now</div>
                     <div style={{ textAlign: "right" }}>Counted</div>
-                    <div style={{ textAlign: "right" }}>Difference (now)</div>
                     <div style={{ textAlign: "right" }}>Diff before norm</div>
                     <div style={{ textAlign: "right" }}>Cost/piece</div>
                     <div style={{ textAlign: "right" }}>Total diff cost</div>
@@ -2292,8 +2207,8 @@ export default function InventoryCheckPage() {
                       style={{
                         display: "grid",
                         gridTemplateColumns:
-                          "120px minmax(220px, 2.2fr) 1fr 1fr 1fr 1fr 1.3fr 1fr 1.3fr",
-                        minWidth: "1460px",
+                          "120px minmax(220px, 2.2fr) 1fr 1fr 1fr 1.3fr 1fr 1.3fr",
+                        minWidth: "1320px",
                         alignItems: "center",
                         padding: "9px 10px",
                         borderBottom: "1px solid #f3f4f6",
@@ -2315,18 +2230,6 @@ export default function InventoryCheckPage() {
                       </div>
 
                       <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>{formatQty(ln.countedPieces)}</div>
-
-                      <div
-                        style={{
-                          textAlign: "right",
-                          whiteSpace: "nowrap",
-                          color: ln.diffNow > 0 ? "#16a34a" : ln.diffNow < 0 ? "#b91c1c" : "#111827",
-                          fontWeight: 900,
-                        }}
-                        title="Counted minus live stock now (should be 0 after normalization)"
-                      >
-                        {formatDiff(ln.diffNow)}
-                      </div>
 
                       <div
                         style={{
@@ -2369,7 +2272,7 @@ export default function InventoryCheckPage() {
         </div>
       )}
 
-      {/* ================= TAB: History & differences ================= */}
+      {/* ================= TAB: History ================= */}
       {activeTab === "history" && (
         <div
           style={{
