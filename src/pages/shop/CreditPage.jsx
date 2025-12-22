@@ -54,6 +54,21 @@ function safeNumber(v) {
 }
 
 /**
+ * ✅ Money helper: compare/pay as integer RWF
+ * Fixes "86000 > 85999.5" style bugs while UI shows 86,000.
+ */
+function moneyToInt(v) {
+  if (v === null || v === undefined) return 0;
+  const s = String(v).trim();
+  if (!s) return 0;
+  const cleaned = s.replace(/,/g, "").replace(/\s+/g, "").replace(/[^\d.-]/g, "");
+  if (!cleaned) return 0;
+  const n = Number(cleaned);
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(n);
+}
+
+/**
  * Grouping key:
  * - phone first
  * - else name
@@ -489,7 +504,9 @@ export default function CreditPage() {
           const sale_date = cd.sale_date ?? cd.saleDate;
           const due_date = cd.due_date ?? cd.dueDate ?? null;
 
-          const original_amount = safeNumber(cd.original_amount ?? cd.originalAmount ?? cd.total_sale_amount ?? cd.totalSaleAmount ?? 0);
+          const original_amount = safeNumber(
+            cd.original_amount ?? cd.originalAmount ?? cd.total_sale_amount ?? cd.totalSaleAmount ?? 0
+          );
           const paid_amount = safeNumber(cd.paid_amount ?? cd.paidAmount ?? 0);
           const balance = safeNumber(cd.balance ?? cd.credit_balance ?? cd.creditBalance ?? 0);
           const profit = safeNumber(cd.total_profit ?? cd.profit ?? 0);
@@ -552,18 +569,13 @@ export default function CreditPage() {
 
       setSelectedGroupDetails(aggregated);
 
-      const openOnlyTotals = creditsByDate.reduce(
-        (acc, cd) => {
-          if (safeNumber(cd.balance || 0) > 0) {
-            acc.original_amount += safeNumber(cd.original_amount || 0);
-            acc.paid_amount += safeNumber(cd.paid_amount || 0);
-            acc.open_balance += safeNumber(cd.balance || 0);
-          }
-          return acc;
-        },
-        { original_amount: 0, paid_amount: 0, open_balance: 0 }
-      );
-      setPaymentAmount(openOnlyTotals.open_balance != null ? String(Math.round(openOnlyTotals.open_balance)) : "");
+      // ✅ FIX: set paymentAmount using integer RWF open balance
+      const openOnlyBalanceInt = creditsByDate.reduce((acc, cd) => {
+        const balInt = moneyToInt(cd.balance ?? 0);
+        if (balInt > 0) acc += balInt;
+        return acc;
+      }, 0);
+      setPaymentAmount(openOnlyBalanceInt > 0 ? String(openOnlyBalanceInt) : "");
 
       setActiveTab("details");
       return aggregated;
@@ -605,20 +617,21 @@ export default function CreditPage() {
   const handleSaveGroupPayment = async () => {
     if (!selectedGroupDetails || !selectedGroupDetails.credits?.length) return;
 
-    const openOnlyBalance = selectedGroupDetails.credits.reduce((acc, cd) => {
-      const bal = safeNumber(cd.balance || 0);
-      if (bal > 0) acc += bal;
+    // ✅ FIX: compare integer RWF vs integer RWF
+    const openOnlyBalanceInt = selectedGroupDetails.credits.reduce((acc, cd) => {
+      const balInt = moneyToInt(cd.balance ?? 0);
+      if (balInt > 0) acc += balInt;
       return acc;
     }, 0);
 
-    const amountNum = safeNumber(paymentAmount || 0);
+    const amountInt = moneyToInt(paymentAmount);
 
-    if (!amountNum || amountNum <= 0) {
+    if (!amountInt || amountInt <= 0) {
       setError("Enter a valid payment amount.");
       setMessage("");
       return;
     }
-    if (amountNum > openOnlyBalance) {
+    if (amountInt > openOnlyBalanceInt) {
       setError("Payment cannot be greater than the customer OPEN balance.");
       setMessage("");
       return;
@@ -638,7 +651,7 @@ export default function CreditPage() {
           ? "MOMO"
           : String(paymentMethod || "").toUpperCase();
 
-      let remaining = amountNum;
+      let remainingInt = amountInt;
 
       const creditsSorted = [...selectedGroupDetails.credits].sort(
         (a, b) => new Date(a.sale_date || 0).getTime() - new Date(b.sale_date || 0).getTime()
@@ -646,25 +659,25 @@ export default function CreditPage() {
 
       for (const credit of creditsSorted) {
         const saleId = credit.sale_id;
-        const bal = safeNumber(credit.balance || 0);
-        if (!saleId || bal <= 0) continue;
+        const balInt = moneyToInt(credit.balance ?? 0);
+        if (!saleId || balInt <= 0) continue;
 
-        const payNow = Math.min(bal, remaining);
-        if (payNow <= 0) continue;
+        const payNowInt = Math.min(balInt, remainingInt);
+        if (payNowInt <= 0) continue;
 
         await fetchJson(`${API_BASE}/credits/payments`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             sale_id: saleId,
-            amount: payNow,
+            amount: payNowInt, // ✅ integer
             payment_method: methodForBackend,
             note: paymentNote || null,
           }),
         });
 
-        remaining -= payNow;
-        if (remaining <= 0) break;
+        remainingInt -= payNowInt;
+        if (remainingInt <= 0) break;
       }
 
       setMessage("Payment recorded successfully.");
