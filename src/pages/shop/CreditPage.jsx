@@ -612,7 +612,7 @@ export default function CreditPage() {
   };
 
   // ------------------------------------------------------------
-  // Save GROUP payment (only applies to open credits in this group)
+  // Save GROUP payment (customer total) ✅ NOW uses backend split endpoint
   // ------------------------------------------------------------
   const handleSaveGroupPayment = async () => {
     if (!selectedGroupDetails || !selectedGroupDetails.credits?.length) return;
@@ -651,34 +651,28 @@ export default function CreditPage() {
           ? "MOMO"
           : String(paymentMethod || "").toUpperCase();
 
-      let remainingInt = amountInt;
+      // ✅ NEW: single backend call that allocates across open sales safely
+      const body = {
+        shop_id: Number(shopId),
+        amount: amountInt, // ✅ integer RWF
+        payment_method: methodForBackend,
+        note: paymentNote || null,
+      };
 
-      const creditsSorted = [...selectedGroupDetails.credits].sort(
-        (a, b) => new Date(a.sale_date || 0).getTime() - new Date(b.sale_date || 0).getTime()
-      );
+      const phone = String(selectedCustomer?.phone || "").trim();
+      const name = String(selectedCustomer?.name || "").trim();
 
-      for (const credit of creditsSorted) {
-        const saleId = credit.sale_id;
-        const balInt = moneyToInt(credit.balance ?? 0);
-        if (!saleId || balInt <= 0) continue;
-
-        const payNowInt = Math.min(balInt, remainingInt);
-        if (payNowInt <= 0) continue;
-
-        await fetchJson(`${API_BASE}/credits/payments`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            sale_id: saleId,
-            amount: payNowInt, // ✅ integer
-            payment_method: methodForBackend,
-            note: paymentNote || null,
-          }),
-        });
-
-        remainingInt -= payNowInt;
-        if (remainingInt <= 0) break;
+      if (phone) body.customer_phone = phone;
+      else if (name) body.customer_name = name;
+      else {
+        throw new Error("Customer is missing phone and name. Cannot record customer total payment.");
       }
+
+      await fetchJson(`${API_BASE}/credits/payments/customer-total`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
 
       setMessage("Payment recorded successfully.");
       setError("");
