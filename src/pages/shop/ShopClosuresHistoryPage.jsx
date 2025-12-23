@@ -163,9 +163,7 @@ function DailyClosureHistoryPage() {
     (day) => {
       if (!day) return;
       // IMPORTANT: keep this path consistent with your SalesPOS route
-      navigate(
-        `/shops/${shopId}/sales-pos?tab=closure&closureDate=${encodeURIComponent(day)}`
-      );
+      navigate(`/shops/${shopId}/sales-pos?tab=closure&closureDate=${encodeURIComponent(day)}`);
     },
     [navigate, shopId]
   );
@@ -240,10 +238,7 @@ function DailyClosureHistoryPage() {
   // ----------------------------
   // Load system totals for EVERY day in range (AUTH)
   // ----------------------------
-  const allDaysInRange = useMemo(
-    () => buildDateRangeList(dateFrom, dateTo),
-    [dateFrom, dateTo]
-  );
+  const allDaysInRange = useMemo(() => buildDateRangeList(dateFrom, dateTo), [dateFrom, dateTo]);
 
   const loadSystemTotalsForRange = useCallback(async () => {
     if (!shopId || !headersReady) {
@@ -307,16 +302,7 @@ function DailyClosureHistoryPage() {
       console.error(err);
       setError(err.message || "Failed to rebuild range.");
     }
-  }, [
-    API_BASE,
-    authedFetch,
-    dateFrom,
-    dateTo,
-    headersReady,
-    loadClosures,
-    loadSystemTotalsForRange,
-    shopId,
-  ]);
+  }, [API_BASE, authedFetch, dateFrom, dateTo, headersReady, loadClosures, loadSystemTotalsForRange, shopId]);
 
   // ----------------------------
   // Summaries
@@ -358,17 +344,21 @@ function DailyClosureHistoryPage() {
       const sys = systemByDate[day];
 
       const sold = Number(sys?.total_sold_amount ?? c.total_sold_amount ?? 0);
-      const profit = Number(sys?.total_profit ?? c.total_profit ?? 0);
+
+      // ✅ system-totals returns "total_profit_realized_today"
+      const profitRealized = Number(
+        sys?.total_profit_realized_today ?? sys?.total_profit_created_today ?? c.total_profit ?? 0
+      );
 
       const exp = Number(sys?.expenses_total ?? c.total_expenses ?? 0);
-      const net = profit - exp;
+      const net = profitRealized - exp;
 
       const counted = Number(c.total_counted_amount || 0);
       const expectedAfter = Number(sys?.expected_after_expenses_total ?? 0);
       const diff = sys ? counted - expectedAfter : Number(c.difference_amount || 0);
 
       totalSold += sold;
-      totalProfit += profit;
+      totalProfit += profitRealized;
       totalExpenses += exp;
       totalNetProfit += net;
       totalDifference += diff;
@@ -623,9 +613,7 @@ function DailyClosureHistoryPage() {
         )}
       </div>
 
-      {error && (
-        <div style={{ marginBottom: 10, color: "#b91c1c", fontSize: 13 }}>{error}</div>
-      )}
+      {error && <div style={{ marginBottom: 10, color: "#b91c1c", fontSize: 13 }}>{error}</div>}
 
       {/* Period summary */}
       <div
@@ -663,15 +651,11 @@ function DailyClosureHistoryPage() {
         >
           <div>
             <div style={{ color: "#6b7280" }}>Days closed</div>
-            <div style={{ fontSize: "18px", fontWeight: 800 }}>
-              {formatMoney(summary.daysCount)}
-            </div>
+            <div style={{ fontSize: "18px", fontWeight: 800 }}>{formatMoney(summary.daysCount)}</div>
           </div>
           <div>
             <div style={{ color: "#6b7280" }}>Total sold</div>
-            <div style={{ fontSize: "18px", fontWeight: 800 }}>
-              {formatMoney(summary.totalSold)}
-            </div>
+            <div style={{ fontSize: "18px", fontWeight: 800 }}>{formatMoney(summary.totalSold)}</div>
           </div>
           <div>
             <div style={{ color: "#6b7280" }}>Total profit</div>
@@ -681,9 +665,7 @@ function DailyClosureHistoryPage() {
           </div>
           <div>
             <div style={{ color: "#6b7280" }}>Total expenses</div>
-            <div style={{ fontSize: "16px", fontWeight: 700 }}>
-              {formatMoney(summary.totalExpenses)}
-            </div>
+            <div style={{ fontSize: "16px", fontWeight: 700 }}>{formatMoney(summary.totalExpenses)}</div>
           </div>
           <div>
             <div style={{ color: "#6b7280" }}>Net profit (sum)</div>
@@ -781,10 +763,14 @@ function DailyClosureHistoryPage() {
               >
                 <th style={{ padding: "6px 4px" }}>Date</th>
                 <th style={{ padding: "6px 4px", textAlign: "right" }}>Sold</th>
-                <th style={{ padding: "6px 4px", textAlign: "right" }}>Profit</th>
+                <th style={{ padding: "6px 4px", textAlign: "right" }}>Credit given</th>
+                <th style={{ padding: "6px 4px", textAlign: "right" }}>Credit paid</th>
+                <th style={{ padding: "6px 4px", textAlign: "right" }}>Expenses</th>
+                <th style={{ padding: "6px 4px", textAlign: "right" }}>
+                  Expected money (after expenses)
+                </th>
                 <th style={{ padding: "6px 4px", textAlign: "right" }}>Counted</th>
                 <th style={{ padding: "6px 4px", textAlign: "right" }}>Difference</th>
-                <th style={{ padding: "6px 4px", textAlign: "right" }}>Expenses</th>
                 <th style={{ padding: "6px 4px", textAlign: "right" }}>Net profit</th>
                 <th style={{ padding: "6px 4px" }}>Note</th>
               </tr>
@@ -800,31 +786,65 @@ function DailyClosureHistoryPage() {
                     ? Number(sys?.total_sold_amount ?? c?.total_sold_amount ?? 0)
                     : Number(c?.total_sold_amount ?? 0);
 
-                const profit =
+                const creditGiven =
                   viewMode === "system"
-                    ? Number(sys?.total_profit ?? c?.total_profit ?? 0)
-                    : Number(c?.total_profit ?? 0);
+                    ? Number(sys?.credit_created_today ?? c?.credit_created_today ?? 0)
+                    : Number(c?.credit_created_today ?? 0);
+
+                const creditPaid =
+                  viewMode === "system"
+                    ? Number(
+                        sys?.credit_paid_today ??
+                          c?.credit_paid_today ??
+                          c?.credit_paid_amount ??
+                          0
+                      )
+                    : Number(c?.credit_paid_today ?? c?.credit_paid_amount ?? 0);
+
+                const expenses =
+                  viewMode === "system"
+                    ? Number(sys?.expenses_total ?? c?.total_expenses ?? 0)
+                    : Number(c?.total_expenses ?? 0);
+
+                // Prefer system computed expected_after_expenses_total.
+                // Fallback: Sold - Credit given + Credit paid - Expenses
+                const expectedAfterExpenses =
+                  viewMode === "system"
+                    ? Number(
+                        sys?.expected_after_expenses_total ??
+                          c?.expected_after_expenses_total ??
+                          sold - creditGiven + creditPaid - expenses
+                      )
+                    : Number(
+                        c?.expected_after_expenses_total ??
+                          sold - creditGiven + creditPaid - expenses
+                      );
 
                 const counted = hasClosure ? Number(c.total_counted_amount || 0) : null;
 
-                const exp = hasClosure
-                  ? Number(
-                      (viewMode === "system" ? sys?.expenses_total : c.total_expenses) || 0
-                    )
-                  : null;
-
                 let diff = null;
-                let netProfit = null;
-
                 if (hasClosure) {
-                  const expectedAfter = Number(sys?.expected_after_expenses_total ?? 0);
-                  if (viewMode === "system" && sys) {
-                    diff = counted - expectedAfter;
-                  } else {
-                    diff = Number(c.difference_amount || 0);
-                  }
-                  netProfit = Number(c.total_profit || 0) - (exp ?? 0);
+                  if (viewMode === "system" && sys) diff = counted - expectedAfterExpenses;
+                  else diff = Number(c.difference_amount || 0);
                 }
+
+                // Net profit:
+                // - system mode: use system profit realized if present, else closure total_profit
+                // - saved mode: use stored net_profit (fallback to total_profit - expenses)
+                const profitRealized =
+                  viewMode === "system"
+                    ? Number(
+                        sys?.total_profit_realized_today ??
+                          sys?.total_profit_created_today ??
+                          c?.total_profit ??
+                          0
+                      )
+                    : Number(c?.total_profit ?? 0);
+
+                const netProfit =
+                  viewMode === "system"
+                    ? profitRealized - expenses
+                    : Number(c?.net_profit ?? profitRealized - expenses);
 
                 const diffColorStyle =
                   diff === null
@@ -873,15 +893,24 @@ function DailyClosureHistoryPage() {
                       </button>
                     </td>
 
+                    <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(sold)}</td>
                     <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                      {formatMoney(sold)}
+                      {formatMoney(creditGiven)}
                     </td>
                     <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                      {formatMoney(profit)}
+                      {formatMoney(creditPaid)}
                     </td>
+                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                      {formatMoney(expenses)}
+                    </td>
+                    <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 700 }}>
+                      {formatMoney(expectedAfterExpenses)}
+                    </td>
+
                     <td style={{ padding: "8px 4px", textAlign: "right" }}>
                       {hasClosure ? formatMoney(counted) : ""}
                     </td>
+
                     <td
                       style={{
                         padding: "8px 4px",
@@ -891,18 +920,17 @@ function DailyClosureHistoryPage() {
                     >
                       {hasClosure && diff !== null ? formatMoney(diff) : ""}
                     </td>
-                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
-                      {hasClosure && exp !== null ? formatMoney(exp) : ""}
-                    </td>
+
                     <td
                       style={{
                         padding: "8px 4px",
                         textAlign: "right",
-                        color: hasClosure ? "#16a34a" : "#4b5563",
+                        color: netProfit > 0 ? "#16a34a" : netProfit < 0 ? "#b91c1c" : "#4b5563",
                       }}
                     >
-                      {hasClosure && netProfit !== null ? formatMoney(netProfit) : ""}
+                      {formatMoney(netProfit)}
                     </td>
+
                     <td style={{ padding: "8px 4px" }}>
                       <span style={{ fontSize: "11px", color: "#6b7280" }}>
                         {hasClosure ? c.note || "" : "Not closed"}
@@ -916,28 +944,37 @@ function DailyClosureHistoryPage() {
         ) : (
           <div style={{ padding: "6px 4px", fontSize: "13px" }}>
             {!selectedClosure ? (
-              <div style={{ color: "#6b7280" }}>
-                Select a closure in the list tab to see full details.
-              </div>
+              <div style={{ color: "#6b7280" }}>Select a closure in the list tab to see full details.</div>
             ) : (
               (() => {
                 const day = toISODateOnly(selectedClosure.closure_date);
                 const sys = systemByDate[day];
 
                 const counted = Number(selectedClosure.total_counted_amount || 0);
-                const exp = Number(
+                const exp = Number((viewMode === "system" ? sys?.expenses_total : selectedClosure.total_expenses) || 0);
+
+                const expectedAfter = Number(
                   (viewMode === "system"
-                    ? sys?.expenses_total
-                    : selectedClosure.total_expenses) || 0
+                    ? sys?.expected_after_expenses_total
+                    : selectedClosure.expected_after_expenses_total) ??
+                    0
                 );
 
-                const expectedAfter = Number(sys?.expected_after_expenses_total || 0);
                 const diff =
                   viewMode === "system" && sys
                     ? counted - expectedAfter
                     : Number(selectedClosure.difference_amount || 0);
 
-                const netProfit = Number(selectedClosure.total_profit || 0) - exp;
+                const profitRealized = Number(
+                  (viewMode === "system"
+                    ? sys?.total_profit_realized_today ?? sys?.total_profit_created_today
+                    : selectedClosure.total_profit) ?? 0
+                );
+
+                const netProfit =
+                  viewMode === "system"
+                    ? profitRealized - exp
+                    : Number(selectedClosure.net_profit ?? profitRealized - exp);
 
                 return (
                   <>
@@ -950,9 +987,7 @@ function DailyClosureHistoryPage() {
                       }}
                     >
                       <div>
-                        <div style={{ fontSize: "14px", fontWeight: 700 }}>
-                          Selected day details
-                        </div>
+                        <div style={{ fontSize: "14px", fontWeight: 700 }}>Selected day details</div>
                         <div style={{ fontSize: "12px", color: "#6b7280" }}>{day}</div>
                       </div>
                       <button
@@ -988,57 +1023,37 @@ function DailyClosureHistoryPage() {
                         </div>
                       </div>
                       <div>
-                        <div style={{ color: "#6b7280" }}>Total profit</div>
-                        <div
-                          style={{
-                            fontSize: "16px",
-                            fontWeight: 700,
-                            color: "#16a34a",
-                          }}
-                        >
-                          {formatMoney(selectedClosure.total_profit || 0)}
-                        </div>
-                      </div>
-                      <div>
                         <div style={{ color: "#6b7280" }}>Counted total</div>
-                        <div style={{ fontSize: "16px", fontWeight: 700 }}>
-                          {formatMoney(counted)}
-                        </div>
+                        <div style={{ fontSize: "16px", fontWeight: 700 }}>{formatMoney(counted)}</div>
                       </div>
                       <div>
-                        <div style={{ color: "#6b7280" }}>
-                          Difference ({viewMode})
+                        <div style={{ color: "#6b7280" }}>Expenses ({viewMode})</div>
+                        <div style={{ fontSize: "16px", fontWeight: 700 }}>{formatMoney(exp)}</div>
+                      </div>
+
+                      <div>
+                        <div style={{ color: "#6b7280" }}>Expected money (after expenses)</div>
+                        <div style={{ fontSize: "16px", fontWeight: 800 }}>
+                          {formatMoney(expectedAfter)}
                         </div>
+                      </div>
+
+                      <div>
+                        <div style={{ color: "#6b7280" }}>Difference ({viewMode})</div>
                         <div
                           style={{
                             fontSize: "16px",
                             fontWeight: 700,
-                            color:
-                              diff > 0 ? "#16a34a" : diff < 0 ? "#b91c1c" : "#4b5563",
+                            color: diff > 0 ? "#16a34a" : diff < 0 ? "#b91c1c" : "#4b5563",
                           }}
                         >
                           {formatMoney(diff)}
                         </div>
                       </div>
+
                       <div>
-                        <div style={{ color: "#6b7280" }}>
-                          Expenses ({viewMode})
-                        </div>
-                        <div style={{ fontSize: "16px", fontWeight: 700 }}>
-                          {formatMoney(exp)}
-                        </div>
-                      </div>
-                      <div>
-                        <div style={{ color: "#6b7280" }}>
-                          Net profit ({viewMode})
-                        </div>
-                        <div
-                          style={{
-                            fontSize: "16px",
-                            fontWeight: 700,
-                            color: "#16a34a",
-                          }}
-                        >
+                        <div style={{ color: "#6b7280" }}>Net profit ({viewMode})</div>
+                        <div style={{ fontSize: "16px", fontWeight: 700, color: "#16a34a" }}>
                           {formatMoney(netProfit)}
                         </div>
                       </div>
@@ -1047,9 +1062,7 @@ function DailyClosureHistoryPage() {
                     {selectedClosure.note && (
                       <div style={{ marginTop: "10px" }}>
                         <div style={{ color: "#6b7280", marginBottom: "2px" }}>Note</div>
-                        <div style={{ fontSize: "12px" }}>
-                          {selectedClosure.note}
-                        </div>
+                        <div style={{ fontSize: "12px" }}>{selectedClosure.note}</div>
                       </div>
                     )}
                   </>
