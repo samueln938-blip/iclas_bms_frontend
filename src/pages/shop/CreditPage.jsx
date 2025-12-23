@@ -56,6 +56,7 @@ function safeNumber(v) {
 /**
  * ✅ Money helper: compare/pay as integer RWF
  * Fixes "86000 > 85999.5" style bugs while UI shows 86,000.
+ * (Used for user-entered amounts)
  */
 function moneyToInt(v) {
   if (v === null || v === undefined) return 0;
@@ -68,11 +69,33 @@ function moneyToInt(v) {
   return Math.round(n);
 }
 
+/**
+ * ✅ Balance helper: treat any sub-1RWF residual as ZERO.
+ * This prevents 0.5 from rounding to 1 and keeping credits "open".
+ */
+function balanceToInt(v) {
+  if (v === null || v === undefined) return 0;
+  const s = String(v).trim();
+  if (!s) return 0;
+  const cleaned = s.replace(/,/g, "").replace(/\s+/g, "").replace(/[^\d.-]/g, "");
+  if (!cleaned) return 0;
+
+  const n = Number(cleaned);
+  if (!Number.isFinite(n)) return 0;
+
+  // Handle tiny negative/positive float noise
+  if (Math.abs(n) < 0.999) return 0;
+
+  // Floor so 0.5 becomes 0 (not 1)
+  return Math.max(0, Math.floor(n + 1e-6));
+}
+
 function getBalanceNumber(c) {
-  return safeNumber(c?.balance ?? c?.credit_balance ?? c?.creditBalance ?? 0);
+  // ✅ use integer-safe balance for all OPEN calculations
+  return balanceToInt(c?.balance ?? c?.credit_balance ?? c?.creditBalance ?? 0);
 }
 function getBalanceInt(c) {
-  return moneyToInt(c?.balance ?? c?.credit_balance ?? c?.creditBalance ?? 0);
+  return balanceToInt(c?.balance ?? c?.credit_balance ?? c?.creditBalance ?? 0);
 }
 
 /**
@@ -90,7 +113,7 @@ function normalizeKey(name, phone, saleId) {
 }
 
 function isOpenCredit(c) {
-  // ✅ FIX: use integer RWF for open/closed determination (prevents "0" but still listed)
+  // ✅ FIX: use balanceToInt (floors) to prevent 0.5 => 1 "open"
   return getBalanceInt(c) > 0;
 }
 
@@ -336,10 +359,38 @@ export default function CreditPage() {
         credits = data.credits || [];
       }
 
-      const safeCredits = Array.isArray(credits) ? credits : [];
+      const safeCredits0 = Array.isArray(credits) ? credits : [];
+
+      // ✅ FIX: when status=open, force-remove any credits whose balance is effectively 0.
+      // This prevents "0 but still open" even if backend returns float noise like 0.5.
+      const safeCredits =
+        String(status || "").toLowerCase() === "open"
+          ? safeCredits0.filter((c) => getBalanceInt(c) > 0)
+          : safeCredits0;
+
       setCreditsRaw(safeCredits);
 
-      if (apiSummary && Object.keys(apiSummary).length > 0) {
+      // ✅ If open: compute summary from filtered list (so UI matches what you see)
+      if (String(status || "").toLowerCase() === "open") {
+        const totals = safeCredits.reduce(
+          (acc, c) => {
+            acc.credits_count += 1;
+            acc.original_amount += safeNumber(c.original_amount || 0);
+            acc.paid_amount += safeNumber(c.paid_amount || 0);
+            acc.open_balance += getBalanceNumber(c);
+            return acc;
+          },
+          { credits_count: 0, original_amount: 0, paid_amount: 0, open_balance: 0 }
+        );
+
+        setSummary((prev) => ({
+          credits_count: totals.credits_count,
+          original_amount: totals.original_amount,
+          paid_amount: totals.paid_amount,
+          profit: safeNumber(apiSummary.profit ?? prev.profit ?? 0),
+          open_balance: totals.open_balance,
+        }));
+      } else if (apiSummary && Object.keys(apiSummary).length > 0) {
         setSummary({
           credits_count: safeNumber(apiSummary.credits_count || 0),
           original_amount: safeNumber(apiSummary.original_amount || 0),
@@ -459,10 +510,10 @@ export default function CreditPage() {
     return list;
   }, [creditsRaw]);
 
-  // ✅ FIX: when viewing OPEN credits, hide customers with open balance == 0 (integer RWF check)
+  // ✅ FIX: when viewing OPEN credits, hide customers with open balance == 0
   const displayGroupedCredits = useMemo(() => {
     if (statusFilter !== "open") return groupedCredits;
-    return groupedCredits.filter((g) => moneyToInt(g?.totals?.open_balance ?? 0) > 0);
+    return groupedCredits.filter((g) => balanceToInt(g?.totals?.open_balance ?? 0) > 0);
   }, [groupedCredits, statusFilter]);
 
   const filteredGroupedCredits = useMemo(() => {
@@ -538,7 +589,7 @@ export default function CreditPage() {
           acc.credits_count += 1;
           acc.original_amount += safeNumber(cd.original_amount || 0);
           acc.paid_amount += safeNumber(cd.paid_amount || 0);
-          acc.open_balance += safeNumber(cd.balance || 0);
+          acc.open_balance += balanceToInt(cd.balance || 0);
           acc.profit += safeNumber(cd.profit || 0);
           return acc;
         },
@@ -586,7 +637,7 @@ export default function CreditPage() {
 
       // ✅ FIX: set paymentAmount using integer RWF open balance
       const openOnlyBalanceInt = creditsByDate.reduce((acc, cd) => {
-        const balInt = moneyToInt(cd.balance ?? 0);
+        const balInt = balanceToInt(cd.balance ?? 0);
         if (balInt > 0) acc += balInt;
         return acc;
       }, 0);
@@ -624,7 +675,6 @@ export default function CreditPage() {
       return { cleared: true };
     }
 
-    // ✅ If we're in OPEN filter and customer is now fully cleared, remove them from the list immediately.
     const openBalIntFromList = credits.reduce((acc, c) => {
       const balInt = getBalanceInt(c);
       return acc + (balInt > 0 ? balInt : 0);
@@ -651,9 +701,8 @@ export default function CreditPage() {
   const handleSaveGroupPayment = async () => {
     if (!selectedGroupDetails || !selectedGroupDetails.credits?.length) return;
 
-    // ✅ FIX: compare integer RWF vs integer RWF
     const openOnlyBalanceInt = selectedGroupDetails.credits.reduce((acc, cd) => {
-      const balInt = moneyToInt(cd.balance ?? 0);
+      const balInt = balanceToInt(cd.balance ?? 0);
       if (balInt > 0) acc += balInt;
       return acc;
     }, 0);
@@ -685,10 +734,9 @@ export default function CreditPage() {
           ? "MOMO"
           : String(paymentMethod || "").toUpperCase();
 
-      // ✅ NEW: single backend call that allocates across open sales safely
       const body = {
         shop_id: Number(shopId),
-        amount: amountInt, // ✅ integer RWF
+        amount: amountInt,
         payment_method: methodForBackend,
         note: paymentNote || null,
       };
@@ -708,7 +756,6 @@ export default function CreditPage() {
         body: JSON.stringify(body),
       });
 
-      // ✅ If this payment clears the full open balance, show "cleared" message and remove customer from OPEN list
       const fullyCleared = amountInt === openOnlyBalanceInt;
 
       setError("");
@@ -718,7 +765,6 @@ export default function CreditPage() {
 
       if (fullyCleared || cleared) {
         setMessage("Credit cleared successfully.");
-        // Customer disappears in OPEN filter because we filter open_balance == 0
         setActiveTab("open");
       } else {
         setMessage("Payment recorded successfully.");
@@ -738,11 +784,11 @@ export default function CreditPage() {
   const selectedOpenTotals = useMemo(() => {
     const t = selectedCredits.reduce(
       (acc, cd) => {
-        const balInt = moneyToInt(cd.balance || 0);
+        const balInt = balanceToInt(cd.balance || 0);
         if (balInt > 0) {
           acc.original += safeNumber(cd.original_amount || 0);
           acc.paid += safeNumber(cd.paid_amount || 0);
-          acc.balance += safeNumber(cd.balance || 0);
+          acc.balance += balInt;
           acc.open_sales += 1;
         }
         return acc;
@@ -752,7 +798,7 @@ export default function CreditPage() {
     return t;
   }, [selectedCredits]);
 
-  const canPay = !!selectedGroupDetails && moneyToInt(selectedOpenTotals.balance || 0) > 0;
+  const canPay = !!selectedGroupDetails && balanceToInt(selectedOpenTotals.balance || 0) > 0;
 
   if (loadingShop) return <div style={{ padding: "24px" }}><p>Loading shop...</p></div>;
   if (error && !shop) return <div style={{ padding: "24px", color: "red" }}><p>{error}</p></div>;
@@ -927,7 +973,7 @@ export default function CreditPage() {
               {filteredGroupedCredits.map((g) => {
                 const isActive = g.key === selectedCustomerKey;
                 const hasOverdue = (g.overdue_count || 0) > 0;
-                const isFullyClosed = moneyToInt(g.totals.open_balance || 0) <= 0;
+                const isFullyClosed = balanceToInt(g.totals.open_balance || 0) <= 0;
 
                 return (
                   <button
@@ -1040,7 +1086,7 @@ export default function CreditPage() {
 
                 <div style={{ textAlign: "right" }}>
                   <div style={{ fontSize: 12, color: "#6b7280" }}>Total OPEN balance</div>
-                  <div style={{ fontSize: 18, fontWeight: 900, color: moneyToInt(selectedOpenTotals.balance || 0) > 0 ? "#b91c1c" : "#16a34a" }}>
+                  <div style={{ fontSize: 18, fontWeight: 900, color: balanceToInt(selectedOpenTotals.balance || 0) > 0 ? "#b91c1c" : "#16a34a" }}>
                     {formatMoney(selectedOpenTotals.balance || 0)}
                   </div>
                 </div>
@@ -1062,7 +1108,7 @@ export default function CreditPage() {
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                   {selectedCredits.map((cd) => {
-                    const open = moneyToInt(cd.balance || 0) > 0;
+                    const open = balanceToInt(cd.balance || 0) > 0;
                     const items = Array.isArray(cd.items) ? cd.items : [];
                     const itemsTotal = items.reduce((acc, it) => acc + safeNumber(it.line_total || 0), 0);
 
