@@ -68,6 +68,13 @@ function moneyToInt(v) {
   return Math.round(n);
 }
 
+function getBalanceNumber(c) {
+  return safeNumber(c?.balance ?? c?.credit_balance ?? c?.creditBalance ?? 0);
+}
+function getBalanceInt(c) {
+  return moneyToInt(c?.balance ?? c?.credit_balance ?? c?.creditBalance ?? 0);
+}
+
 /**
  * Grouping key:
  * - phone first
@@ -83,7 +90,8 @@ function normalizeKey(name, phone, saleId) {
 }
 
 function isOpenCredit(c) {
-  return safeNumber(c?.balance ?? c?.credit_balance ?? c?.creditBalance ?? 0) > 0;
+  // ✅ FIX: use integer RWF for open/closed determination (prevents "0" but still listed)
+  return getBalanceInt(c) > 0;
 }
 
 function normalizeCreditItems(creditDetail) {
@@ -345,7 +353,7 @@ export default function CreditPage() {
             acc.credits_count += 1;
             acc.original_amount += safeNumber(c.original_amount || 0);
             acc.paid_amount += safeNumber(c.paid_amount || 0);
-            acc.open_balance += safeNumber(c.balance || 0);
+            acc.open_balance += getBalanceNumber(c);
             return acc;
           },
           { credits_count: 0, original_amount: 0, paid_amount: 0, open_balance: 0 }
@@ -360,6 +368,7 @@ export default function CreditPage() {
         }));
       }
 
+      // Keep selection safe: if the selected customer no longer exists at all, clear it.
       if (selectedCustomerKey) {
         const stillExists = safeCredits.some(
           (c) => normalizeKey(c.customer_name, c.customer_phone, c.sale_id) === selectedCustomerKey
@@ -420,7 +429,7 @@ export default function CreditPage() {
       groups[key].totals.credits_count += 1;
       groups[key].totals.original_amount += safeNumber(c.original_amount || 0);
       groups[key].totals.paid_amount += safeNumber(c.paid_amount || 0);
-      groups[key].totals.open_balance += safeNumber(c.balance || 0);
+      groups[key].totals.open_balance += getBalanceNumber(c);
 
       if (isOpenCredit(c)) groups[key].open_count += 1;
       else groups[key].closed_count += 1;
@@ -450,17 +459,23 @@ export default function CreditPage() {
     return list;
   }, [creditsRaw]);
 
+  // ✅ FIX: when viewing OPEN credits, hide customers with open balance == 0 (integer RWF check)
+  const displayGroupedCredits = useMemo(() => {
+    if (statusFilter !== "open") return groupedCredits;
+    return groupedCredits.filter((g) => moneyToInt(g?.totals?.open_balance ?? 0) > 0);
+  }, [groupedCredits, statusFilter]);
+
   const filteredGroupedCredits = useMemo(() => {
     const q = (search || "").trim().toLowerCase();
-    if (!q) return groupedCredits;
-    return groupedCredits.filter((g) => {
+    if (!q) return displayGroupedCredits;
+    return displayGroupedCredits.filter((g) => {
       const name = (g.customer_name || "").toLowerCase();
       const phone = (g.customer_phone || "").toLowerCase();
       return name.includes(q) || phone.includes(q);
     });
-  }, [groupedCredits, search]);
+  }, [displayGroupedCredits, search]);
 
-  const hasCredits = groupedCredits.length > 0;
+  const hasCredits = displayGroupedCredits.length > 0;
 
   // ------------------------------------------------------------
   // Load details for ALL sales in a customer group
@@ -588,20 +603,38 @@ export default function CreditPage() {
     }
   };
 
-  const reloadSelectedGroup = async () => {
-    if (!selectedCustomerKey) return;
+  const clearSelection = () => {
+    setSelectedCustomerKey(null);
+    setSelectedCustomer(null);
+    setSelectedGroupDetails(null);
+    setPaymentAmount("");
+    setPaymentNote("");
+    setActiveTab("open");
+  };
+
+  const reloadSelectedGroup = async ({ autoClearIfClosed = false } = {}) => {
+    if (!selectedCustomerKey) return { cleared: false };
+
     const fresh = await loadCredits(statusFilter);
 
     const credits = fresh.filter((c) => normalizeKey(c.customer_name, c.customer_phone, c.sale_id) === selectedCustomerKey);
+
     if (!credits.length) {
-      setSelectedCustomerKey(null);
-      setSelectedCustomer(null);
-      setSelectedGroupDetails(null);
-      setPaymentAmount("");
-      setPaymentNote("");
-      setActiveTab("open");
-      return;
+      clearSelection();
+      return { cleared: true };
     }
+
+    // ✅ If we're in OPEN filter and customer is now fully cleared, remove them from the list immediately.
+    const openBalIntFromList = credits.reduce((acc, c) => {
+      const balInt = getBalanceInt(c);
+      return acc + (balInt > 0 ? balInt : 0);
+    }, 0);
+
+    if (autoClearIfClosed && openBalIntFromList <= 0) {
+      clearSelection();
+      return { cleared: true };
+    }
+
     const groupObj = {
       key: selectedCustomerKey,
       customer_name: selectedCustomer?.name || credits[0]?.customer_name || "Unknown customer",
@@ -609,6 +642,7 @@ export default function CreditPage() {
       credits,
     };
     await loadCustomerGroupDetail(groupObj);
+    return { cleared: false };
   };
 
   // ------------------------------------------------------------
@@ -674,12 +708,22 @@ export default function CreditPage() {
         body: JSON.stringify(body),
       });
 
-      setMessage("Payment recorded successfully.");
+      // ✅ If this payment clears the full open balance, show "cleared" message and remove customer from OPEN list
+      const fullyCleared = amountInt === openOnlyBalanceInt;
+
       setError("");
       setPaymentNote("");
 
-      await reloadSelectedGroup();
-      setActiveTab("details");
+      const { cleared } = await reloadSelectedGroup({ autoClearIfClosed: true });
+
+      if (fullyCleared || cleared) {
+        setMessage("Credit cleared successfully.");
+        // Customer disappears in OPEN filter because we filter open_balance == 0
+        setActiveTab("open");
+      } else {
+        setMessage("Payment recorded successfully.");
+        setActiveTab("details");
+      }
     } catch (err) {
       console.error(err);
       setError(err?.message || "Failed to save payment.");
@@ -694,11 +738,11 @@ export default function CreditPage() {
   const selectedOpenTotals = useMemo(() => {
     const t = selectedCredits.reduce(
       (acc, cd) => {
-        const bal = safeNumber(cd.balance || 0);
-        if (bal > 0) {
+        const balInt = moneyToInt(cd.balance || 0);
+        if (balInt > 0) {
           acc.original += safeNumber(cd.original_amount || 0);
           acc.paid += safeNumber(cd.paid_amount || 0);
-          acc.balance += bal;
+          acc.balance += safeNumber(cd.balance || 0);
           acc.open_sales += 1;
         }
         return acc;
@@ -708,7 +752,7 @@ export default function CreditPage() {
     return t;
   }, [selectedCredits]);
 
-  const canPay = !!selectedGroupDetails && safeNumber(selectedOpenTotals.balance || 0) > 0;
+  const canPay = !!selectedGroupDetails && moneyToInt(selectedOpenTotals.balance || 0) > 0;
 
   if (loadingShop) return <div style={{ padding: "24px" }}><p>Loading shop...</p></div>;
   if (error && !shop) return <div style={{ padding: "24px", color: "red" }}><p>{error}</p></div>;
@@ -718,7 +762,6 @@ export default function CreditPage() {
 
   return (
     <div style={{ padding: "16px 24px 24px" }}>
-      {/* header unchanged */}
       {canSeeWorkspaceLink ? (
         <button onClick={() => navigate(`/shops/${shopId}`)} style={{ border: "none", background: "transparent", padding: 0, marginBottom: "4px", fontSize: "12px", color: "#2563eb", cursor: "pointer" }}>
           ← Back to shop workspace
@@ -728,11 +771,6 @@ export default function CreditPage() {
           ← Back
         </button>
       )}
-
-      {/* ✅ The rest of your UI remains exactly as you pasted it originally */}
-      {/* (Customers / Details / Payment tabs full content kept) */}
-
-      {/* --- START ORIGINAL UI --- */}
 
       <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "baseline" }}>
         <div>
@@ -744,14 +782,7 @@ export default function CreditPage() {
 
         <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
           {selectedCustomerKey && (
-            <button type="button" onClick={() => {
-              setSelectedCustomerKey(null);
-              setSelectedCustomer(null);
-              setSelectedGroupDetails(null);
-              setPaymentAmount("");
-              setPaymentNote("");
-              setActiveTab("open");
-            }} style={{ border: "1px solid #e5e7eb", background: "#ffffff", borderRadius: "999px", padding: "8px 10px", fontSize: "12px", cursor: "pointer" }}>
+            <button type="button" onClick={() => clearSelection()} style={{ border: "1px solid #e5e7eb", background: "#ffffff", borderRadius: "999px", padding: "8px 10px", fontSize: "12px", cursor: "pointer" }}>
               ✕ Clear
             </button>
           )}
@@ -814,7 +845,7 @@ export default function CreditPage() {
               style={{ width: "100%", padding: "10px 12px", borderRadius: "999px", border: "1px solid #d1d5db", fontSize: "13px", backgroundColor: "#ffffff" }}
             />
             <div style={{ marginTop: "4px", fontSize: "11px", color: "#9ca3af" }}>
-              Showing {formatCount(filteredGroupedCredits.length)} customers (from {formatCount(groupedCredits.length)})
+              Showing {formatCount(filteredGroupedCredits.length)} customers (from {formatCount(displayGroupedCredits.length)})
             </div>
           </div>
         </div>
@@ -896,7 +927,7 @@ export default function CreditPage() {
               {filteredGroupedCredits.map((g) => {
                 const isActive = g.key === selectedCustomerKey;
                 const hasOverdue = (g.overdue_count || 0) > 0;
-                const isFullyClosed = safeNumber(g.totals.open_balance || 0) <= 0;
+                const isFullyClosed = moneyToInt(g.totals.open_balance || 0) <= 0;
 
                 return (
                   <button
@@ -1009,7 +1040,7 @@ export default function CreditPage() {
 
                 <div style={{ textAlign: "right" }}>
                   <div style={{ fontSize: 12, color: "#6b7280" }}>Total OPEN balance</div>
-                  <div style={{ fontSize: 18, fontWeight: 900, color: safeNumber(selectedOpenTotals.balance || 0) > 0 ? "#b91c1c" : "#16a34a" }}>
+                  <div style={{ fontSize: 18, fontWeight: 900, color: moneyToInt(selectedOpenTotals.balance || 0) > 0 ? "#b91c1c" : "#16a34a" }}>
                     {formatMoney(selectedOpenTotals.balance || 0)}
                   </div>
                 </div>
@@ -1031,7 +1062,7 @@ export default function CreditPage() {
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                   {selectedCredits.map((cd) => {
-                    const open = safeNumber(cd.balance || 0) > 0;
+                    const open = moneyToInt(cd.balance || 0) > 0;
                     const items = Array.isArray(cd.items) ? cd.items : [];
                     const itemsTotal = items.reduce((acc, it) => acc + safeNumber(it.line_total || 0), 0);
 
@@ -1205,8 +1236,6 @@ export default function CreditPage() {
           )}
         </div>
       )}
-
-      {/* --- END ORIGINAL UI --- */}
     </div>
   );
 }
