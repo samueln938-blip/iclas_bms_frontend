@@ -302,7 +302,16 @@ function DailyClosureHistoryPage() {
       console.error(err);
       setError(err.message || "Failed to rebuild range.");
     }
-  }, [API_BASE, authedFetch, dateFrom, dateTo, headersReady, loadClosures, loadSystemTotalsForRange, shopId]);
+  }, [
+    API_BASE,
+    authedFetch,
+    dateFrom,
+    dateTo,
+    headersReady,
+    loadClosures,
+    loadSystemTotalsForRange,
+    shopId,
+  ]);
 
   // ----------------------------
   // Summaries
@@ -347,7 +356,10 @@ function DailyClosureHistoryPage() {
 
       // ✅ system-totals returns "total_profit_realized_today"
       const profitRealized = Number(
-        sys?.total_profit_realized_today ?? sys?.total_profit_created_today ?? c.total_profit ?? 0
+        sys?.total_profit_realized_today ??
+          sys?.total_profit_created_today ??
+          c.total_profit ??
+          0
       );
 
       const exp = Number(sys?.expenses_total ?? c.total_expenses ?? 0);
@@ -749,11 +761,17 @@ function DailyClosureHistoryPage() {
             No daily closures or system totals for this period.
           </div>
         ) : subTab === "list" ? (
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+          <table
+            style={{
+              width: "100%",
+              borderCollapse: "collapse",
+              fontSize: "13px",
+              tableLayout: "fixed",
+            }}
+          >
             <thead>
               <tr
                 style={{
-                  textAlign: "left",
                   borderBottom: "1px solid #e5e7eb",
                   fontSize: "11px",
                   textTransform: "uppercase",
@@ -761,20 +779,56 @@ function DailyClosureHistoryPage() {
                   color: "#6b7280",
                 }}
               >
-                <th style={{ padding: "6px 4px" }}>Date</th>
-                <th style={{ padding: "6px 4px", textAlign: "right" }}>Sold</th>
-                <th style={{ padding: "6px 4px", textAlign: "right" }}>Credit given</th>
-                <th style={{ padding: "6px 4px", textAlign: "right" }}>Credit paid</th>
-                <th style={{ padding: "6px 4px", textAlign: "right" }}>Expenses</th>
-                <th style={{ padding: "6px 4px", textAlign: "right" }}>
-                  Expected money (after expenses)
+                {/* ✅ Date left aligned */}
+                <th style={{ padding: "6px 4px", textAlign: "left", verticalAlign: "middle" }}>
+                  Date
                 </th>
-                <th style={{ padding: "6px 4px", textAlign: "right" }}>Counted</th>
-                <th style={{ padding: "6px 4px", textAlign: "right" }}>Difference</th>
-                <th style={{ padding: "6px 4px", textAlign: "right" }}>Net profit</th>
-                <th style={{ padding: "6px 4px" }}>Note</th>
+
+                {/* ✅ All others centered neatly */}
+                <th style={{ padding: "6px 4px", textAlign: "center", verticalAlign: "middle" }}>
+                  Sold
+                </th>
+                <th style={{ padding: "6px 4px", textAlign: "center", verticalAlign: "middle" }}>
+                  Credit given
+                </th>
+                <th style={{ padding: "6px 4px", textAlign: "center", verticalAlign: "middle" }}>
+                  Credit paid
+                </th>
+                <th style={{ padding: "6px 4px", textAlign: "center", verticalAlign: "middle" }}>
+                  Expenses
+                </th>
+
+                {/* ✅ Neat centered header block, consistent wrap */}
+                <th
+                  style={{
+                    padding: "6px 4px",
+                    textAlign: "center",
+                    verticalAlign: "middle",
+                    whiteSpace: "normal",
+                    lineHeight: "1.15",
+                    minWidth: "190px",
+                  }}
+                >
+                  <div style={{ maxWidth: 190, margin: "0 auto", textAlign: "center" }}>
+                    Expected money (after expenses)
+                  </div>
+                </th>
+
+                <th style={{ padding: "6px 4px", textAlign: "center", verticalAlign: "middle" }}>
+                  Counted
+                </th>
+                <th style={{ padding: "6px 4px", textAlign: "center", verticalAlign: "middle" }}>
+                  Difference
+                </th>
+                <th style={{ padding: "6px 4px", textAlign: "center", verticalAlign: "middle" }}>
+                  Net profit
+                </th>
+                <th style={{ padding: "6px 4px", textAlign: "center", verticalAlign: "middle" }}>
+                  Note
+                </th>
               </tr>
             </thead>
+
             <tbody>
               {listRows.map((row) => {
                 const { day, closure: c } = row;
@@ -828,9 +882,6 @@ function DailyClosureHistoryPage() {
                   else diff = Number(c.difference_amount || 0);
                 }
 
-                // Net profit:
-                // - system mode: use system profit realized if present, else closure total_profit
-                // - saved mode: use stored net_profit (fallback to total_profit - expenses)
                 const profitRealized =
                   viewMode === "system"
                     ? Number(
@@ -869,7 +920,8 @@ function DailyClosureHistoryPage() {
                       cursor: hasClosure ? "pointer" : "default",
                     }}
                   >
-                    <td style={{ padding: "8px 4px" }}>
+                    {/* Date stays left aligned */}
+                    <td style={{ padding: "8px 4px", textAlign: "left" }}>
                       <button
                         type="button"
                         onClick={(e) => {
@@ -893,45 +945,37 @@ function DailyClosureHistoryPage() {
                       </button>
                     </td>
 
-                    <td style={{ padding: "8px 4px", textAlign: "right" }}>{formatMoney(sold)}</td>
-                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                    {/* All numeric cols centered */}
+                    <td style={{ padding: "8px 4px", textAlign: "center" }}>{formatMoney(sold)}</td>
+                    <td style={{ padding: "8px 4px", textAlign: "center" }}>
                       {formatMoney(creditGiven)}
                     </td>
-                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                    <td style={{ padding: "8px 4px", textAlign: "center" }}>
                       {formatMoney(creditPaid)}
                     </td>
-                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                    <td style={{ padding: "8px 4px", textAlign: "center" }}>
                       {formatMoney(expenses)}
                     </td>
-                    <td style={{ padding: "8px 4px", textAlign: "right", fontWeight: 700 }}>
+                    <td style={{ padding: "8px 4px", textAlign: "center", fontWeight: 700 }}>
                       {formatMoney(expectedAfterExpenses)}
                     </td>
-
-                    <td style={{ padding: "8px 4px", textAlign: "right" }}>
+                    <td style={{ padding: "8px 4px", textAlign: "center" }}>
                       {hasClosure ? formatMoney(counted) : ""}
                     </td>
-
-                    <td
-                      style={{
-                        padding: "8px 4px",
-                        textAlign: "right",
-                        color: diffColorStyle,
-                      }}
-                    >
+                    <td style={{ padding: "8px 4px", textAlign: "center", color: diffColorStyle }}>
                       {hasClosure && diff !== null ? formatMoney(diff) : ""}
                     </td>
-
                     <td
                       style={{
                         padding: "8px 4px",
-                        textAlign: "right",
-                        color: netProfit > 0 ? "#16a34a" : netProfit < 0 ? "#b91c1c" : "#4b5563",
+                        textAlign: "center",
+                        color:
+                          netProfit > 0 ? "#16a34a" : netProfit < 0 ? "#b91c1c" : "#4b5563",
                       }}
                     >
                       {formatMoney(netProfit)}
                     </td>
-
-                    <td style={{ padding: "8px 4px" }}>
+                    <td style={{ padding: "8px 4px", textAlign: "center" }}>
                       <span style={{ fontSize: "11px", color: "#6b7280" }}>
                         {hasClosure ? c.note || "" : "Not closed"}
                       </span>
@@ -944,20 +988,24 @@ function DailyClosureHistoryPage() {
         ) : (
           <div style={{ padding: "6px 4px", fontSize: "13px" }}>
             {!selectedClosure ? (
-              <div style={{ color: "#6b7280" }}>Select a closure in the list tab to see full details.</div>
+              <div style={{ color: "#6b7280" }}>
+                Select a closure in the list tab to see full details.
+              </div>
             ) : (
               (() => {
                 const day = toISODateOnly(selectedClosure.closure_date);
                 const sys = systemByDate[day];
 
                 const counted = Number(selectedClosure.total_counted_amount || 0);
-                const exp = Number((viewMode === "system" ? sys?.expenses_total : selectedClosure.total_expenses) || 0);
+                const exp = Number(
+                  (viewMode === "system" ? sys?.expenses_total : selectedClosure.total_expenses) ||
+                    0
+                );
 
                 const expectedAfter = Number(
                   (viewMode === "system"
                     ? sys?.expected_after_expenses_total
-                    : selectedClosure.expected_after_expenses_total) ??
-                    0
+                    : selectedClosure.expected_after_expenses_total) ?? 0
                 );
 
                 const diff =
@@ -987,7 +1035,9 @@ function DailyClosureHistoryPage() {
                       }}
                     >
                       <div>
-                        <div style={{ fontSize: "14px", fontWeight: 700 }}>Selected day details</div>
+                        <div style={{ fontSize: "14px", fontWeight: 700 }}>
+                          Selected day details
+                        </div>
                         <div style={{ fontSize: "12px", color: "#6b7280" }}>{day}</div>
                       </div>
                       <button
@@ -1022,10 +1072,14 @@ function DailyClosureHistoryPage() {
                           {formatMoney(selectedClosure.total_sold_amount || 0)}
                         </div>
                       </div>
+
                       <div>
                         <div style={{ color: "#6b7280" }}>Counted total</div>
-                        <div style={{ fontSize: "16px", fontWeight: 700 }}>{formatMoney(counted)}</div>
+                        <div style={{ fontSize: "16px", fontWeight: 700 }}>
+                          {formatMoney(counted)}
+                        </div>
                       </div>
+
                       <div>
                         <div style={{ color: "#6b7280" }}>Expenses ({viewMode})</div>
                         <div style={{ fontSize: "16px", fontWeight: 700 }}>{formatMoney(exp)}</div>
