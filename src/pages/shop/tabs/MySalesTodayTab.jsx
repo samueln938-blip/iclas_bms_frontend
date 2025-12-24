@@ -2,7 +2,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   formatMoney,
-  formatTimeHM,
   normalizePaymentType,
   todayDateString,
 } from "../posUtils.js";
@@ -22,11 +21,63 @@ function isValidYMD(s) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(s || "").trim());
 }
 
+/**
+ * ============================================================
+ * ✅ FIX: Sale time formatting (Kigali)
+ * Problem: backend often returns "YYYY-MM-DD HH:mm:ss" (no TZ)
+ * Browsers parse that inconsistently -> you see same hour (e.g. 01:00).
+ *
+ * Solution: normalize to ISO + assume Kigali (+02:00) when TZ missing,
+ * then format with Intl in Africa/Kigali.
+ * ============================================================
+ */
+const KIGALI_TZ = "Africa/Kigali";
+
+function toDateAssumingKigali(raw) {
+  if (!raw) return null;
+
+  // Already a Date
+  if (raw instanceof Date) {
+    return Number.isNaN(raw.getTime()) ? null : raw;
+  }
+
+  const s0 = String(raw).trim();
+  if (!s0) return null;
+
+  // If backend sends only date, treat as midnight Kigali (rare for sale_date)
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s0)) {
+    const dOnly = new Date(`${s0}T00:00:00+02:00`);
+    return Number.isNaN(dOnly.getTime()) ? null : dOnly;
+  }
+
+  // If it already includes a timezone (Z or +hh:mm), Date() is fine
+  const hasTZ = /Z$|[+-]\d{2}:\d{2}$/.test(s0);
+
+  // Normalize "YYYY-MM-DD HH:mm:ss" -> "YYYY-MM-DDTHH:mm:ss"
+  let s = s0.includes(" ") && !s0.includes("T") ? s0.replace(" ", "T") : s0;
+
+  // If no timezone, assume Kigali offset (+02:00)
+  if (!hasTZ) s = `${s}+02:00`;
+
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function formatSaleTimeHM(raw) {
+  const d = toDateAssumingKigali(raw);
+  if (!d) return "--";
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: KIGALI_TZ,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(d);
+}
+
 // ✅ Safe time sorting helper (handles null/invalid dates)
 function timeMs(t) {
-  if (!t) return 0;
-  const d = t instanceof Date ? t : new Date(t);
-  const ms = d.getTime();
+  const d = toDateAssumingKigali(t);
+  const ms = d ? d.getTime() : 0;
   return Number.isFinite(ms) ? ms : 0;
 }
 
@@ -745,7 +796,7 @@ export default function MySalesTodayTab({
                 marginTop: "2px",
               }}
             >
-              Receipt #{selectedReceipt.id} · {formatTimeHM(selectedReceipt.time)} ·{" "}
+              Receipt #{selectedReceipt.id} · {formatSaleTimeHM(selectedReceipt.time)} ·{" "}
               {paymentLabel}
             </div>
             <div style={{ fontSize: "12px", color: "#6b7280" }}>
@@ -1332,7 +1383,7 @@ export default function MySalesTodayTab({
 
                   return (
                     <tr key={row.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
-                      <td style={{ padding: "8px 4px" }}>{formatTimeHM(row.time)}</td>
+                      <td style={{ padding: "8px 4px" }}>{formatSaleTimeHM(row.time)}</td>
 
                       <td style={{ padding: "8px 4px" }}>
                         <div
@@ -1486,7 +1537,7 @@ export default function MySalesTodayTab({
 
                   return (
                     <tr key={r.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
-                      <td style={{ padding: "8px 4px" }}>{formatTimeHM(r.time)}</td>
+                      <td style={{ padding: "8px 4px" }}>{formatSaleTimeHM(r.time)}</td>
                       <td style={{ padding: "8px 4px", fontWeight: 800 }}>#{r.id}</td>
                       <td style={{ padding: "8px 4px" }}>{customerLabel}</td>
                       <td style={{ padding: "8px 4px" }}>{paymentLabel}</td>
