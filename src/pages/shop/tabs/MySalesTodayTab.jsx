@@ -2,6 +2,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   formatMoney,
+  formatTimeHM,
   normalizePaymentType,
   todayDateString,
 } from "../posUtils.js";
@@ -21,75 +22,71 @@ function isValidYMD(s) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(s || "").trim());
 }
 
+/**
+ * ✅ IMPORTANT FIX:
+ * Backend/history can produce payment_type as:
+ * - cash / mobile / card
+ * - momo / pos
+ * - uppercase variants
+ * Old code only accepted cash/mobile/card, which caused momo/pos totals to be DROPPED.
+ *
+ * We normalize into UI buckets:
+ * - cash | mobile | card | other
+ */
 function mapPayToBucket(paymentType) {
   const p = String(paymentType || "").trim().toLowerCase();
-  if (p === "cash") return "cash";
-  if (p === "mobile") return "mobile";
-  if (p === "card") return "card";
-  return null;
+  if (!p) return "other";
+
+  // Cash
+  if (["cash", "c", "cash_payment"].includes(p)) return "cash";
+
+  // Mobile money (MoMo)
+  if (
+    [
+      "mobile",
+      "momo",
+      "mm",
+      "mobile_money",
+      "mtn",
+      "airtel",
+      "mtn_momo",
+      "airtel_money",
+    ].includes(p)
+  )
+    return "mobile";
+
+  // Card / POS
+  if (
+    ["card", "pos", "bank", "visa", "mastercard", "debit", "credit_card"].includes(p)
+  )
+    return "card";
+
+  // Anything else should not disappear from totals
+  return "other";
 }
 
-// ============================================================
-// ✅ Time formatting (Kigali) — fixes "all same hour" when parsing is wrong
-// - Supports:
-//   - "YYYY-MM-DDTHH:mm:ss(.sss)Z"
-//   - "YYYY-MM-DDTHH:mm:ss"
-//   - "YYYY-MM-DD HH:mm:ss" (space instead of T)
-// - If backend returns date-only "YYYY-MM-DD", we return null (no time recorded)
-// ============================================================
-const KIGALI_TZ = "Africa/Kigali";
+/**
+ * ✅ Credit-origin detection for the UI
+ * Your backend sets payment_type=None for credit sales.
+ * After a credit is fully paid, is_credit_sale may become false.
+ * So we infer credit-origin using:
+ * - any positive credit balance
+ * - OR is_credit_sale === true
+ * - OR (payment_type missing AND customer exists)
+ */
+function isCreditOriginSale(sale, creditBalance) {
+  const bal = Number(creditBalance || 0);
+  if (bal > 0) return true;
+  if (!!sale?.is_credit_sale) return true;
 
-function parseToDate(value) {
-  if (!value) return null;
+  const pay = String(sale?.payment_type || "").trim();
+  const hasCustomer =
+    String(sale?.customer_name || "").trim() ||
+    String(sale?.customer_phone || "").trim();
 
-  // Date object
-  if (value instanceof Date) {
-    return Number.isNaN(value.getTime()) ? null : value;
-  }
+  if (!pay && !!hasCustomer) return true;
 
-  const s = String(value).trim();
-  if (!s) return null;
-
-  // Date-only => no time info (this is the common root cause)
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
-
-  // "YYYY-MM-DD HH:mm:ss" => "YYYY-MM-DDTHH:mm:ss"
-  if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(:\d{2})?(\.\d+)?$/.test(s)) {
-    const isoLike = s.replace(" ", "T");
-    const d = new Date(isoLike);
-    return Number.isNaN(d.getTime()) ? null : d;
-  }
-
-  // ISO-ish strings
-  const d = new Date(s);
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-
-function formatTimeHM_Kigali(value) {
-  const d = parseToDate(value);
-  if (!d) return "-";
-
-  return new Intl.DateTimeFormat("en-GB", {
-    timeZone: KIGALI_TZ,
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(d);
-}
-
-// Prefer the most reliable timestamp if backend provides it
-function pickSaleTime(sale) {
-  if (!sale) return null;
-  return (
-    sale.sold_at ||
-    sale.soldAt ||
-    sale.created_at ||
-    sale.createdAt ||
-    sale.sale_datetime ||
-    sale.saleDateTime ||
-    sale.sale_date || // fallback (often the problematic one)
-    null
-  );
+  return false;
 }
 
 export default function MySalesTodayTab({
@@ -303,17 +300,24 @@ export default function MySalesTodayTab({
     for (const sale of salesToday || []) {
       const saleAmount = Number(sale.total_sale_amount || 0);
       const saleProfit = Number(sale.total_profit || 0);
-      const isCredit = !!sale.is_credit_sale;
+
+      const collectedNow = Number(
+        sale.amount_collected_now ??
+          (sale.is_credit_sale ? 0 : saleAmount)
+      );
+
+      const creditBalance =
+        sale.credit_balance != null
+          ? Number(sale.credit_balance || 0)
+          : Math.max(0, saleAmount - collectedNow);
+
+      const creditOrigin = isCreditOriginSale(sale, creditBalance);
 
       totalSales += saleAmount;
       totalProfitCreated += saleProfit;
 
-      if (isCredit) {
-        const bal =
-          sale.credit_balance != null
-            ? Number(sale.credit_balance || 0)
-            : Math.max(0, saleAmount - Number(sale.amount_collected_now || 0));
-        totalCreditCreated += Math.max(0, bal);
+      if (creditOrigin) {
+        totalCreditCreated += Math.max(0, Number(creditBalance || 0));
       }
 
       const lines = sale.lines || [];
@@ -339,37 +343,52 @@ export default function MySalesTodayTab({
     if (!b) b = {};
     return {
       cash: Number(b.cash || 0),
-      mobile: Number(b.momo || 0),
-      card: Number(b.pos || 0),
+      mobile: Number(b.mobile || b.momo || 0),
+      card: Number(b.card || b.pos || 0),
+      other: Number(b.other || 0),
     };
   }
 
   function computeBucketsFromSales(list) {
-    const current = { cash: 0, mobile: 0, card: 0 };
-    const creditPayments = { cash: 0, mobile: 0, card: 0 };
+    const current = { cash: 0, mobile: 0, card: 0, other: 0 };
+    const creditPayments = { cash: 0, mobile: 0, card: 0, other: 0 };
 
     for (const sale of list || []) {
-      const isCredit = !!sale.is_credit_sale;
+      const saleAmount = Number(sale.total_sale_amount || 0);
+
+      const collectedNow = Number(
+        sale.amount_collected_now ??
+          (sale.is_credit_sale ? 0 : saleAmount)
+      );
+
+      const creditBalance =
+        sale.credit_balance != null
+          ? Number(sale.credit_balance || 0)
+          : Math.max(0, saleAmount - collectedNow);
+
+      const creditOrigin = isCreditOriginSale(sale, creditBalance);
 
       const payRaw = normalizePaymentType(sale.payment_type);
       const bucket = mapPayToBucket(payRaw);
 
       // non-credit: treat as full collected now
-      if (!isCredit) {
-        const amt = Number(sale.total_sale_amount || 0);
-        if (bucket) current[bucket] += amt;
+      if (!creditOrigin) {
+        const amt = saleAmount;
+        current[bucket] += amt;
         continue;
       }
 
-      // credit sale: amount collected now (at creation time)
-      const paidNow = Number(sale.amount_collected_now || 0);
-      if (bucket) creditPayments[bucket] += paidNow;
+      // credit-origin sale: count amount collected now (if any) into creditPayments
+      // (If your flow always sets 0 at creation, this stays 0.)
+      const paidNow = Number(collectedNow || 0);
+      creditPayments[bucket] += paidNow;
     }
 
     const total = {
       cash: current.cash + creditPayments.cash,
       mobile: current.mobile + creditPayments.mobile,
       card: current.card + creditPayments.card,
+      other: current.other + creditPayments.other,
     };
 
     return {
@@ -377,9 +396,13 @@ export default function MySalesTodayTab({
       creditPayments,
       total,
       sums: {
-        current: current.cash + current.mobile + current.card,
-        credit: creditPayments.cash + creditPayments.mobile + creditPayments.card,
-        total: total.cash + total.mobile + total.card,
+        current: current.cash + current.mobile + current.card + current.other,
+        credit:
+          creditPayments.cash +
+          creditPayments.mobile +
+          creditPayments.card +
+          creditPayments.other,
+        total: total.cash + total.mobile + total.card + total.other,
       },
     };
   }
@@ -397,9 +420,13 @@ export default function MySalesTodayTab({
         creditPayments,
         total,
         sums: {
-          current: current.cash + current.mobile + current.card,
-          credit: creditPayments.cash + creditPayments.mobile + creditPayments.card,
-          total: total.cash + total.mobile + total.card,
+          current: current.cash + current.mobile + current.card + current.other,
+          credit:
+            creditPayments.cash +
+            creditPayments.mobile +
+            creditPayments.card +
+            creditPayments.other,
+          total: total.cash + total.mobile + total.card + total.other,
         },
       };
     }
@@ -483,20 +510,26 @@ export default function MySalesTodayTab({
   const flattenedItemsToday = useMemo(() => {
     const rows = [];
     for (const sale of salesToday || []) {
-      const saleTime = pickSaleTime(sale);
-      const paymentType = normalizePaymentType(sale.payment_type);
-      const isCreditSaleRow = !!sale.is_credit_sale;
+      const saleDate = sale.sale_date;
 
-      const creditBalance = isCreditSaleRow
-        ? Number(
-            sale.credit_balance ??
-              Math.max(
-                0,
-                Number(sale.total_sale_amount || 0) -
-                  Number(sale.amount_collected_now || 0)
-              )
-          )
-        : 0;
+      const payRaw = normalizePaymentType(sale.payment_type);
+      const paymentBucket = mapPayToBucket(payRaw); // cash|mobile|card|other
+
+      const saleAmount = Number(sale.total_sale_amount || 0);
+      const collectedNow = Number(
+        sale.amount_collected_now ??
+          (sale.is_credit_sale ? 0 : saleAmount)
+      );
+
+      const creditBalance =
+        sale.credit_balance != null
+          ? Number(
+              sale.credit_balance ??
+                Math.max(0, saleAmount - collectedNow)
+            )
+          : Math.max(0, saleAmount - collectedNow);
+
+      const creditOrigin = isCreditOriginSale(sale, creditBalance);
 
       const dueDate =
         sale.due_date ||
@@ -525,16 +558,16 @@ export default function MySalesTodayTab({
           id: `${sale.id}-${line.id}`,
           saleId: sale.id,
           saleLineId: line.id,
-          time: saleTime, // ✅ use picked sale time
+          time: saleDate,
           itemId: line.item_id,
           itemName,
           qtyPieces: qty,
           unitPrice,
           total: lineTotal,
           profit: lineProfit,
-          paymentType,
-          isCreditSale: isCreditSaleRow,
-          creditBalance,
+          paymentType: paymentBucket, // ✅ normalized bucket
+          isCreditSale: creditOrigin, // ✅ credit-origin (open OR settled)
+          creditBalance: Number(creditBalance || 0),
           customerName: sale.customer_name || "",
           customerPhone: sale.customer_phone || "",
           dueDate,
@@ -546,12 +579,23 @@ export default function MySalesTodayTab({
 
   const receiptsToday = useMemo(() => {
     return (salesToday || []).map((sale) => {
-      const isCredit = !!sale.is_credit_sale;
-      const payment = isCredit ? "credit" : normalizePaymentType(sale.payment_type);
       const total = Number(sale.total_sale_amount || 0);
+
+      const collected = Number(
+        sale.amount_collected_now ??
+          (sale.is_credit_sale ? 0 : total)
+      );
+
+      const balance = Number(
+        sale.credit_balance ?? Math.max(0, total - collected)
+      );
+
+      const creditOrigin = isCreditOriginSale(sale, balance);
+
+      const payment = creditOrigin ? "credit" : mapPayToBucket(normalizePaymentType(sale.payment_type));
+
       const profit = Number(sale.total_profit || 0);
-      const collected = Number(sale.amount_collected_now ?? (isCredit ? 0 : total));
-      const balance = Number(sale.credit_balance ?? (isCredit ? total : 0));
+
       const dueDate =
         sale.due_date ||
         sale.credit_due_date ||
@@ -560,10 +604,10 @@ export default function MySalesTodayTab({
 
       return {
         id: sale.id,
-        time: pickSaleTime(sale), // ✅ use picked sale time
+        time: sale.sale_date,
         customerName: sale.customer_name || "",
         customerPhone: sale.customer_phone || "",
-        isCredit,
+        isCredit: creditOrigin,
         payment,
         total,
         profit,
@@ -642,13 +686,17 @@ export default function MySalesTodayTab({
       : "-";
 
     const paymentLabel = selectedReceipt.isCredit
-      ? "Credit"
+      ? selectedReceipt.balance > 0
+        ? "Credit (Open)"
+        : "Credit (Settled)"
       : selectedReceipt.payment === "cash"
       ? "Cash"
       : selectedReceipt.payment === "card"
       ? "POS"
       : selectedReceipt.payment === "mobile"
       ? "MoMo"
+      : selectedReceipt.payment === "other"
+      ? "Other"
       : selectedReceipt.payment;
 
     return (
@@ -678,7 +726,7 @@ export default function MySalesTodayTab({
                 marginTop: "2px",
               }}
             >
-              Receipt #{selectedReceipt.id} · {formatTimeHM_Kigali(selectedReceipt.time)} ·{" "}
+              Receipt #{selectedReceipt.id} · {formatTimeHM(selectedReceipt.time)} ·{" "}
               {paymentLabel}
             </div>
             <div style={{ fontSize: "12px", color: "#6b7280" }}>
@@ -993,6 +1041,7 @@ export default function MySalesTodayTab({
               { label: "Cash", value: todayByPayment.current.cash },
               { label: "MoMo", value: todayByPayment.current.mobile },
               { label: "POS", value: todayByPayment.current.card },
+              { label: "Other", value: todayByPayment.current.other },
             ]}
           />
 
@@ -1003,6 +1052,7 @@ export default function MySalesTodayTab({
               { label: "Cash", value: todayByPayment.creditPayments.cash },
               { label: "MoMo", value: todayByPayment.creditPayments.mobile },
               { label: "POS", value: todayByPayment.creditPayments.card },
+              { label: "Other", value: todayByPayment.creditPayments.other },
             ]}
           />
 
@@ -1013,6 +1063,7 @@ export default function MySalesTodayTab({
               { label: "Cash", value: todayByPayment.total.cash },
               { label: "MoMo", value: todayByPayment.total.mobile },
               { label: "POS", value: todayByPayment.total.card },
+              { label: "Other", value: todayByPayment.total.other },
             ]}
           />
         </div>
@@ -1251,6 +1302,8 @@ export default function MySalesTodayTab({
                     ? "POS"
                     : row.paymentType === "mobile"
                     ? "MoMo"
+                    : row.paymentType === "other"
+                    ? "Other"
                     : row.paymentType || "N/A";
 
                   const customerLabel = row.customerName
@@ -1260,7 +1313,7 @@ export default function MySalesTodayTab({
 
                   return (
                     <tr key={row.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
-                      <td style={{ padding: "8px 4px" }}>{formatTimeHM_Kigali(row.time)}</td>
+                      <td style={{ padding: "8px 4px" }}>{formatTimeHM(row.time)}</td>
 
                       <td style={{ padding: "8px 4px" }}>
                         <div
@@ -1399,18 +1452,22 @@ export default function MySalesTodayTab({
                     ? `${r.customerName}${r.customerPhone ? ` (${r.customerPhone})` : ""}`
                     : "-";
                   const paymentLabel = r.isCredit
-                    ? "Credit"
+                    ? r.balance > 0
+                      ? "Credit (Open)"
+                      : "Credit (Settled)"
                     : r.payment === "cash"
                     ? "Cash"
                     : r.payment === "card"
                     ? "POS"
                     : r.payment === "mobile"
                     ? "MoMo"
+                    : r.payment === "other"
+                    ? "Other"
                     : r.payment;
 
                   return (
                     <tr key={r.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
-                      <td style={{ padding: "8px 4px" }}>{formatTimeHM_Kigali(r.time)}</td>
+                      <td style={{ padding: "8px 4px" }}>{formatTimeHM(r.time)}</td>
                       <td style={{ padding: "8px 4px", fontWeight: 800 }}>#{r.id}</td>
                       <td style={{ padding: "8px 4px" }}>{customerLabel}</td>
                       <td style={{ padding: "8px 4px" }}>{paymentLabel}</td>
