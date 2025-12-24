@@ -1,4 +1,4 @@
-They only moved from 16:00 to 14:00 all items, not fixed. Review // src/pages/shop/SalesPOS.jsx
+// src/pages/shop/SalesPOS.jsx
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext.jsx";
