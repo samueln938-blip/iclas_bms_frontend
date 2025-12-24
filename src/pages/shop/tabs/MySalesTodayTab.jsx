@@ -6,33 +6,6 @@ import {
   todayDateString,
 } from "../posUtils.js";
 
-// ✅ CAT timezone (Rwanda)
-const CAT_TZ = "Africa/Kigali";
-
-/**
- * ✅ Time formatter in CAT (HH:mm)
- * Fixes the issue where time was showing the same hour (often caused by a buggy formatter).
- */
-function formatTimeHM_CAT(value) {
-  if (!value) return "";
-  const dt = value instanceof Date ? value : new Date(value);
-  if (!Number.isFinite(dt.getTime())) return "";
-
-  try {
-    return new Intl.DateTimeFormat("en-GB", {
-      timeZone: CAT_TZ,
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    }).format(dt);
-  } catch {
-    // Fallback (should rarely happen)
-    const hh = String(dt.getHours()).padStart(2, "0");
-    const mm = String(dt.getMinutes()).padStart(2, "0");
-    return `${hh}:${mm}`;
-  }
-}
-
 // ✅ Qty/Pieces formatter (keeps decimals like 0.5, 1.25, 49.5)
 // NOTE: We do NOT change formatMoney() because that is for currency.
 function formatQty(value) {
@@ -54,6 +27,69 @@ function mapPayToBucket(paymentType) {
   if (p === "mobile") return "mobile";
   if (p === "card") return "card";
   return null;
+}
+
+// ============================================================
+// ✅ Time formatting (Kigali) — fixes "all same hour" when parsing is wrong
+// - Supports:
+//   - "YYYY-MM-DDTHH:mm:ss(.sss)Z"
+//   - "YYYY-MM-DDTHH:mm:ss"
+//   - "YYYY-MM-DD HH:mm:ss" (space instead of T)
+// - If backend returns date-only "YYYY-MM-DD", we return null (no time recorded)
+// ============================================================
+const KIGALI_TZ = "Africa/Kigali";
+
+function parseToDate(value) {
+  if (!value) return null;
+
+  // Date object
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+
+  const s = String(value).trim();
+  if (!s) return null;
+
+  // Date-only => no time info (this is the common root cause)
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+
+  // "YYYY-MM-DD HH:mm:ss" => "YYYY-MM-DDTHH:mm:ss"
+  if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(:\d{2})?(\.\d+)?$/.test(s)) {
+    const isoLike = s.replace(" ", "T");
+    const d = new Date(isoLike);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  // ISO-ish strings
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function formatTimeHM_Kigali(value) {
+  const d = parseToDate(value);
+  if (!d) return "-";
+
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: KIGALI_TZ,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(d);
+}
+
+// Prefer the most reliable timestamp if backend provides it
+function pickSaleTime(sale) {
+  if (!sale) return null;
+  return (
+    sale.sold_at ||
+    sale.soldAt ||
+    sale.created_at ||
+    sale.createdAt ||
+    sale.sale_datetime ||
+    sale.saleDateTime ||
+    sale.sale_date || // fallback (often the problematic one)
+    null
+  );
 }
 
 export default function MySalesTodayTab({
@@ -447,7 +483,7 @@ export default function MySalesTodayTab({
   const flattenedItemsToday = useMemo(() => {
     const rows = [];
     for (const sale of salesToday || []) {
-      const saleDate = sale.sale_date;
+      const saleTime = pickSaleTime(sale);
       const paymentType = normalizePaymentType(sale.payment_type);
       const isCreditSaleRow = !!sale.is_credit_sale;
 
@@ -489,7 +525,7 @@ export default function MySalesTodayTab({
           id: `${sale.id}-${line.id}`,
           saleId: sale.id,
           saleLineId: line.id,
-          time: saleDate,
+          time: saleTime, // ✅ use picked sale time
           itemId: line.item_id,
           itemName,
           qtyPieces: qty,
@@ -524,7 +560,7 @@ export default function MySalesTodayTab({
 
       return {
         id: sale.id,
-        time: sale.sale_date,
+        time: pickSaleTime(sale), // ✅ use picked sale time
         customerName: sale.customer_name || "",
         customerPhone: sale.customer_phone || "",
         isCredit,
@@ -642,7 +678,7 @@ export default function MySalesTodayTab({
                 marginTop: "2px",
               }}
             >
-              Receipt #{selectedReceipt.id} · {formatTimeHM_CAT(selectedReceipt.time)} ·{" "}
+              Receipt #{selectedReceipt.id} · {formatTimeHM_Kigali(selectedReceipt.time)} ·{" "}
               {paymentLabel}
             </div>
             <div style={{ fontSize: "12px", color: "#6b7280" }}>
@@ -1224,7 +1260,7 @@ export default function MySalesTodayTab({
 
                   return (
                     <tr key={row.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
-                      <td style={{ padding: "8px 4px" }}>{formatTimeHM_CAT(row.time)}</td>
+                      <td style={{ padding: "8px 4px" }}>{formatTimeHM_Kigali(row.time)}</td>
 
                       <td style={{ padding: "8px 4px" }}>
                         <div
@@ -1374,7 +1410,7 @@ export default function MySalesTodayTab({
 
                   return (
                     <tr key={r.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
-                      <td style={{ padding: "8px 4px" }}>{formatTimeHM_CAT(r.time)}</td>
+                      <td style={{ padding: "8px 4px" }}>{formatTimeHM_Kigali(r.time)}</td>
                       <td style={{ padding: "8px 4px", fontWeight: 800 }}>#{r.id}</td>
                       <td style={{ padding: "8px 4px" }}>{customerLabel}</td>
                       <td style={{ padding: "8px 4px" }}>{paymentLabel}</td>
