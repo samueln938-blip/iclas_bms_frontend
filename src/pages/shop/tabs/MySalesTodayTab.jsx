@@ -2,10 +2,36 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   formatMoney,
-  formatTimeHM,
   normalizePaymentType,
   todayDateString,
 } from "../posUtils.js";
+
+// ✅ CAT timezone (Rwanda)
+const CAT_TZ = "Africa/Kigali";
+
+/**
+ * ✅ Time formatter in CAT (HH:mm)
+ * Fixes the issue where time was showing the same hour (often caused by a buggy formatter).
+ */
+function formatTimeHM_CAT(value) {
+  if (!value) return "";
+  const dt = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(dt.getTime())) return "";
+
+  try {
+    return new Intl.DateTimeFormat("en-GB", {
+      timeZone: CAT_TZ,
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(dt);
+  } catch {
+    // Fallback (should rarely happen)
+    const hh = String(dt.getHours()).padStart(2, "0");
+    const mm = String(dt.getMinutes()).padStart(2, "0");
+    return `${hh}:${mm}`;
+  }
+}
 
 // ✅ Qty/Pieces formatter (keeps decimals like 0.5, 1.25, 49.5)
 // NOTE: We do NOT change formatMoney() because that is for currency.
@@ -616,7 +642,7 @@ export default function MySalesTodayTab({
                 marginTop: "2px",
               }}
             >
-              Receipt #{selectedReceipt.id} · {formatTimeHM(selectedReceipt.time)} ·{" "}
+              Receipt #{selectedReceipt.id} · {formatTimeHM_CAT(selectedReceipt.time)} ·{" "}
               {paymentLabel}
             </div>
             <div style={{ fontSize: "12px", color: "#6b7280" }}>
@@ -1198,7 +1224,7 @@ export default function MySalesTodayTab({
 
                   return (
                     <tr key={row.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
-                      <td style={{ padding: "8px 4px" }}>{formatTimeHM(row.time)}</td>
+                      <td style={{ padding: "8px 4px" }}>{formatTimeHM_CAT(row.time)}</td>
 
                       <td style={{ padding: "8px 4px" }}>
                         <div
@@ -1348,7 +1374,7 @@ export default function MySalesTodayTab({
 
                   return (
                     <tr key={r.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
-                      <td style={{ padding: "8px 4px" }}>{formatTimeHM(r.time)}</td>
+                      <td style={{ padding: "8px 4px" }}>{formatTimeHM_CAT(r.time)}</td>
                       <td style={{ padding: "8px 4px", fontWeight: 800 }}>#{r.id}</td>
                       <td style={{ padding: "8px 4px" }}>{customerLabel}</td>
                       <td style={{ padding: "8px 4px" }}>{paymentLabel}</td>
