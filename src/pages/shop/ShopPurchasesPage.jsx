@@ -22,6 +22,10 @@ const PURCHASE_GRID_COLUMNS =
 // First col min 200 + fixed cols (90+90+110+140+140+140+130+130+130+130+110+40) = 1580px min
 const PURCHASE_GRID_MIN_WIDTH = "1580px";
 
+// ✅ Supplier endpoints (adjust only if your backend differs)
+const SUPPLIERS_LIST_URL = (shopId) => `${API_BASE}/suppliers/?shop_id=${shopId}`;
+const SUPPLIERS_CREATE_URL = () => `${API_BASE}/suppliers/`;
+
 function formatMoney(value) {
   if (value === null || value === undefined || value === "") return "0";
   const num = Number(value);
@@ -160,7 +164,7 @@ function listDaysInclusive(fromISO, toISO, maxDaysHard = MAX_HISTORY_DAYS) {
 }
 
 /**
- * ✅ Mobile-friendly searchable dropdown
+ * ✅ Mobile-friendly searchable dropdown (items)
  */
 function ItemComboBox({ items, valueId, onChangeId, disabled }) {
   const wrapRef = useRef(null);
@@ -186,8 +190,7 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
 
   useEffect(() => {
     const onDown = (e) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target))
-        setOpen(false);
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
     };
     document.addEventListener("pointerdown", onDown);
     return () => document.removeEventListener("pointerdown", onDown);
@@ -283,13 +286,7 @@ function ItemComboBox({ items, valueId, onChangeId, disabled }) {
           }}
         >
           {filtered.length === 0 ? (
-            <div
-              style={{
-                padding: "10px 12px",
-                fontSize: "13px",
-                color: "#6b7280",
-              }}
-            >
+            <div style={{ padding: "10px 12px", fontSize: "13px", color: "#6b7280" }}>
               No matching items
             </div>
           ) : (
@@ -357,11 +354,32 @@ function ShopPurchasesPage() {
 
   // ✅ Today tab date (defaults to today)
   const [purchaseDate, setPurchaseDate] = useState(() => todayISO());
-  const [supplierName, setSupplierName] = useState("");
   const [invoiceNumber, setInvoiceNumber] = useState("");
 
-  const [lines, setLines] = useState([]);
-  const [searchTerm, setSearchTerm] = useState("");
+  // ✅ Supplier UX (SalesPOS-like)
+  const [fromSupplier, setFromSupplier] = useState(true);
+  const [supplierName, setSupplierName] = useState(""); // manual / fallback OR auto from dropdown
+  const [selectedSupplierId, setSelectedSupplierId] = useState("");
+
+  const [suppliers, setSuppliers] = useState([]);
+  const [suppliersLoading, setSuppliersLoading] = useState(false);
+  const [suppliersAvailable, setSuppliersAvailable] = useState(true);
+
+  // ✅ Add supplier modal
+  const [addSupplierOpen, setAddSupplierOpen] = useState(false);
+  const [addingSupplier, setAddingSupplier] = useState(false);
+  const [supplierForm, setSupplierForm] = useState({
+    name: "",
+    phone: "",
+    tin: "",
+  });
+
+  // ✅ Split: draft vs saved (best practice)
+  const [draftLines, setDraftLines] = useState([]);
+  const [savedLines, setSavedLines] = useState([]);
+
+  const [draftSearchTerm, setDraftSearchTerm] = useState("");
+  const [savedSearchTerm, setSavedSearchTerm] = useState("");
 
   const [pad, setPad] = useState({
     itemId: "",
@@ -371,8 +389,8 @@ function ShopPurchasesPage() {
     newRetailPerPiece: "",
   });
 
-  const [editingLineId, setEditingLineId] = useState(null);
-  const [editingDbId, setEditingDbId] = useState(null);
+  const [editingLineId, setEditingLineId] = useState(null); // draft line id
+  const [editingDbId, setEditingDbId] = useState(null); // saved db id
   const [editingDbUiId, setEditingDbUiId] = useState(null);
   const [selectedLineId, setSelectedLineId] = useState(null);
 
@@ -386,8 +404,7 @@ function ShopPurchasesPage() {
   useEffect(() => {
     if (!HEADER_IS_STICKY) return;
     const calc = () => {
-      if (headerRef.current)
-        setHeaderHeight(headerRef.current.offsetHeight || 180);
+      if (headerRef.current) setHeaderHeight(headerRef.current.offsetHeight || 180);
     };
     calc();
     window.addEventListener("resize", calc);
@@ -455,18 +472,15 @@ function ShopPurchasesPage() {
 
         let itemsData = [];
         try {
-          const itemsResShop = await fetch(
-            `${API_BASE}/items/?shop_id=${shopId}`,
-            { headers: authHeadersNoJson }
-          );
+          const itemsResShop = await fetch(`${API_BASE}/items/?shop_id=${shopId}`, {
+            headers: authHeadersNoJson,
+          });
           if (itemsResShop.ok) {
             itemsData = await itemsResShop.json().catch(() => []);
           } else {
-            // ✅ IMPORTANT: do NOT fall back to global /items/
             itemsData = [];
           }
         } catch {
-          // ✅ IMPORTANT: keep empty instead of falling back to global /items/
           itemsData = [];
         }
 
@@ -484,6 +498,49 @@ function ShopPurchasesPage() {
     loadData();
   }, [shopId, authHeadersNoJson]);
 
+  // ✅ Suppliers: try load (won't break if endpoint missing)
+  const loadSuppliers = async () => {
+    setSuppliersLoading(true);
+    try {
+      const res = await fetch(SUPPLIERS_LIST_URL(shopId), {
+        headers: authHeadersNoJson,
+      });
+
+      if (!res.ok) {
+        // If backend doesn't have suppliers yet, we silently disable supplier dropdown
+        setSuppliersAvailable(false);
+        setSuppliers([]);
+        return;
+      }
+
+      const data = await res.json().catch(() => []);
+      const arr = Array.isArray(data) ? data : [];
+
+      const mapped = arr
+        .map((s) => ({
+          id: s.id ?? s.supplier_id ?? s.supplierId,
+          name: s.name ?? s.supplier_name ?? s.supplierName ?? "",
+          phone: s.phone ?? s.phone_number ?? s.phoneNumber ?? "",
+          tin: s.tin ?? s.tin_number ?? s.tinNumber ?? "",
+        }))
+        .filter((s) => s.id != null || (s.name || "").trim() !== "");
+
+      setSuppliers(mapped);
+      setSuppliersAvailable(true);
+    } catch (e) {
+      console.error("Failed to load suppliers:", e);
+      setSuppliersAvailable(false);
+      setSuppliers([]);
+    } finally {
+      setSuppliersLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!loading) loadSuppliers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shopId, loading]);
+
   // ✅ Build fallback allowed IDs from itemsCatalog (shop-scoped)
   const catalogAllowedIds = useMemo(() => {
     const set = new Set();
@@ -496,7 +553,6 @@ function ShopPurchasesPage() {
   }, [itemsCatalog]);
 
   // ✅ Optional: load item→shop usage and build allowed IDs for this shop
-  // If this endpoint does not exist, we will fall back to itemsCatalog ids
   useEffect(() => {
     async function loadItemAssignmentsForShop() {
       try {
@@ -519,14 +575,10 @@ function ShopPurchasesPage() {
 
         for (const row of data) {
           const itemId = row.item_id ?? row.id;
-          const rawShopIds =
-            row.shop_ids || row.shopIds || row.shops || row.shopIdsForItem || [];
+          const rawShopIds = row.shop_ids || row.shopIds || row.shops || row.shopIdsForItem || [];
           if (itemId == null || !Array.isArray(rawShopIds)) continue;
 
-          const hasThisShop = rawShopIds
-            .map((x) => Number(x))
-            .some((x) => x === sid);
-
+          const hasThisShop = rawShopIds.map((x) => Number(x)).some((x) => x === sid);
           if (hasThisShop) idsSet.add(Number(itemId));
         }
 
@@ -540,14 +592,10 @@ function ShopPurchasesPage() {
     loadItemAssignmentsForShop();
   }, [shopId, authHeadersNoJson]);
 
-  // ✅ Final allowed IDs:
-  // 1) Prefer /items/shop-usage if it works
-  // 2) Else, fall back to ids returned by /items/?shop_id=...
-  // 3) If even that list is empty (no assigned items), dropdown becomes empty (which is correct)
   const allowedItemIds = useMemo(() => {
     if (usageAllowedItemIds instanceof Set) return usageAllowedItemIds;
     if ((itemsCatalog || []).length > 0) return catalogAllowedIds;
-    return null; // if catalog endpoint returns empty and there is stock, we won't block stock items
+    return null;
   }, [usageAllowedItemIds, itemsCatalog, catalogAllowedIds]);
 
   const stockByItemId = useMemo(() => {
@@ -586,7 +634,7 @@ function ShopPurchasesPage() {
   const pickerItems = useMemo(() => {
     const byId = new Map();
 
-    // 1) Items that already exist in stock for this shop (fallback if catalogue is empty)
+    // 1) Items already exist in stock
     for (const s of stockRows || []) {
       if (s?.item_id == null) continue;
       byId.set(Number(s.item_id), s?.item_name || `Item ${s.item_id}`);
@@ -604,7 +652,6 @@ function ShopPurchasesPage() {
       .map(([id, label]) => ({ id, label }))
       .sort((a, b) => String(a.label).localeCompare(String(b.label)));
 
-    // ✅ If allowedItemIds is known, filter dropdown to only items assigned to this shop
     if (allowedItemIds instanceof Set) {
       arr = arr.filter((opt) => allowedItemIds.has(Number(opt.id)));
     }
@@ -647,7 +694,7 @@ function ShopPurchasesPage() {
         };
       });
 
-      setLines(mapped);
+      setSavedLines(mapped);
     } catch (err) {
       console.error("Error loading existing purchase lines:", err);
     }
@@ -658,10 +705,18 @@ function ShopPurchasesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shopId, purchaseDate, stockRows, itemsCatalog, loading]);
 
+  // Reset draft edits when date changes (keeps draft lines unless you want them cleared)
   useEffect(() => {
     cancelAnyEdit();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [purchaseDate]);
+
+  // If supplier dropdown changes, sync supplierName (so payload remains compatible)
+  useEffect(() => {
+    if (!selectedSupplierId) return;
+    const sel = suppliers.find((s) => String(s.id) === String(selectedSupplierId));
+    if (sel?.name) setSupplierName(sel.name);
+  }, [selectedSupplierId, suppliers]);
 
   const updatePad = (field, rawValue) => {
     setPad((prev) => {
@@ -691,9 +746,7 @@ function ShopPurchasesPage() {
       }
 
       if (
-        ["qtyUnits", "newUnitCost", "newWholesalePerPiece", "newRetailPerPiece"].includes(
-          field
-        )
+        ["qtyUnits", "newUnitCost", "newWholesalePerPiece", "newRetailPerPiece"].includes(field)
       ) {
         const value = rawValue === "" ? "" : Number(rawValue);
         return { ...prev, [field]: value };
@@ -703,8 +756,8 @@ function ShopPurchasesPage() {
     });
   };
 
-  const startEditNewLine = (lineId) => {
-    const baseLine = lines.find((l) => l.id === lineId);
+  const startEditDraftLine = (lineId) => {
+    const baseLine = draftLines.find((l) => l.id === lineId);
     if (!baseLine || baseLine.isFromDb) return;
 
     setEditingDbId(null);
@@ -742,8 +795,8 @@ function ShopPurchasesPage() {
     scrollPadIntoView();
   };
 
-  const removeLine = (id) => {
-    setLines((prev) => prev.filter((l) => l.id !== id));
+  const removeDraftLine = (id) => {
+    setDraftLines((prev) => prev.filter((l) => l.id !== id));
     if (editingLineId === id) {
       setEditingLineId(null);
       resetPadToDefaults();
@@ -760,9 +813,9 @@ function ShopPurchasesPage() {
 
     try {
       const fromISO = toISODate(historyFrom);
-      const toISO = toISODate(historyTo);
+      const toISO_ = toISODate(historyTo);
 
-      const chk = listDaysInclusive(fromISO, toISO, MAX_HISTORY_DAYS);
+      const chk = listDaysInclusive(fromISO, toISO_, MAX_HISTORY_DAYS);
       if (!chk.ok) {
         setHistoryDays([]);
         setExpandedDays({});
@@ -772,7 +825,6 @@ function ShopPurchasesPage() {
         return;
       }
 
-      // Build query safely
       const sp = new URLSearchParams();
       sp.set("shop_id", String(shopId));
 
@@ -780,9 +832,9 @@ function ShopPurchasesPage() {
         sp.set("date_from", fromISO);
         sp.set("purchase_date_from", fromISO);
       }
-      if (toISO) {
-        sp.set("date_to", toISO);
-        sp.set("purchase_date_to", toISO);
+      if (toISO_) {
+        sp.set("date_to", toISO_);
+        sp.set("purchase_date_to", toISO_);
       }
 
       const url = `${API_BASE}/purchases/days/?${sp.toString()}`;
@@ -802,8 +854,7 @@ function ShopPurchasesPage() {
         const detail = body?.detail;
 
         if (typeof detail === "string") msg = detail;
-        else if (Array.isArray(detail))
-          msg = detail.map((d) => d?.msg || JSON.stringify(d)).join(" | ");
+        else if (Array.isArray(detail)) msg = detail.map((d) => d?.msg || JSON.stringify(d)).join(" | ");
         else if (detail && typeof detail === "object") msg = JSON.stringify(detail);
 
         throw new Error(msg);
@@ -889,7 +940,6 @@ function ShopPurchasesPage() {
       return next;
     });
 
-    // If expanding and not loaded yet => load
     const already = historyDayLines[toISODate(dayISO)];
     if (!already) {
       await loadHistoryDayLines(d);
@@ -914,19 +964,15 @@ function ShopPurchasesPage() {
 
       if (!res.ok) {
         const errData = await res.json().catch(() => null);
-        throw new Error(
-          errData?.detail || `Failed to delete line. Status: ${res.status}`
-        );
+        throw new Error(errData?.detail || `Failed to delete line. Status: ${res.status}`);
       }
 
       await res.json().catch(() => null);
       setMessage("Saved purchase line deleted and stock recalculated.");
       cancelAnyEdit();
 
-      // ✅ Refresh Today tab lines if relevant
       await loadExistingLines();
 
-      // ✅ Refresh history view (only if we are on Tab 2)
       if (activeTab === 2) {
         const dayISO = toISODate(purchaseDateForRefresh);
         if (dayISO) {
@@ -990,10 +1036,7 @@ function ShopPurchasesPage() {
 
         if (!res.ok) {
           const errData = await res.json().catch(() => null);
-          throw new Error(
-            errData?.detail ||
-              `Failed to update saved line. Status: ${res.status}`
-          );
+          throw new Error(errData?.detail || `Failed to update saved line. Status: ${res.status}`);
         }
 
         await res.json().catch(() => null);
@@ -1012,9 +1055,9 @@ function ShopPurchasesPage() {
       }
     }
 
-    // ✅ New line (local until Save purchase POST)
+    // ✅ Draft line (local until Pay purchase POST)
     if (editingLineId === null) {
-      setLines((prev) => [
+      setDraftLines((prev) => [
         ...prev,
         {
           id: Date.now().toString() + Math.random().toString(16),
@@ -1027,7 +1070,7 @@ function ShopPurchasesPage() {
         },
       ]);
     } else {
-      setLines((prev) =>
+      setDraftLines((prev) =>
         prev.map((l) =>
           l.id === editingLineId
             ? {
@@ -1049,33 +1092,21 @@ function ShopPurchasesPage() {
     scrollPadIntoView();
   };
 
-  const linesWithComputed = useMemo(() => {
-    return lines.map((line) => {
+  const computeLinesWithComputed = (linesArr) => {
+    return (linesArr || []).map((line) => {
       const s = stockByItemId[line.itemId] || {};
       const metaFallback = itemMetaById[line.itemId] || {};
 
-      const piecesPerUnit =
-        s.item_pieces_per_unit ?? metaFallback.piecesPerUnit ?? 1;
+      const piecesPerUnit = s.item_pieces_per_unit ?? metaFallback.piecesPerUnit ?? 1;
 
-      // ✅ recent values fall back to NEW values if stock has no history yet
-      const recentUnitCost = chooseRecent(
-        s.last_purchase_unit_price,
-        line.newUnitCost
-      );
-      const recentWholesalePerPiece = chooseRecent(
-        s.wholesale_price_per_piece,
-        line.newWholesalePerPiece
-      );
-      const recentRetailPerPiece = chooseRecent(
-        s.selling_price_per_piece,
-        line.newRetailPerPiece
-      );
+      const recentUnitCost = chooseRecent(s.last_purchase_unit_price, line.newUnitCost);
+      const recentWholesalePerPiece = chooseRecent(s.wholesale_price_per_piece, line.newWholesalePerPiece);
+      const recentRetailPerPiece = chooseRecent(s.selling_price_per_piece, line.newRetailPerPiece);
 
       const qtyUnits = Number(line.qtyUnits || 0);
       const newUnitCost = Number(line.newUnitCost || 0);
 
-      const newCostPerPiece =
-        piecesPerUnit > 0 ? newUnitCost / piecesPerUnit : 0;
+      const newCostPerPiece = piecesPerUnit > 0 ? newUnitCost / piecesPerUnit : 0;
       const lineTotal = qtyUnits * newUnitCost;
       const allPieces = qtyUnits * piecesPerUnit;
 
@@ -1096,37 +1127,54 @@ function ShopPurchasesPage() {
         },
       };
     });
-  }, [lines, stockByItemId, itemMetaById]);
+  };
 
-  // ✅ Disable Save purchase unless there is at least one NEW (unsaved) line
-  const hasNewLinesToSave = useMemo(
-    () => linesWithComputed.some((l) => !l.isFromDb),
-    [linesWithComputed]
+  const draftLinesWithComputed = useMemo(
+    () => computeLinesWithComputed(draftLines),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [draftLines, stockByItemId, itemMetaById]
   );
 
-  const filteredLinesWithComputed = useMemo(() => {
-    const term = searchTerm.trim().toLowerCase();
-    if (!term) return linesWithComputed;
-    return linesWithComputed.filter((line) =>
+  const savedLinesWithComputed = useMemo(
+    () => computeLinesWithComputed(savedLines),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [savedLines, stockByItemId, itemMetaById]
+  );
+
+  const hasDraftLinesToPay = useMemo(
+    () => draftLinesWithComputed.some((l) => !l.isFromDb),
+    [draftLinesWithComputed]
+  );
+
+  const filteredDraftLines = useMemo(() => {
+    const term = draftSearchTerm.trim().toLowerCase();
+    if (!term) return draftLinesWithComputed;
+    return draftLinesWithComputed.filter((line) =>
       (line.meta.itemName || "").toLowerCase().includes(term)
     );
-  }, [linesWithComputed, searchTerm]);
+  }, [draftLinesWithComputed, draftSearchTerm]);
 
-  const purchaseTotal = useMemo(() => {
-    return linesWithComputed.reduce(
-      (sum, line) => sum + (line.computed.lineTotal || 0),
-      0
+  const filteredSavedLines = useMemo(() => {
+    const term = savedSearchTerm.trim().toLowerCase();
+    if (!term) return savedLinesWithComputed;
+    return savedLinesWithComputed.filter((line) =>
+      (line.meta.itemName || "").toLowerCase().includes(term)
     );
-  }, [linesWithComputed]);
+  }, [savedLinesWithComputed, savedSearchTerm]);
+
+  const amountToPay = useMemo(() => {
+    return draftLinesWithComputed.reduce((sum, line) => sum + (line.computed.lineTotal || 0), 0);
+  }, [draftLinesWithComputed]);
+
+  const savedTotal = useMemo(() => {
+    return savedLinesWithComputed.reduce((sum, line) => sum + (line.computed.lineTotal || 0), 0);
+  }, [savedLinesWithComputed]);
 
   const padStock = pad.itemId ? stockByItemId[pad.itemId] : null;
   const padMeta = pad.itemId ? itemMetaById[pad.itemId] : null;
-  const padPiecesPerUnit =
-    padStock?.item_pieces_per_unit ?? padMeta?.piecesPerUnit ?? 1;
+  const padPiecesPerUnit = padStock?.item_pieces_per_unit ?? padMeta?.piecesPerUnit ?? 1;
   const padPurchaseCostPerPiece =
-    pad.itemId && padPiecesPerUnit > 0
-      ? Number(pad.newUnitCost || 0) / padPiecesPerUnit
-      : 0;
+    pad.itemId && padPiecesPerUnit > 0 ? Number(pad.newUnitCost || 0) / padPiecesPerUnit : 0;
 
   // ✅ Load history days whenever Tab 2 opened / Apply clicked
   useEffect(() => {
@@ -1141,27 +1189,16 @@ function ShopPurchasesPage() {
       const s = stockByItemId[line.itemId] || {};
       const metaFallback = itemMetaById[line.itemId] || {};
 
-      const piecesPerUnit =
-        s.item_pieces_per_unit ?? metaFallback.piecesPerUnit ?? 1;
+      const piecesPerUnit = s.item_pieces_per_unit ?? metaFallback.piecesPerUnit ?? 1;
 
-      const recentUnitCost = chooseRecent(
-        s.last_purchase_unit_price,
-        line.newUnitCost
-      );
-      const recentWholesalePerPiece = chooseRecent(
-        s.wholesale_price_per_piece,
-        line.newWholesalePerPiece
-      );
-      const recentRetailPerPiece = chooseRecent(
-        s.selling_price_per_piece,
-        line.newRetailPerPiece
-      );
+      const recentUnitCost = chooseRecent(s.last_purchase_unit_price, line.newUnitCost);
+      const recentWholesalePerPiece = chooseRecent(s.wholesale_price_per_piece, line.newWholesalePerPiece);
+      const recentRetailPerPiece = chooseRecent(s.selling_price_per_piece, line.newRetailPerPiece);
 
       const qtyUnits = Number(line.qtyUnits || 0);
       const newUnitCost = Number(line.newUnitCost || 0);
 
-      const newCostPerPiece =
-        piecesPerUnit > 0 ? newUnitCost / piecesPerUnit : 0;
+      const newCostPerPiece = piecesPerUnit > 0 ? newUnitCost / piecesPerUnit : 0;
       const lineTotal = qtyUnits * newUnitCost;
       const allPieces = qtyUnits * piecesPerUnit;
 
@@ -1206,19 +1243,17 @@ function ShopPurchasesPage() {
       if (!loaded) return false;
 
       const enriched = enrichHistoryLines(loaded);
-      return enriched.some((ln) =>
-        (ln.meta.itemName || "").toLowerCase().includes(term)
-      );
+      return enriched.some((ln) => (ln.meta.itemName || "").toLowerCase().includes(term));
     });
   })();
 
-  // ✅ Save purchase = POST to backend (this is what “saves everything”)
-  const handleSave = async () => {
-    const newLinesForSave = linesWithComputed.filter((l) => !l.isFromDb);
+  // ✅ Pay purchase = POST draft to backend (then it appears in saved list)
+  const handlePayPurchase = async () => {
+    const newLinesForSave = draftLinesWithComputed.filter((l) => !l.isFromDb);
 
     if (!newLinesForSave.length) {
       setMessage("");
-      setError("No new items to save for this date.");
+      setError("No draft items to pay.");
       return;
     }
 
@@ -1227,10 +1262,12 @@ function ShopPurchasesPage() {
     setMessage("");
 
     try {
+      const supplierToSend = fromSupplier ? (supplierName || null) : null;
+
       const payload = {
         shop_id: Number(shopId),
         purchase_date: toISODate(purchaseDate),
-        supplier_name: supplierName || null,
+        supplier_name: supplierToSend,
         invoice_number: invoiceNumber || null,
         lines: newLinesForSave.map((l) => ({
           item_id: l.itemId,
@@ -1255,25 +1292,85 @@ function ShopPurchasesPage() {
 
       if (!res.ok) {
         const errData = await res.json().catch(() => null);
-        throw new Error(
-          errData?.detail || `Failed to save purchase. Status: ${res.status}`
-        );
+        throw new Error(errData?.detail || `Failed to pay purchase. Status: ${res.status}`);
       }
 
       await res.json().catch(() => null);
 
-      setMessage("Purchase saved and stock updated successfully.");
+      setMessage("Purchase paid and saved. Stock updated successfully.");
       setError("");
 
+      // Clear draft + reload saved
+      setDraftLines([]);
       cancelAnyEdit();
       resetPadToDefaults();
-      await loadExistingLines(); // ✅ reload from backend
+      await loadExistingLines();
     } catch (err) {
       console.error(err);
-      setError(err.message || "Failed to save purchase.");
+      setError(err.message || "Failed to pay purchase.");
       setMessage("");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleCreateSupplier = async () => {
+    const name = String(supplierForm.name || "").trim();
+    const phone = String(supplierForm.phone || "").trim();
+    const tin = String(supplierForm.tin || "").trim();
+
+    if (!name) {
+      setError("Supplier name is required.");
+      return;
+    }
+
+    setAddingSupplier(true);
+    setError("");
+    setMessage("");
+
+    // Try with shop_id, then fallback without shop_id (safe)
+    const payloadA = { name, phone: phone || null, tin: tin || null, shop_id: Number(shopId) };
+    const payloadB = { name, phone: phone || null, tin: tin || null };
+
+    try {
+      let res = await fetch(SUPPLIERS_CREATE_URL(), {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify(payloadA),
+      });
+
+      if (!res.ok) {
+        // fallback
+        res = await fetch(SUPPLIERS_CREATE_URL(), {
+          method: "POST",
+          headers: authHeaders,
+          body: JSON.stringify(payloadB),
+        });
+      }
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => null);
+        throw new Error(errData?.detail || `Failed to add supplier. Status: ${res.status}`);
+      }
+
+      const created = await res.json().catch(() => null);
+      setMessage("Supplier added.");
+      setAddSupplierOpen(false);
+      setSupplierForm({ name: "", phone: "", tin: "" });
+
+      await loadSuppliers();
+
+      const createdId = created?.id ?? created?.supplier_id ?? created?.supplierId ?? null;
+      const createdName = created?.name ?? created?.supplier_name ?? created?.supplierName ?? name;
+
+      if (createdId != null) setSelectedSupplierId(String(createdId));
+      setSupplierName(createdName);
+      setFromSupplier(true);
+    } catch (e) {
+      console.error(e);
+      setError(e?.message || "Failed to add supplier.");
+    } finally {
+      setAddingSupplier(false);
     }
   };
 
@@ -1291,9 +1388,7 @@ function ShopPurchasesPage() {
   const padBg = padDark ? "#0b1220" : "#ffffff";
   const padText = padDark ? "#e5e7eb" : "#111827";
   const padMuted = padDark ? "#9ca3af" : "#6b7280";
-  const padBorder = padDark
-    ? "1px solid rgba(255,255,255,0.10)"
-    : "1px solid #e5e7eb";
+  const padBorder = padDark ? "1px solid rgba(255,255,255,0.10)" : "1px solid #e5e7eb";
 
   const inputBase = {
     width: "100%",
@@ -1314,7 +1409,6 @@ function ShopPurchasesPage() {
     marginBottom: "6px",
   };
 
-  // ✅ Responsive via CSS classes (so media queries can work)
   const helperGridStyle = {
     display: "grid",
     columnGap: "14px",
@@ -1331,14 +1425,14 @@ function ShopPurchasesPage() {
   const padTitle = isEditingSaved
     ? "Edit saved item (updates database)"
     : isEditingNew
-    ? "Edit new item, then click Update item to save changes"
-    : "Pad: select item, set prices, then add to list";
+    ? "Edit draft item, then click Update item"
+    : "Pad: select item, set prices, then add to draft";
 
   const padButtonText = isEditingSaved
     ? "Update saved item"
     : isEditingNew
     ? "Update item"
-    : "+ Add to list";
+    : "+ Add to draft";
 
   const tabBtn = (active) => ({
     padding: "8px 12px",
@@ -1351,6 +1445,239 @@ function ShopPurchasesPage() {
     cursor: "pointer",
   });
 
+  const renderLinesTable = ({
+    title,
+    lines,
+    searchValue,
+    onSearchChange,
+    emptyText,
+    isDraftTable,
+  }) => {
+    return (
+      <div style={{ marginTop: 12 }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: "6px",
+            gap: 10,
+            flexWrap: "wrap",
+          }}
+        >
+          <div style={{ fontSize: "14px", fontWeight: 800, color: "#111827" }}>{title}</div>
+
+          <input
+            type="text"
+            placeholder="Search in items..."
+            value={searchValue}
+            onChange={(e) => onSearchChange(e.target.value)}
+            style={{
+              width: "240px",
+              padding: "6px 10px",
+              borderRadius: "999px",
+              border: "1px solid #d1d5db",
+              fontSize: "12px",
+            }}
+          />
+        </div>
+
+        {lines.length === 0 ? (
+          <div style={{ padding: "10px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
+            {emptyText}
+          </div>
+        ) : (
+          <div
+            style={{
+              borderRadius: "14px",
+              border: "1px solid #e5e7eb",
+              backgroundColor: "#ffffff",
+              overflow: "hidden",
+              boxShadow: "0 6px 18px rgba(15, 23, 42, 0.05)",
+            }}
+          >
+            <div
+              style={{
+                maxHeight: "420px",
+                overflowY: "auto",
+                overflowX: "auto",
+                scrollbarGutter: "stable",
+                backgroundColor: "#ffffff",
+              }}
+            >
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: PURCHASE_GRID_COLUMNS,
+                  minWidth: PURCHASE_GRID_MIN_WIDTH,
+                  alignItems: "center",
+                  padding: "8px 10px",
+                  borderBottom: "1px solid #e5e7eb",
+                  fontSize: "11px",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.08em",
+                  color: "#6b7280",
+                  fontWeight: 700,
+                  position: "sticky",
+                  top: 0,
+                  backgroundColor: "#f9fafb",
+                  zIndex: 5,
+                }}
+              >
+                <div>Item</div>
+                <div style={{ textAlign: "center" }}>Qty units</div>
+                <div style={{ textAlign: "center" }}>Pieces / unit</div>
+                <div style={{ textAlign: "center" }}>All pieces</div>
+                <div style={{ textAlign: "right" }}>Recent cost/unit</div>
+                <div style={{ textAlign: "right" }}>New cost/unit</div>
+                <div style={{ textAlign: "right" }}>Cost / piece</div>
+                <div style={{ textAlign: "right" }}>Recent wholesale</div>
+                <div style={{ textAlign: "right" }}>New wholesale</div>
+                <div style={{ textAlign: "right" }}>Recent retail</div>
+                <div style={{ textAlign: "right" }}>New retail</div>
+                <div style={{ textAlign: "right" }}>Line total</div>
+                <div></div>
+              </div>
+
+              {lines.map((line) => {
+                const { meta, computed } = line;
+                const {
+                  itemName,
+                  piecesPerUnit,
+                  recentUnitCost,
+                  recentWholesalePerPiece,
+                  recentRetailPerPiece,
+                } = meta;
+                const { newCostPerPiece, lineTotal, allPieces } = computed;
+
+                const isFromDb = line.isFromDb;
+                const isSelected = selectedLineId === line.id;
+                const isEditingThisSaved = isFromDb && editingDbUiId === line.id;
+
+                return (
+                  <div
+                    key={line.id}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: PURCHASE_GRID_COLUMNS,
+                      minWidth: PURCHASE_GRID_MIN_WIDTH,
+                      alignItems: "center",
+                      padding: "10px 10px",
+                      borderBottom: "1px solid #f3f4f6",
+                      fontSize: "13px",
+                      backgroundColor: isSelected ? "#eff6ff" : "#ffffff",
+                    }}
+                  >
+                    <div>
+                      {isFromDb ? (
+                        <button
+                          type="button"
+                          onClick={() => startEditSavedLine(line)}
+                          style={{
+                            padding: 0,
+                            margin: 0,
+                            border: "none",
+                            background: "transparent",
+                            color: "#111827",
+                            fontWeight: 700,
+                            fontSize: "13px",
+                            cursor: "pointer",
+                            textAlign: "left",
+                          }}
+                          title="Edit saved purchase line"
+                        >
+                          {itemName || "Unknown item"}{" "}
+                          {isEditingThisSaved ? (
+                            <span style={{ color: "#2563eb", fontWeight: 800, marginLeft: 6 }}>
+                              (editing)
+                            </span>
+                          ) : null}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => startEditDraftLine(line.id)}
+                          style={{
+                            padding: 0,
+                            margin: 0,
+                            border: "none",
+                            background: "transparent",
+                            color: "#2563eb",
+                            fontWeight: 700,
+                            fontSize: "13px",
+                            cursor: "pointer",
+                            textAlign: "left",
+                          }}
+                          title="Edit draft line"
+                        >
+                          {itemName || "Unknown item"}
+                        </button>
+                      )}
+                    </div>
+
+                    <div style={{ textAlign: "center" }}>{formatQty(line.qtyUnits)}</div>
+                    <div style={{ textAlign: "center" }}>{formatQty(piecesPerUnit)}</div>
+                    <div style={{ textAlign: "center" }}>{formatQty(allPieces)}</div>
+                    <div style={{ textAlign: "right" }}>{formatMoney(recentUnitCost)}</div>
+                    <div style={{ textAlign: "right" }}>{formatMoney(line.newUnitCost)}</div>
+                    <div style={{ textAlign: "right" }}>{formatMoney(newCostPerPiece)}</div>
+                    <div style={{ textAlign: "right" }}>{formatMoney(recentWholesalePerPiece)}</div>
+                    <div style={{ textAlign: "right" }}>{formatMoney(line.newWholesalePerPiece)}</div>
+                    <div style={{ textAlign: "right" }}>{formatMoney(recentRetailPerPiece)}</div>
+                    <div style={{ textAlign: "right" }}>{formatMoney(line.newRetailPerPiece)}</div>
+                    <div style={{ textAlign: "right", fontWeight: 700 }}>{formatMoney(lineTotal)}</div>
+
+                    <div style={{ textAlign: "center" }}>
+                      {isFromDb ? (
+                        <button
+                          type="button"
+                          onClick={() => deleteSavedLine(line.dbId, toISODate(purchaseDate))}
+                          disabled={padSaving}
+                          title="Delete saved line"
+                          style={{
+                            width: "28px",
+                            height: "28px",
+                            borderRadius: "9999px",
+                            border: "1px solid #fee2e2",
+                            backgroundColor: "#fef2f2",
+                            color: "#b91c1c",
+                            fontSize: "14px",
+                            cursor: padSaving ? "not-allowed" : "pointer",
+                            opacity: padSaving ? 0.7 : 1,
+                          }}
+                        >
+                          🗑
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => removeDraftLine(line.id)}
+                          style={{
+                            width: "28px",
+                            height: "28px",
+                            borderRadius: "9999px",
+                            border: "1px solid #fee2e2",
+                            backgroundColor: "#fef2f2",
+                            color: "#b91c1c",
+                            fontSize: "16px",
+                            cursor: "pointer",
+                          }}
+                          title={isDraftTable ? "Remove draft line" : "Remove"}
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div
       className="purchasePageRoot"
@@ -1361,26 +1688,21 @@ function ShopPurchasesPage() {
         boxSizing: "border-box",
       }}
     >
-      {/* ✅ Mobile/tablet responsiveness (pad wraps 2 cols mobile, 3 cols tablet) */}
       <style>{`
         .purchasePageRoot { padding: 0 12px 24px; }
         @media (min-width: 768px) { .purchasePageRoot { padding: 0 16px 24px; } }
 
-        /* Top inputs: date / supplier / invoice */
+        /* Top inputs: date only */
         .purchaseTopInputsGrid {
           display: grid;
-          grid-template-columns: 160px minmax(0, 1fr) 220px;
+          grid-template-columns: 220px minmax(0, 1fr);
           gap: 12px;
           margin-bottom: 8px;
-        }
-        @media (max-width: 1024px) {
-          .purchaseTopInputsGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         }
         @media (max-width: 640px) {
           .purchaseTopInputsGrid { grid-template-columns: 1fr; }
         }
 
-        /* Helper row under item picker */
         .padHelperGrid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
         @media (max-width: 1024px) {
           .padHelperGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 10px; }
@@ -1389,11 +1711,6 @@ function ShopPurchasesPage() {
           .padHelperGrid { grid-template-columns: 1fr; row-gap: 10px; }
         }
 
-        /* ✅ Purchase pad fields grid:
-           Desktop: your wide layout
-           Tablet: 3 columns (→ ~2 rows for 5 fields)
-           Mobile: 2 columns (→ ~3 rows for 5 fields)
-        */
         .padFieldsGrid {
           display: grid;
           grid-template-columns:
@@ -1411,6 +1728,28 @@ function ShopPurchasesPage() {
         }
         @media (max-width: 640px) {
           .padFieldsGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+
+        .supplierPayGrid {
+          display: grid;
+          grid-template-columns: 1fr 360px;
+          gap: 12px;
+          align-items: stretch;
+          margin-top: 12px;
+        }
+        @media (max-width: 1024px) {
+          .supplierPayGrid { grid-template-columns: 1fr; }
+        }
+
+        .modalBackdrop {
+          position: fixed;
+          inset: 0;
+          background: rgba(0,0,0,0.4);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          z-index: 2000;
+          padding: 16px;
         }
       `}</style>
 
@@ -1437,13 +1776,7 @@ function ShopPurchasesPage() {
             marginBottom: "6px",
           }}
         >
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "flex-start",
-            }}
-          >
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
             <button
               onClick={() => navigate(`/shops/${shopId}`)}
               style={{
@@ -1469,26 +1802,12 @@ function ShopPurchasesPage() {
             >
               Purchases
             </h1>
-            <div
-              style={{
-                marginTop: "2px",
-                fontSize: "13px",
-                fontWeight: 600,
-                color: "#2563eb",
-              }}
-            >
+            <div style={{ marginTop: "2px", fontSize: "13px", fontWeight: 600, color: "#2563eb" }}>
               {shopName}
             </div>
 
             {/* ✅ Only 2 tabs */}
-            <div
-              style={{
-                marginTop: "10px",
-                display: "flex",
-                gap: "8px",
-                flexWrap: "wrap",
-              }}
-            >
+            <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
               <button
                 type="button"
                 style={tabBtn(activeTab === 1)}
@@ -1522,6 +1841,7 @@ function ShopPurchasesPage() {
             </div>
           </div>
 
+          {/* ✅ SalesPOS-like amount to pay */}
           <div
             style={{
               minWidth: "260px",
@@ -1536,34 +1856,21 @@ function ShopPurchasesPage() {
               fontSize: "12px",
             }}
           >
-            <div style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>
-              Purchase summary
+            <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.14em", color: "#9ca3af" }}>
+              Work date: {toISODate(purchaseDate) || purchaseDate}
             </div>
-            <div
-              style={{
-                fontSize: "10px",
-                textTransform: "uppercase",
-                letterSpacing: "0.14em",
-                color: "#9ca3af",
-                marginBottom: "4px",
-              }}
-            >
-              Date: {toISODate(purchaseDate) || purchaseDate}
+
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+              <div style={{ fontSize: "12px", fontWeight: 800, color: "#6b7280", letterSpacing: "0.08em" }}>
+                AMOUNT TO PAY
+              </div>
+              <div style={{ fontSize: "26px", fontWeight: 900, color: "#111827" }}>
+                {formatMoney(amountToPay)}
+              </div>
             </div>
-            <div>
-              <div
-                style={{
-                  fontSize: "10px",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.1em",
-                  color: "#6b7280",
-                }}
-              >
-                Total amount
-              </div>
-              <div style={{ fontSize: "18px", fontWeight: 800, color: "#111827" }}>
-                {formatMoney(purchaseTotal)}
-              </div>
+
+            <div style={{ fontSize: "11px", color: "#6b7280" }}>
+              Saved today: <strong style={{ color: "#111827" }}>{formatMoney(savedTotal)}</strong>
             </div>
           </div>
         </div>
@@ -1584,36 +1891,33 @@ function ShopPurchasesPage() {
               boxSizing: "border-box",
             }}
           />
-          <input
-            type="text"
-            placeholder="Supplier name (optional)"
-            value={supplierName}
-            onChange={(e) => setSupplierName(e.target.value)}
+
+          <div
             style={{
-              width: "100%",
-              padding: "8px 12px",
-              borderRadius: "999px",
-              border: "1px solid #d1d5db",
-              fontSize: "13px",
-              backgroundColor: "#ffffff",
-              boxSizing: "border-box",
+              display: "flex",
+              gap: 10,
+              alignItems: "center",
+              justifyContent: "flex-end",
+              flexWrap: "wrap",
             }}
-          />
-          <input
-            type="text"
-            placeholder="Invoice number (optional)"
-            value={invoiceNumber}
-            onChange={(e) => setInvoiceNumber(e.target.value)}
-            style={{
-              width: "100%",
-              padding: "8px 12px",
-              borderRadius: "999px",
-              border: "1px solid #d1d5db",
-              fontSize: "13px",
-              backgroundColor: "#ffffff",
-              boxSizing: "border-box",
-            }}
-          />
+          >
+            <button
+              type="button"
+              onClick={() => navigate(`/shops/${shopId}/stock`)}
+              style={{
+                padding: "0.55rem 1.2rem",
+                borderRadius: "999px",
+                border: "1px solid #d1d5db",
+                backgroundColor: "#ffffff",
+                color: "#111827",
+                fontWeight: 700,
+                fontSize: "0.85rem",
+                cursor: "pointer",
+              }}
+            >
+              View stock
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1642,7 +1946,7 @@ function ShopPurchasesPage() {
             padding: "16px 18px 14px",
           }}
         >
-          <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>
+          <h2 style={{ fontSize: "18px", fontWeight: 800, margin: 0 }}>
             Purchases for {toISODate(purchaseDate) || purchaseDate}
           </h2>
 
@@ -1663,7 +1967,7 @@ function ShopPurchasesPage() {
             <div
               style={{
                 fontSize: "13px",
-                fontWeight: 700,
+                fontWeight: 800,
                 marginBottom: "10px",
                 display: "flex",
                 justifyContent: "space-between",
@@ -1707,7 +2011,7 @@ function ShopPurchasesPage() {
                     border: "none",
                     backgroundColor: "#2563eb",
                     color: "white",
-                    fontWeight: 800,
+                    fontWeight: 900,
                     fontSize: "0.9rem",
                     cursor: padSaving ? "not-allowed" : "pointer",
                     opacity: padSaving ? 0.8 : 1,
@@ -1731,8 +2035,8 @@ function ShopPurchasesPage() {
                   lineHeight: 1.35,
                 }}
               >
-                Note: Item cannot be changed when editing a saved line. If you need a
-                different item, delete the saved line and add a new one.
+                Note: Item cannot be changed when editing a saved line. If you need a different item,
+                delete the saved line and add a new one.
               </div>
             )}
 
@@ -1748,9 +2052,7 @@ function ShopPurchasesPage() {
               <div className="padHelperGrid" style={helperGridStyle}>
                 <div>
                   Pieces / unit:{" "}
-                  <strong style={{ color: padText }}>
-                    {pad.itemId ? padPiecesPerUnit : "—"}
-                  </strong>
+                  <strong style={{ color: padText }}>{pad.itemId ? padPiecesPerUnit : "—"}</strong>
                 </div>
                 <div>
                   Recent unit cost:{" "}
@@ -1773,7 +2075,6 @@ function ShopPurchasesPage() {
               </div>
             </div>
 
-            {/* ✅ Responsive grid (mobile 2 cols → ~3 rows, tablet 3 cols → ~2 rows) */}
             <div style={{ marginTop: "12px" }} className="padFieldsGrid">
               <div>
                 <label style={labelStyle}>Qty units</label>
@@ -1805,7 +2106,7 @@ function ShopPurchasesPage() {
                   readOnly
                   value={pad.itemId ? formatMoney(padPurchaseCostPerPiece) : ""}
                   placeholder="—"
-                  style={{ ...inputBase, backgroundColor: "#f3f4f6", fontWeight: 800 }}
+                  style={{ ...inputBase, backgroundColor: "#f3f4f6", fontWeight: 900 }}
                 />
               </div>
 
@@ -1833,277 +2134,344 @@ function ShopPurchasesPage() {
             </div>
           </div>
 
-          {/* LIST */}
-          {linesWithComputed.length === 0 ? (
-            <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
-              No items for this date yet. Use the pad above and click{" "}
-              <strong>{padButtonText}</strong>.
-            </div>
-          ) : (
-            <>
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  marginBottom: "6px",
-                  marginTop: "2px",
-                }}
-              >
-                <div style={{ fontSize: "12px", color: "#6b7280" }}>
-                  Items: {linesWithComputed.length}{" "}
-                  {searchTerm ? `(showing ${filteredLinesWithComputed.length} after filter)` : ""}
+          {/* Supplier + Pay panel (SalesPOS-like) */}
+          <div className="supplierPayGrid">
+            {/* Supplier */}
+            <div
+              style={{
+                borderRadius: "16px",
+                border: "1px solid #e5e7eb",
+                background: "#ffffff",
+                padding: "12px 12px",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ fontSize: "13px", fontWeight: 900, color: "#111827" }}>
+                  🏭 Supplier
                 </div>
-                <input
-                  type="text"
-                  placeholder="Search in items..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  style={{
-                    width: "240px",
-                    padding: "6px 10px",
-                    borderRadius: "999px",
-                    border: "1px solid #d1d5db",
-                    fontSize: "12px",
-                  }}
-                />
+
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: "12px", fontWeight: 800 }}>
+                  <input
+                    type="checkbox"
+                    checked={fromSupplier}
+                    onChange={(e) => {
+                      const v = e.target.checked;
+                      setFromSupplier(v);
+                      if (!v) {
+                        setSupplierName("");
+                        setSelectedSupplierId("");
+                      }
+                    }}
+                  />
+                  From supplier (optional)
+                </label>
               </div>
 
-              {/* ✅ Clean professional table container */}
-              <div
-                style={{
-                  borderRadius: "14px",
-                  border: "1px solid #e5e7eb",
-                  backgroundColor: "#ffffff",
-                  overflow: "hidden",
-                  boxShadow: "0 6px 18px rgba(15, 23, 42, 0.05)",
-                }}
-              >
-                <div
-                  style={{
-                    maxHeight: "420px",
-                    overflowY: "auto",
-                    overflowX: "auto",
-                    scrollbarGutter: "stable",
-                    backgroundColor: "#ffffff",
-                  }}
-                >
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: PURCHASE_GRID_COLUMNS,
-                      minWidth: PURCHASE_GRID_MIN_WIDTH,
-                      alignItems: "center",
-                      padding: "8px 10px",
-                      borderBottom: "1px solid #e5e7eb",
-                      fontSize: "11px",
-                      textTransform: "uppercase",
-                      letterSpacing: "0.08em",
-                      color: "#6b7280",
-                      fontWeight: 700,
-                      position: "sticky",
-                      top: 0,
-                      backgroundColor: "#f9fafb",
-                      zIndex: 5,
-                    }}
-                  >
-                    <div>Item</div>
-                    <div style={{ textAlign: "center" }}>Qty units</div>
-                    <div style={{ textAlign: "center" }}>Pieces / unit</div>
-                    <div style={{ textAlign: "center" }}>All pieces</div>
-                    <div style={{ textAlign: "right" }}>Recent cost/unit</div>
-                    <div style={{ textAlign: "right" }}>New cost/unit</div>
-                    <div style={{ textAlign: "right" }}>Cost / piece</div>
-                    <div style={{ textAlign: "right" }}>Recent wholesale</div>
-                    <div style={{ textAlign: "right" }}>New wholesale</div>
-                    <div style={{ textAlign: "right" }}>Recent retail</div>
-                    <div style={{ textAlign: "right" }}>New retail</div>
-                    <div style={{ textAlign: "right" }}>Line total</div>
-                    <div></div>
-                  </div>
+              {!fromSupplier ? (
+                <div style={{ marginTop: 10, fontSize: "12px", color: "#6b7280" }}>
+                  Supplier is off. This purchase will be recorded with no supplier.
+                </div>
+              ) : (
+                <>
+                  <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "1fr 160px", gap: 10 }}>
+                    <div>
+                      <div style={{ fontSize: "11px", fontWeight: 900, color: "#6b7280", marginBottom: 6 }}>
+                        Choose registered supplier (optional)
+                      </div>
 
-                  {filteredLinesWithComputed.map((line) => {
-                    const { meta, computed } = line;
-                    const {
-                      itemName,
-                      piecesPerUnit,
-                      recentUnitCost,
-                      recentWholesalePerPiece,
-                      recentRetailPerPiece,
-                    } = meta;
-                    const { newCostPerPiece, lineTotal, allPieces } = computed;
-
-                    const isFromDb = line.isFromDb;
-                    const isSelected = selectedLineId === line.id;
-                    const isEditingThisSaved = isFromDb && editingDbUiId === line.id;
-
-                    return (
-                      <div
-                        key={line.id}
+                      <select
+                        value={selectedSupplierId}
+                        onChange={(e) => setSelectedSupplierId(e.target.value)}
+                        disabled={!suppliersAvailable || suppliersLoading}
                         style={{
-                          display: "grid",
-                          gridTemplateColumns: PURCHASE_GRID_COLUMNS,
-                          minWidth: PURCHASE_GRID_MIN_WIDTH,
-                          alignItems: "center",
-                          padding: "10px 10px",
-                          borderBottom: "1px solid #f3f4f6",
+                          width: "100%",
+                          padding: "10px 12px",
+                          borderRadius: "12px",
+                          border: "1px solid #d1d5db",
                           fontSize: "13px",
-                          backgroundColor: isSelected ? "#eff6ff" : "#ffffff",
+                          background: !suppliersAvailable || suppliersLoading ? "#f9fafb" : "#ffffff",
+                          color: "#111827",
+                          cursor: !suppliersAvailable || suppliersLoading ? "not-allowed" : "pointer",
                         }}
                       >
-                        <div>
-                          {isFromDb ? (
-                            <button
-                              type="button"
-                              onClick={() => startEditSavedLine(line)}
-                              style={{
-                                padding: 0,
-                                margin: 0,
-                                border: "none",
-                                background: "transparent",
-                                color: "#111827",
-                                fontWeight: 700,
-                                fontSize: "13px",
-                                cursor: "pointer",
-                                textAlign: "left",
-                              }}
-                              title="Edit saved purchase line"
-                            >
-                              {itemName || "Unknown item"}{" "}
-                              {isEditingThisSaved ? (
-                                <span
-                                  style={{
-                                    color: "#2563eb",
-                                    fontWeight: 800,
-                                    marginLeft: 6,
-                                  }}
-                                >
-                                  (editing)
-                                </span>
-                              ) : null}
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => startEditNewLine(line.id)}
-                              style={{
-                                padding: 0,
-                                margin: 0,
-                                border: "none",
-                                background: "transparent",
-                                color: "#2563eb",
-                                fontWeight: 600,
-                                fontSize: "13px",
-                                cursor: "pointer",
-                                textAlign: "left",
-                              }}
-                              title="Edit new (unsaved) line"
-                            >
-                              {itemName || "Unknown item"}
-                            </button>
-                          )}
-                        </div>
+                        <option value="">
+                          {suppliersLoading
+                            ? "Loading suppliers..."
+                            : !suppliersAvailable
+                            ? "Suppliers not available"
+                            : "— Select supplier —"}
+                        </option>
+                        {suppliers
+                          .slice()
+                          .sort((a, b) => String(a.name).localeCompare(String(b.name)))
+                          .map((s) => (
+                            <option key={String(s.id ?? s.name)} value={String(s.id ?? "")}>
+                              {s.name}
+                              {s.phone ? ` • ${s.phone}` : ""}
+                              {s.tin ? ` • TIN: ${s.tin}` : ""}
+                            </option>
+                          ))}
+                      </select>
 
-                        <div style={{ textAlign: "center" }}>{formatQty(line.qtyUnits)}</div>
-                        <div style={{ textAlign: "center" }}>{formatQty(piecesPerUnit)}</div>
-                        <div style={{ textAlign: "center" }}>{formatQty(allPieces)}</div>
-                        <div style={{ textAlign: "right" }}>{formatMoney(recentUnitCost)}</div>
-                        <div style={{ textAlign: "right" }}>{formatMoney(line.newUnitCost)}</div>
-                        <div style={{ textAlign: "right" }}>{formatMoney(newCostPerPiece)}</div>
-                        <div style={{ textAlign: "right" }}>{formatMoney(recentWholesalePerPiece)}</div>
-                        <div style={{ textAlign: "right" }}>{formatMoney(line.newWholesalePerPiece)}</div>
-                        <div style={{ textAlign: "right" }}>{formatMoney(recentRetailPerPiece)}</div>
-                        <div style={{ textAlign: "right" }}>{formatMoney(line.newRetailPerPiece)}</div>
-                        <div style={{ textAlign: "right", fontWeight: 600 }}>
-                          {formatMoney(lineTotal)}
-                        </div>
+                      <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSupplierForm({ name: "", phone: "", tin: "" });
+                            setAddSupplierOpen(true);
+                          }}
+                          style={{
+                            padding: "8px 12px",
+                            borderRadius: "999px",
+                            border: "1px solid #d1d5db",
+                            background: "#ffffff",
+                            fontWeight: 900,
+                            fontSize: "12px",
+                            cursor: "pointer",
+                          }}
+                          title="Add Supplier"
+                        >
+                          ➕ Add Supplier
+                        </button>
 
-                        <div style={{ textAlign: "center" }}>
-                          {isFromDb ? (
-                            <button
-                              type="button"
-                              onClick={() => deleteSavedLine(line.dbId, toISODate(purchaseDate))}
-                              disabled={padSaving}
-                              title="Delete saved line"
-                              style={{
-                                width: "28px",
-                                height: "28px",
-                                borderRadius: "9999px",
-                                border: "1px solid #fee2e2",
-                                backgroundColor: "#fef2f2",
-                                color: "#b91c1c",
-                                fontSize: "14px",
-                                cursor: padSaving ? "not-allowed" : "pointer",
-                                opacity: padSaving ? 0.7 : 1,
-                              }}
-                            >
-                              🗑
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => removeLine(line.id)}
-                              style={{
-                                width: "28px",
-                                height: "28px",
-                                borderRadius: "9999px",
-                                border: "1px solid #fee2e2",
-                                backgroundColor: "#fef2f2",
-                                color: "#b91c1c",
-                                fontSize: "16px",
-                                cursor: "pointer",
-                              }}
-                              title="Remove new line (not saved yet)"
-                            >
-                              ✕
-                            </button>
-                          )}
-                        </div>
+                        <button
+                          type="button"
+                          onClick={loadSuppliers}
+                          style={{
+                            padding: "8px 12px",
+                            borderRadius: "999px",
+                            border: "1px solid #d1d5db",
+                            background: "#ffffff",
+                            fontWeight: 900,
+                            fontSize: "12px",
+                            cursor: "pointer",
+                          }}
+                          title="Refresh suppliers"
+                        >
+                          ↻ Refresh
+                        </button>
                       </div>
-                    );
-                  })}
+                    </div>
+
+                    <div>
+                      <div style={{ fontSize: "11px", fontWeight: 900, color: "#6b7280", marginBottom: 6 }}>
+                        Invoice (optional)
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="Invoice number"
+                        value={invoiceNumber}
+                        onChange={(e) => setInvoiceNumber(e.target.value)}
+                        style={inputBase}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 10 }}>
+                    <div style={{ fontSize: "11px", fontWeight: 900, color: "#6b7280", marginBottom: 6 }}>
+                      Supplier name (manual / fallback)
+                    </div>
+                    <input
+                      type="text"
+                      placeholder="Supplier name"
+                      value={supplierName}
+                      onChange={(e) => setSupplierName(e.target.value)}
+                      style={inputBase}
+                    />
+                    <div style={{ fontSize: "11px", color: "#6b7280", marginTop: 6 }}>
+                      Tip: If you selected a supplier above, this will auto-fill. You can still edit it.
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Pay panel */}
+            <div
+              style={{
+                borderRadius: "16px",
+                border: "1px solid #e5e7eb",
+                background: "#ffffff",
+                padding: "12px 12px",
+                display: "flex",
+                flexDirection: "column",
+                justifyContent: "space-between",
+                gap: 10,
+              }}
+            >
+              <div>
+                <div style={{ fontSize: "11px", fontWeight: 900, color: "#6b7280", letterSpacing: "0.12em" }}>
+                  AMOUNT TO PAY
+                </div>
+                <div style={{ fontSize: "28px", fontWeight: 900, color: "#111827", marginTop: 2 }}>
+                  {formatMoney(amountToPay)}
+                </div>
+                <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 6 }}>
+                  Draft items: <strong style={{ color: "#111827" }}>{draftLinesWithComputed.length}</strong>
                 </div>
               </div>
-            </>
-          )}
 
-          <div style={{ display: "flex", justifyContent: "flex-end", gap: "12px", marginTop: "14px" }}>
-            <button
-              type="button"
-              onClick={() => navigate(`/shops/${shopId}/stock`)}
-              style={{
-                padding: "0.6rem 1.4rem",
-                borderRadius: "999px",
-                border: "1px solid #d1d5db",
-                backgroundColor: "#ffffff",
-                color: "#111827",
-                fontWeight: 600,
-                fontSize: "0.95rem",
-                cursor: "pointer",
-              }}
-            >
-              View stock
-            </button>
-            <button
-              type="button"
-              onClick={handleSave}
-              disabled={saving || !hasNewLinesToSave}
-              title={!hasNewLinesToSave ? "Add at least one item to the list before saving." : ""}
-              style={{
-                padding: "0.6rem 1.8rem",
-                borderRadius: "999px",
-                border: "none",
-                backgroundColor: saving || !hasNewLinesToSave ? "#9ca3af" : "#2563eb",
-                color: "white",
-                fontWeight: 700,
-                fontSize: "0.95rem",
-                cursor: saving || !hasNewLinesToSave ? "not-allowed" : "pointer",
-                opacity: saving || !hasNewLinesToSave ? 0.85 : 1,
-              }}
-            >
-              {saving ? "Saving..." : "Save purchase"}
-            </button>
+              <button
+                type="button"
+                onClick={handlePayPurchase}
+                disabled={saving || !hasDraftLinesToPay}
+                title={!hasDraftLinesToPay ? "Add at least one item to draft before paying." : ""}
+                style={{
+                  padding: "0.8rem 1rem",
+                  borderRadius: "14px",
+                  border: "none",
+                  backgroundColor: saving || !hasDraftLinesToPay ? "#9ca3af" : "#111827",
+                  color: "white",
+                  fontWeight: 900,
+                  fontSize: "0.95rem",
+                  cursor: saving || !hasDraftLinesToPay ? "not-allowed" : "pointer",
+                  opacity: saving || !hasDraftLinesToPay ? 0.9 : 1,
+                }}
+              >
+                {saving ? "Paying..." : "Pay purchase"}
+              </button>
+
+              <div style={{ fontSize: "11px", color: "#6b7280", lineHeight: 1.35 }}>
+                Pay purchase will save the draft lines to the backend and move them to “Purchased today”.
+              </div>
+            </div>
           </div>
+
+          {/* Draft table */}
+          {renderLinesTable({
+            title: "Current purchase (draft)",
+            lines: filteredDraftLines,
+            searchValue: draftSearchTerm,
+            onSearchChange: setDraftSearchTerm,
+            emptyText: "No draft items yet. Add from the pad above.",
+            isDraftTable: true,
+          })}
+
+          {/* Saved table */}
+          {renderLinesTable({
+            title: "Purchased today (saved)",
+            lines: filteredSavedLines,
+            searchValue: savedSearchTerm,
+            onSearchChange: setSavedSearchTerm,
+            emptyText: "No saved purchases for this date yet.",
+            isDraftTable: false,
+          })}
+
+          {/* Add Supplier Modal */}
+          {addSupplierOpen && (
+            <div className="modalBackdrop" onMouseDown={() => setAddSupplierOpen(false)}>
+              <div
+                onMouseDown={(e) => e.stopPropagation()}
+                style={{
+                  width: "100%",
+                  maxWidth: 520,
+                  background: "#ffffff",
+                  borderRadius: 18,
+                  padding: 16,
+                  boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+                  border: "1px solid #e5e7eb",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                  <div style={{ fontSize: 14, fontWeight: 900, color: "#111827" }}>
+                    ➕ Add Supplier
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAddSupplierOpen(false)}
+                    style={{
+                      width: 32,
+                      height: 32,
+                      borderRadius: 999,
+                      border: "1px solid #e5e7eb",
+                      background: "#ffffff",
+                      cursor: "pointer",
+                      fontWeight: 900,
+                      color: "#111827",
+                    }}
+                    title="Close"
+                  >
+                    ×
+                  </button>
+                </div>
+
+                <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <div style={{ gridColumn: "1 / -1" }}>
+                    <div style={{ fontSize: "11px", fontWeight: 900, color: "#6b7280", marginBottom: 6 }}>
+                      Supplier name *
+                    </div>
+                    <input
+                      value={supplierForm.name}
+                      onChange={(e) => setSupplierForm((p) => ({ ...p, name: e.target.value }))}
+                      placeholder="e.g., ABC Trading"
+                      style={inputBase}
+                    />
+                  </div>
+
+                  <div>
+                    <div style={{ fontSize: "11px", fontWeight: 900, color: "#6b7280", marginBottom: 6 }}>
+                      Phone (optional)
+                    </div>
+                    <input
+                      value={supplierForm.phone}
+                      onChange={(e) => setSupplierForm((p) => ({ ...p, phone: e.target.value }))}
+                      placeholder="e.g., 078..."
+                      style={inputBase}
+                    />
+                  </div>
+
+                  <div>
+                    <div style={{ fontSize: "11px", fontWeight: 900, color: "#6b7280", marginBottom: 6 }}>
+                      TIN (optional)
+                    </div>
+                    <input
+                      value={supplierForm.tin}
+                      onChange={(e) => setSupplierForm((p) => ({ ...p, tin: e.target.value }))}
+                      placeholder="e.g., 102..."
+                      style={inputBase}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 14 }}>
+                  <button
+                    type="button"
+                    onClick={() => setAddSupplierOpen(false)}
+                    disabled={addingSupplier}
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 999,
+                      border: "1px solid #d1d5db",
+                      background: "#ffffff",
+                      fontWeight: 900,
+                      cursor: addingSupplier ? "not-allowed" : "pointer",
+                      opacity: addingSupplier ? 0.7 : 1,
+                    }}
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleCreateSupplier}
+                    disabled={addingSupplier}
+                    style={{
+                      padding: "10px 16px",
+                      borderRadius: 999,
+                      border: "none",
+                      background: "#111827",
+                      color: "#ffffff",
+                      fontWeight: 900,
+                      cursor: addingSupplier ? "not-allowed" : "pointer",
+                      opacity: addingSupplier ? 0.85 : 1,
+                    }}
+                  >
+                    {addingSupplier ? "Saving..." : "Save supplier"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -2117,9 +2485,6 @@ function ShopPurchasesPage() {
             padding: "16px 18px 14px",
           }}
         >
-          {/* (unchanged) */}
-          {/* ... your Tab 2 code remains exactly the same ... */}
-          {/* NOTE: Kept unchanged for safety */}
           <div
             style={{
               display: "flex",
@@ -2130,32 +2495,16 @@ function ShopPurchasesPage() {
             }}
           >
             <div>
-              <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>
-                All purchases
-              </h2>
+              <h2 style={{ fontSize: "18px", fontWeight: 700, margin: 0 }}>All purchases</h2>
               <div style={{ fontSize: "12px", color: "#6b7280", marginTop: 4 }}>
-                Date range (max <strong>{MAX_HISTORY_DAYS}</strong> days). Expand a day
-                to see items. Click an item to open its date in Today tab.
+                Date range (max <strong>{MAX_HISTORY_DAYS}</strong> days). Expand a day to see items.
+                Click an item to open its date in Today tab.
               </div>
             </div>
 
-            <div
-              style={{
-                display: "flex",
-                gap: "8px",
-                flexWrap: "wrap",
-                alignItems: "end",
-              }}
-            >
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "end" }}>
               <div>
-                <div
-                  style={{
-                    fontSize: "11px",
-                    fontWeight: 700,
-                    color: "#6b7280",
-                    marginBottom: 4,
-                  }}
-                >
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#6b7280", marginBottom: 4 }}>
                   From
                 </div>
                 <input
@@ -2173,14 +2522,7 @@ function ShopPurchasesPage() {
               </div>
 
               <div>
-                <div
-                  style={{
-                    fontSize: "11px",
-                    fontWeight: 700,
-                    color: "#6b7280",
-                    marginBottom: 4,
-                  }}
-                >
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#6b7280", marginBottom: 4 }}>
                   To
                 </div>
                 <input
@@ -2218,13 +2560,7 @@ function ShopPurchasesPage() {
             </div>
           </div>
 
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "flex-end",
-              marginTop: 10,
-            }}
-          >
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
             <input
               type="text"
               placeholder="Search item or date…"
@@ -2242,9 +2578,7 @@ function ShopPurchasesPage() {
 
           <div style={{ marginTop: 10 }}>
             {historyLoading ? (
-              <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
-                Loading…
-              </div>
+              <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>Loading…</div>
             ) : filteredHistoryDays.length === 0 ? (
               <div style={{ padding: "14px 4px 6px", fontSize: "13px", color: "#6b7280" }}>
                 No purchases found in this date range.
@@ -2374,7 +2708,14 @@ function ShopPurchasesPage() {
                                 overflow: "hidden",
                               }}
                             >
-                              <div style={{ maxHeight: "520px", overflowY: "auto", overflowX: "auto", scrollbarGutter: "stable" }}>
+                              <div
+                                style={{
+                                  maxHeight: "520px",
+                                  overflowY: "auto",
+                                  overflowX: "auto",
+                                  scrollbarGutter: "stable",
+                                }}
+                              >
                                 <div
                                   style={{
                                     display: "grid",
