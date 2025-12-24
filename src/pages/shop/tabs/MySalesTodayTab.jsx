@@ -22,6 +22,14 @@ function isValidYMD(s) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(s || "").trim());
 }
 
+// ✅ Safe time sorting helper (handles null/invalid dates)
+function timeMs(t) {
+  if (!t) return 0;
+  const d = t instanceof Date ? t : new Date(t);
+  const ms = d.getTime();
+  return Number.isFinite(ms) ? ms : 0;
+}
+
 /**
  * ✅ IMPORTANT FIX:
  * Backend/history can produce payment_type as:
@@ -302,8 +310,7 @@ export default function MySalesTodayTab({
       const saleProfit = Number(sale.total_profit || 0);
 
       const collectedNow = Number(
-        sale.amount_collected_now ??
-          (sale.is_credit_sale ? 0 : saleAmount)
+        sale.amount_collected_now ?? (sale.is_credit_sale ? 0 : saleAmount)
       );
 
       const creditBalance =
@@ -357,8 +364,7 @@ export default function MySalesTodayTab({
       const saleAmount = Number(sale.total_sale_amount || 0);
 
       const collectedNow = Number(
-        sale.amount_collected_now ??
-          (sale.is_credit_sale ? 0 : saleAmount)
+        sale.amount_collected_now ?? (sale.is_credit_sale ? 0 : saleAmount)
       );
 
       const creditBalance =
@@ -379,7 +385,6 @@ export default function MySalesTodayTab({
       }
 
       // credit-origin sale: count amount collected now (if any) into creditPayments
-      // (If your flow always sets 0 at creation, this stays 0.)
       const paidNow = Number(collectedNow || 0);
       creditPayments[bucket] += paidNow;
     }
@@ -517,16 +522,12 @@ export default function MySalesTodayTab({
 
       const saleAmount = Number(sale.total_sale_amount || 0);
       const collectedNow = Number(
-        sale.amount_collected_now ??
-          (sale.is_credit_sale ? 0 : saleAmount)
+        sale.amount_collected_now ?? (sale.is_credit_sale ? 0 : saleAmount)
       );
 
       const creditBalance =
         sale.credit_balance != null
-          ? Number(
-              sale.credit_balance ??
-                Math.max(0, saleAmount - collectedNow)
-            )
+          ? Number(sale.credit_balance ?? Math.max(0, saleAmount - collectedNow))
           : Math.max(0, saleAmount - collectedNow);
 
       const creditOrigin = isCreditOriginSale(sale, creditBalance);
@@ -574,25 +575,34 @@ export default function MySalesTodayTab({
         });
       }
     }
+
+    // ✅ NEW: Sort newest items first (no rows removed)
+    rows.sort((a, b) => {
+      const t = timeMs(b.time) - timeMs(a.time);
+      if (t !== 0) return t;
+      const s = Number(b.saleId || 0) - Number(a.saleId || 0);
+      if (s !== 0) return s;
+      return Number(b.saleLineId || 0) - Number(a.saleLineId || 0);
+    });
+
     return rows;
   }, [salesToday, stockByItemId]);
 
   const receiptsToday = useMemo(() => {
-    return (salesToday || []).map((sale) => {
+    const list = (salesToday || []).map((sale) => {
       const total = Number(sale.total_sale_amount || 0);
 
       const collected = Number(
-        sale.amount_collected_now ??
-          (sale.is_credit_sale ? 0 : total)
+        sale.amount_collected_now ?? (sale.is_credit_sale ? 0 : total)
       );
 
-      const balance = Number(
-        sale.credit_balance ?? Math.max(0, total - collected)
-      );
+      const balance = Number(sale.credit_balance ?? Math.max(0, total - collected));
 
       const creditOrigin = isCreditOriginSale(sale, balance);
 
-      const payment = creditOrigin ? "credit" : mapPayToBucket(normalizePaymentType(sale.payment_type));
+      const payment = creditOrigin
+        ? "credit"
+        : mapPayToBucket(normalizePaymentType(sale.payment_type));
 
       const profit = Number(sale.total_profit || 0);
 
@@ -617,6 +627,15 @@ export default function MySalesTodayTab({
         lines: sale.lines || [],
       };
     });
+
+    // ✅ NEW: Sort newest receipts first (no rows removed)
+    list.sort((a, b) => {
+      const t = timeMs(b.time) - timeMs(a.time);
+      if (t !== 0) return t;
+      return Number(b.id || 0) - Number(a.id || 0);
+    });
+
+    return list;
   }, [salesToday]);
 
   const customersTodayRollup = useMemo(() => {
@@ -667,7 +686,7 @@ export default function MySalesTodayTab({
         );
     }
 
-    return rows;
+    return rows; // already sorted newest-first
   }, [flattenedItemsToday, todayFilter, todayPaymentFilter]);
 
   const selectedReceipt = useMemo(() => {
