@@ -24,14 +24,35 @@ function isValidYMD(s) {
 /**
  * ============================================================
  * ✅ FIX: Sale time formatting (Kigali)
- * Problem: backend often returns "YYYY-MM-DD HH:mm:ss" (no TZ)
- * Browsers parse that inconsistently -> you see same hour (e.g. 01:00).
+ * Problem:
+ * - Backend can return:
+ *   - "YYYY-MM-DD HH:mm:ss" (no TZ)
+ *   - ISO with TZ "YYYY-MM-DDTHH:mm:ss+02:00"
+ *   - ISO with microseconds "....ss.884463+02:00" (some browsers parse poorly)
  *
- * Solution: normalize to ISO + assume Kigali (+02:00) when TZ missing,
- * then format with Intl in Africa/Kigali.
+ * Solution:
+ * - Normalize to ISO
+ * - If TZ missing, assume Kigali (+02:00)
+ * - Trim fractional seconds to milliseconds for safe JS parsing
+ * - Format with Intl in Africa/Kigali
  * ============================================================
  */
 const KIGALI_TZ = "Africa/Kigali";
+
+function _trimIsoFractionToMillis(s) {
+  // JS Date is most reliable with milliseconds (3 digits).
+  // Convert: .123456+02:00 -> .123+02:00
+  // Convert: .123456Z      -> .123Z
+  // Convert: .123456       -> .123
+  try {
+    return String(s).replace(
+      /(\.\d{3})\d+([Z]|[+-]\d{2}:\d{2})$/,
+      "$1$2"
+    ).replace(/(\.\d{3})\d+$/, "$1");
+  } catch {
+    return s;
+  }
+}
 
 function toDateAssumingKigali(raw) {
   if (!raw) return null;
@@ -41,20 +62,29 @@ function toDateAssumingKigali(raw) {
     return Number.isNaN(raw.getTime()) ? null : raw;
   }
 
+  // If number (timestamp)
+  if (typeof raw === "number") {
+    const dNum = new Date(raw);
+    return Number.isNaN(dNum.getTime()) ? null : dNum;
+  }
+
   const s0 = String(raw).trim();
   if (!s0) return null;
 
-  // If backend sends only date, treat as midnight Kigali (rare for sale_date)
+  // If backend sends only date, treat as midnight Kigali
   if (/^\d{4}-\d{2}-\d{2}$/.test(s0)) {
     const dOnly = new Date(`${s0}T00:00:00+02:00`);
     return Number.isNaN(dOnly.getTime()) ? null : dOnly;
   }
 
-  // If it already includes a timezone (Z or +hh:mm), Date() is fine
-  const hasTZ = /Z$|[+-]\d{2}:\d{2}$/.test(s0);
-
   // Normalize "YYYY-MM-DD HH:mm:ss" -> "YYYY-MM-DDTHH:mm:ss"
   let s = s0.includes(" ") && !s0.includes("T") ? s0.replace(" ", "T") : s0;
+
+  // Trim fractional seconds (microseconds -> milliseconds)
+  s = _trimIsoFractionToMillis(s);
+
+  // If it already includes a timezone (Z or +hh:mm), Date() is fine
+  const hasTZ = /Z$|[+-]\d{2}:\d{2}$/.test(s);
 
   // If no timezone, assume Kigali offset (+02:00)
   if (!hasTZ) s = `${s}+02:00`;
@@ -82,15 +112,14 @@ function timeMs(t) {
 }
 
 /**
- * ✅ IMPORTANT FIX:
- * Backend/history can produce payment_type as:
+ * ✅ IMPORTANT FIX (aligned with backend keys):
+ * We normalize into UI buckets:
+ * - cash | momo | pos | other
+ *
+ * Backend may send:
  * - cash / mobile / card
  * - momo / pos
  * - uppercase variants
- * Old code only accepted cash/mobile/card, which caused momo/pos totals to be DROPPED.
- *
- * We normalize into UI buckets:
- * - cash | mobile | card | other
  */
 function mapPayToBucket(paymentType) {
   const p = String(paymentType || "").trim().toLowerCase();
@@ -99,7 +128,7 @@ function mapPayToBucket(paymentType) {
   // Cash
   if (["cash", "c", "cash_payment"].includes(p)) return "cash";
 
-  // Mobile money (MoMo)
+  // MoMo (mobile money)
   if (
     [
       "mobile",
@@ -112,26 +141,19 @@ function mapPayToBucket(paymentType) {
       "airtel_money",
     ].includes(p)
   )
-    return "mobile";
+    return "momo";
 
-  // Card / POS
+  // POS / Card
   if (
     ["card", "pos", "bank", "visa", "mastercard", "debit", "credit_card"].includes(p)
   )
-    return "card";
+    return "pos";
 
-  // Anything else should not disappear from totals
   return "other";
 }
 
 /**
  * ✅ Credit-origin detection for the UI
- * Your backend sets payment_type=None for credit sales.
- * After a credit is fully paid, is_credit_sale may become false.
- * So we infer credit-origin using:
- * - any positive credit balance
- * - OR is_credit_sale === true
- * - OR (payment_type missing AND customer exists)
  */
 function isCreditOriginSale(sale, creditBalance) {
   const bal = Number(creditBalance || 0);
@@ -172,7 +194,7 @@ export default function MySalesTodayTab({
   const [loadingSalesToday, setLoadingSalesToday] = useState(false);
 
   const [todayFilter, setTodayFilter] = useState("all"); // all|paid|credit
-  const [todayPaymentFilter, setTodayPaymentFilter] = useState("all"); // all|cash|card|mobile|credit
+  const [todayPaymentFilter, setTodayPaymentFilter] = useState("all"); // all|cash|momo|pos|credit
   const [todayView, setTodayView] = useState("items"); // items|receipts|customers
 
   // receipt-details is only for Receipts tab
@@ -226,14 +248,12 @@ export default function MySalesTodayTab({
 
   // ============================================================
   // EDIT HANDOFF: click item -> open Current sale tab to edit
-  // We store saleId (+ optional lineId) in localStorage so CurrentSaleTab can auto-load.
   // ============================================================
   const startEditReceipt = (saleId, saleLineId) => {
     const sid = saleId != null ? Number(saleId) : null;
     const slid = saleLineId != null ? Number(saleLineId) : null;
     if (!sid) return;
 
-    // Persist edit intent for CurrentSaleTab
     try {
       localStorage.setItem("iclas_edit_sale_id", String(sid));
       if (slid != null) localStorage.setItem("iclas_edit_sale_line_id", String(slid));
@@ -242,7 +262,6 @@ export default function MySalesTodayTab({
       // ignore
     }
 
-    // Prefer parent-driven navigation (SalesPOS will set tab=current & editSaleId in URL)
     try {
       onEditSale?.(sid);
       return;
@@ -250,7 +269,6 @@ export default function MySalesTodayTab({
       // ignore
     }
 
-    // Fallback (if parent handler not passed): emit event (works only if CurrentSaleTab is mounted)
     try {
       window.dispatchEvent(
         new CustomEvent("iclas:edit-sale", {
@@ -332,7 +350,6 @@ export default function MySalesTodayTab({
     loadSalesForDate(effectiveDate);
     loadSystemTotalsForDate(effectiveDate);
 
-    // /sales/today/ is only correct for today
     if (isViewingToday) loadTodayCanonicalSummary();
     else setTodayCanonicalSummary(null);
 
@@ -393,7 +410,7 @@ export default function MySalesTodayTab({
   }, [salesToday]);
 
   // ============================================================
-  // ✅ Summary cards (Current sale / Credit / Total)
+  // ✅ Summary cards
   // - If viewing TODAY and canonical summary is available, use it.
   // - Otherwise compute from sales list for the selected date.
   // ============================================================
@@ -401,15 +418,15 @@ export default function MySalesTodayTab({
     if (!b) b = {};
     return {
       cash: Number(b.cash || 0),
-      mobile: Number(b.mobile || b.momo || 0),
-      card: Number(b.card || b.pos || 0),
+      momo: Number(b.momo || b.mobile || 0),
+      pos: Number(b.pos || b.card || 0),
       other: Number(b.other || 0),
     };
   }
 
   function computeBucketsFromSales(list) {
-    const current = { cash: 0, mobile: 0, card: 0, other: 0 };
-    const creditPayments = { cash: 0, mobile: 0, card: 0, other: 0 };
+    const current = { cash: 0, momo: 0, pos: 0, other: 0 };
+    const creditPayments = { cash: 0, momo: 0, pos: 0, other: 0 };
 
     for (const sale of list || []) {
       const saleAmount = Number(sale.total_sale_amount || 0);
@@ -428,22 +445,19 @@ export default function MySalesTodayTab({
       const payRaw = normalizePaymentType(sale.payment_type);
       const bucket = mapPayToBucket(payRaw);
 
-      // non-credit: treat as full collected now
       if (!creditOrigin) {
-        const amt = saleAmount;
-        current[bucket] += amt;
+        current[bucket] += saleAmount;
         continue;
       }
 
-      // credit-origin sale: count amount collected now (if any) into creditPayments
       const paidNow = Number(collectedNow || 0);
       creditPayments[bucket] += paidNow;
     }
 
     const total = {
       cash: current.cash + creditPayments.cash,
-      mobile: current.mobile + creditPayments.mobile,
-      card: current.card + creditPayments.card,
+      momo: current.momo + creditPayments.momo,
+      pos: current.pos + creditPayments.pos,
       other: current.other + creditPayments.other,
     };
 
@@ -452,13 +466,13 @@ export default function MySalesTodayTab({
       creditPayments,
       total,
       sums: {
-        current: current.cash + current.mobile + current.card + current.other,
+        current: current.cash + current.momo + current.pos + current.other,
         credit:
           creditPayments.cash +
-          creditPayments.mobile +
-          creditPayments.card +
+          creditPayments.momo +
+          creditPayments.pos +
           creditPayments.other,
-        total: total.cash + total.mobile + total.card + total.other,
+        total: total.cash + total.momo + total.pos + total.other,
       },
     };
   }
@@ -476,18 +490,17 @@ export default function MySalesTodayTab({
         creditPayments,
         total,
         sums: {
-          current: current.cash + current.mobile + current.card + current.other,
+          current: current.cash + current.momo + current.pos + current.other,
           credit:
             creditPayments.cash +
-            creditPayments.mobile +
-            creditPayments.card +
+            creditPayments.momo +
+            creditPayments.pos +
             creditPayments.other,
-          total: total.cash + total.mobile + total.card + total.other,
+          total: total.cash + total.momo + total.pos + total.other,
         },
       };
     }
 
-    // For past dates (or if canonical missing), compute from sales list
     return computeBucketsFromSales(salesToday);
   }, [isViewingToday, todayCanonicalSummary, salesToday]);
 
@@ -569,7 +582,7 @@ export default function MySalesTodayTab({
       const saleDate = sale.sale_date;
 
       const payRaw = normalizePaymentType(sale.payment_type);
-      const paymentBucket = mapPayToBucket(payRaw); // cash|mobile|card|other
+      const paymentBucket = mapPayToBucket(payRaw); // cash|momo|pos|other
 
       const saleAmount = Number(sale.total_sale_amount || 0);
       const collectedNow = Number(
@@ -617,8 +630,8 @@ export default function MySalesTodayTab({
           unitPrice,
           total: lineTotal,
           profit: lineProfit,
-          paymentType: paymentBucket, // ✅ normalized bucket
-          isCreditSale: creditOrigin, // ✅ credit-origin (open OR settled)
+          paymentType: paymentBucket,
+          isCreditSale: creditOrigin,
           creditBalance: Number(creditBalance || 0),
           customerName: sale.customer_name || "",
           customerPhone: sale.customer_phone || "",
@@ -627,7 +640,6 @@ export default function MySalesTodayTab({
       }
     }
 
-    // ✅ NEW: Sort newest items first (no rows removed)
     rows.sort((a, b) => {
       const t = timeMs(b.time) - timeMs(a.time);
       if (t !== 0) return t;
@@ -679,7 +691,6 @@ export default function MySalesTodayTab({
       };
     });
 
-    // ✅ NEW: Sort newest receipts first (no rows removed)
     list.sort((a, b) => {
       const t = timeMs(b.time) - timeMs(a.time);
       if (t !== 0) return t;
@@ -737,7 +748,7 @@ export default function MySalesTodayTab({
         );
     }
 
-    return rows; // already sorted newest-first
+    return rows;
   }, [flattenedItemsToday, todayFilter, todayPaymentFilter]);
 
   const selectedReceipt = useMemo(() => {
@@ -761,9 +772,9 @@ export default function MySalesTodayTab({
         : "Credit (Settled)"
       : selectedReceipt.payment === "cash"
       ? "Cash"
-      : selectedReceipt.payment === "card"
+      : selectedReceipt.payment === "pos"
       ? "POS"
-      : selectedReceipt.payment === "mobile"
+      : selectedReceipt.payment === "momo"
       ? "MoMo"
       : selectedReceipt.payment === "other"
       ? "Other"
@@ -1109,8 +1120,8 @@ export default function MySalesTodayTab({
             big={todayByPayment.sums.current}
             rows={[
               { label: "Cash", value: todayByPayment.current.cash },
-              { label: "MoMo", value: todayByPayment.current.mobile },
-              { label: "POS", value: todayByPayment.current.card },
+              { label: "MoMo", value: todayByPayment.current.momo },
+              { label: "POS", value: todayByPayment.current.pos },
               { label: "Other", value: todayByPayment.current.other },
             ]}
           />
@@ -1120,8 +1131,8 @@ export default function MySalesTodayTab({
             big={todayByPayment.sums.credit}
             rows={[
               { label: "Cash", value: todayByPayment.creditPayments.cash },
-              { label: "MoMo", value: todayByPayment.creditPayments.mobile },
-              { label: "POS", value: todayByPayment.creditPayments.card },
+              { label: "MoMo", value: todayByPayment.creditPayments.momo },
+              { label: "POS", value: todayByPayment.creditPayments.pos },
               { label: "Other", value: todayByPayment.creditPayments.other },
             ]}
           />
@@ -1131,8 +1142,8 @@ export default function MySalesTodayTab({
             big={todayByPayment.sums.total}
             rows={[
               { label: "Cash", value: todayByPayment.total.cash },
-              { label: "MoMo", value: todayByPayment.total.mobile },
-              { label: "POS", value: todayByPayment.total.card },
+              { label: "MoMo", value: todayByPayment.total.momo },
+              { label: "POS", value: todayByPayment.total.pos },
               { label: "Other", value: todayByPayment.total.other },
             ]}
           />
@@ -1296,8 +1307,8 @@ export default function MySalesTodayTab({
           >
             <option value="all">Payment: All</option>
             <option value="cash">Cash</option>
-            <option value="mobile">MoMo</option>
-            <option value="card">POS</option>
+            <option value="momo">MoMo</option>
+            <option value="pos">POS</option>
             <option value="credit">Credit</option>
           </select>
         </div>
@@ -1368,9 +1379,9 @@ export default function MySalesTodayTab({
                     ? "Credit"
                     : row.paymentType === "cash"
                     ? "Cash"
-                    : row.paymentType === "card"
+                    : row.paymentType === "pos"
                     ? "POS"
-                    : row.paymentType === "mobile"
+                    : row.paymentType === "momo"
                     ? "MoMo"
                     : row.paymentType === "other"
                     ? "Other"
@@ -1527,9 +1538,9 @@ export default function MySalesTodayTab({
                       : "Credit (Settled)"
                     : r.payment === "cash"
                     ? "Cash"
-                    : r.payment === "card"
+                    : r.payment === "pos"
                     ? "POS"
-                    : r.payment === "mobile"
+                    : r.payment === "momo"
                     ? "MoMo"
                     : r.payment === "other"
                     ? "Other"
