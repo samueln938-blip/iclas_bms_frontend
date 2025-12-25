@@ -23,61 +23,37 @@ function isValidYMD(s) {
 
 /**
  * ============================================================
- * ✅ FIX: Sale time formatting (Kigali) — robust & consistent
+ * ✅ FIX: Sale time display must match backend intent
+ * Backend /sales/today uses:
+ *   raw_time = sale.created_at or sale.sale_date
+ * because created_at is the true "posted time".
  *
- * Handles backend variants:
- * - "YYYY-MM-DD HH:mm:ss" (no TZ)
- * - "YYYY-MM-DDTHH:mm:ss" (no TZ)
- * - ISO with TZ: "...Z" or "...+02:00" or "...+0200"
- * - ISO with microseconds: "...ss.884463+02:00"
- *
- * Business rule:
- * - If NO timezone is included -> treat as Kigali local time.
+ * This UI MUST do the same for list_sales results.
  * ============================================================
  */
+
 const KIGALI_TZ = "Africa/Kigali";
-const KIGALI_UTC_OFFSET_HOURS = 2;
 
-function _trimFractionToMillis(s) {
-  // Reduce fractional seconds to max 3 digits to avoid browser parsing issues.
-  // Example: .123456+02:00 -> .123+02:00
-  //          .123456Z      -> .123Z
-  //          .123456       -> .123
+/** Trim microseconds -> milliseconds for safer JS parsing */
+function _trimIsoFractionToMillis(s) {
   try {
-    const str = String(s);
-
-    // If has TZ at end
-    if (/[zZ]$/.test(str) || /[+-]\d{2}:\d{2}$/.test(str) || /[+-]\d{4}$/.test(str)) {
-      return str.replace(/(\.\d{3})\d+([zZ]|[+-]\d{2}:\d{2}|[+-]\d{4})$/, "$1$2");
-    }
-
-    // No TZ
-    return str.replace(/(\.\d{3})\d+$/, "$1");
+    return String(s)
+      .replace(/(\.\d{3})\d+([Zz]|[+-]\d{2}:\d{2})$/, "$1$2")
+      .replace(/(\.\d{3})\d+$/, "$1");
   } catch {
     return s;
   }
 }
 
-function _normalizeOffsetNoColon(s) {
-  // Convert "+0200" -> "+02:00" (JS Date parses "+02:00" more reliably)
-  try {
-    return String(s).replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
-  } catch {
-    return s;
-  }
-}
-
-function _hasTimezone(s) {
-  return /[zZ]$/.test(s) || /[+-]\d{2}:\d{2}$/.test(s) || /[+-]\d{4}$/.test(s);
-}
-
-function parseSaleDateTime(raw) {
+function toDateAssumingKigali(raw) {
   if (!raw) return null;
 
   // Already a Date
-  if (raw instanceof Date) return Number.isNaN(raw.getTime()) ? null : raw;
+  if (raw instanceof Date) {
+    return Number.isNaN(raw.getTime()) ? null : raw;
+  }
 
-  // If number timestamp
+  // Timestamp
   if (typeof raw === "number") {
     const dNum = new Date(raw);
     return Number.isNaN(dNum.getTime()) ? null : dNum;
@@ -88,55 +64,28 @@ function parseSaleDateTime(raw) {
 
   // Date-only -> midnight Kigali
   if (/^\d{4}-\d{2}-\d{2}$/.test(s0)) {
-    // midnight Kigali -> UTC midnight minus 2h
-    const m = s0.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    const Y = Number(m[1]);
-    const Mo = Number(m[2]) - 1;
-    const D = Number(m[3]);
-    return new Date(Date.UTC(Y, Mo, D, -KIGALI_UTC_OFFSET_HOURS, 0, 0));
+    const dOnly = new Date(`${s0}T00:00:00+02:00`);
+    return Number.isNaN(dOnly.getTime()) ? null : dOnly;
   }
 
-  // Normalize "YYYY-MM-DD HH:mm:ss" -> "YYYY-MM-DDTHH:mm:ss"
+  // "YYYY-MM-DD HH:mm:ss" -> "YYYY-MM-DDTHH:mm:ss"
   let s = s0.includes(" ") && !s0.includes("T") ? s0.replace(" ", "T") : s0;
 
-  // Trim microseconds -> milliseconds
-  s = _trimFractionToMillis(s);
+  // Trim microseconds
+  s = _trimIsoFractionToMillis(s);
 
-  // Normalize "+0200" -> "+02:00" (if present)
-  if (/[+-]\d{4}$/.test(s)) s = _normalizeOffsetNoColon(s);
+  // If already has TZ, parse directly
+  const hasTZ = /Z$|[+-]\d{2}:\d{2}$/.test(s);
 
-  const tzPresent = _hasTimezone(s);
+  // If no TZ, assume Kigali (+02:00)
+  if (!hasTZ) s = `${s}+02:00`;
 
-  // If timezone IS present: parse directly (safe after trimming)
-  if (tzPresent) {
-    const d = new Date(s);
-    return Number.isNaN(d.getTime()) ? null : d;
-  }
-
-  // If NO timezone: treat as Kigali local time and convert to UTC
-  const m = s.match(
-    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.(\d{1,3}))?$/
-  );
-  if (!m) {
-    // last resort
-    const d = new Date(s);
-    return Number.isNaN(d.getTime()) ? null : d;
-  }
-
-  const Y = Number(m[1]);
-  const Mo = Number(m[2]) - 1;
-  const D = Number(m[3]);
-  const H = Number(m[4]);
-  const Mi = Number(m[5]);
-  const S = Number(m[6] || 0);
-  const ms = Number(String(m[7] || "0").padEnd(3, "0").slice(0, 3)) || 0;
-
-  // Kigali local -> UTC by subtracting 2 hours
-  return new Date(Date.UTC(Y, Mo, D, H - KIGALI_UTC_OFFSET_HOURS, Mi, S, ms));
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 function formatSaleTimeHM(raw) {
-  const d = parseSaleDateTime(raw);
+  const d = toDateAssumingKigali(raw);
   if (!d) return "--";
   return new Intl.DateTimeFormat("en-GB", {
     timeZone: KIGALI_TZ,
@@ -148,7 +97,7 @@ function formatSaleTimeHM(raw) {
 
 // ✅ Safe time sorting helper (handles null/invalid dates)
 function timeMs(t) {
-  const d = parseSaleDateTime(t);
+  const d = toDateAssumingKigali(t);
   const ms = d ? d.getTime() : 0;
   return Number.isFinite(ms) ? ms : 0;
 }
@@ -618,10 +567,27 @@ export default function MySalesTodayTab({
     </div>
   );
 
+  /**
+   * ✅ IMPORTANT: Use true "posted time" first:
+   *   sale.created_at (backend uses this for /sales/today)
+   * fallback:
+   *   sale.sale_date
+   */
+  function pickSaleTime(sale) {
+    return (
+      sale?.created_at ||
+      sale?.sale_date ||
+      sale?.updated_at ||
+      sale?.createdAt ||
+      sale?.saleDate ||
+      null
+    );
+  }
+
   const flattenedItemsToday = useMemo(() => {
     const rows = [];
     for (const sale of salesToday || []) {
-      const saleDate = sale.sale_date;
+      const saleTime = pickSaleTime(sale);
 
       const payRaw = normalizePaymentType(sale.payment_type);
       const paymentBucket = mapPayToBucket(payRaw); // cash|momo|pos|other
@@ -665,7 +631,7 @@ export default function MySalesTodayTab({
           id: `${sale.id}-${line.id}`,
           saleId: sale.id,
           saleLineId: line.id,
-          time: saleDate,
+          time: saleTime,
           itemId: line.item_id,
           itemName,
           qtyPieces: qty,
@@ -719,7 +685,7 @@ export default function MySalesTodayTab({
 
       return {
         id: sale.id,
-        time: sale.sale_date,
+        time: pickSaleTime(sale),
         customerName: sale.customer_name || "",
         customerPhone: sale.customer_phone || "",
         isCredit: creditOrigin,
