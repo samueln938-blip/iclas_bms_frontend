@@ -76,56 +76,134 @@ export function formatQty(value, maxFractionDigits = 2) {
 // ✅ Force Rwanda time everywhere (regardless of device timezone)
 const DEFAULT_TIME_ZONE = "Africa/Kigali";
 
-/**
- * ✅ Fix timezone bugs:
- * - If backend sends "2025-12-09T10:15:00" (no Z / no +02:00),
- *   we assume it is UTC and append "Z" before parsing.
- * - If it already has "Z" or "+02:00", we keep it as-is.
- */
-function normalizeIsoForParsing(isoString) {
-  const s = String(isoString ?? "").trim();
-  if (!s) return "";
+// Kigali is UTC+2 (no DST)
+const KIGALI_UTC_OFFSET_HOURS = 2;
 
-  // Already has timezone info (Z or ±hh:mm or ±hhmm)
-  if (/[zZ]$/.test(s) || /[+-]\d{2}:\d{2}$/.test(s) || /[+-]\d{4}$/.test(s)) {
-    return s;
+/**
+ * Detect whether a datetime string already contains timezone info.
+ * Examples that DO contain TZ:
+ * - 2025-12-09T10:15:00Z
+ * - 2025-12-09T10:15:00+02:00
+ * - 2025-12-09T10:15:00-0500
+ */
+function hasExplicitTimezone(s) {
+  return (
+    /[zZ]$/.test(s) || /[+-]\d{2}:\d{2}$/.test(s) || /[+-]\d{4}$/.test(s)
+  );
+}
+
+/**
+ * Parse backend datetime safely and consistently across browsers.
+ *
+ * Supported inputs:
+ * - "YYYY-MM-DD HH:mm:ss"  (common FastAPI/SQLAlchemy string)
+ * - "YYYY-MM-DDTHH:mm:ss"  (naive ISO without timezone)
+ * - ISO with timezone: "...Z" or "...+02:00" etc.
+ *
+ * Important rule:
+ * - If NO timezone info is included, we treat the value as Kigali local time,
+ *   then convert it to a real JS Date (UTC internally).
+ */
+function parseBackendDateTime(raw) {
+  const s = String(raw ?? "").trim();
+  if (!s) return null;
+
+  // If already timezone-aware ISO, let browser parse (safe)
+  if (s.includes("T") && hasExplicitTimezone(s)) {
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? null : d;
   }
 
-  // Naive ISO date-time (no timezone) -> treat as UTC
-  // Examples: 2025-12-09T10:15, 2025-12-09T10:15:00, 2025-12-09T10:15:00.123
-  const naiveIsoDateTime =
-    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?$/.test(s);
+  // "YYYY-MM-DD HH:mm:ss" or "YYYY-MM-DD HH:mm"
+  let m = s.match(
+    /^(\d{4})-(\d{2})-(\d{2})[ ](\d{2}):(\d{2})(?::(\d{2}))?$/
+  );
+  if (m) {
+    const Y = Number(m[1]);
+    const Mo = Number(m[2]) - 1;
+    const D = Number(m[3]);
+    const H = Number(m[4]);
+    const Mi = Number(m[5]);
+    const S = Number(m[6] || 0);
 
-  if (naiveIsoDateTime) return `${s}Z`;
+    // Treat as Kigali local -> convert to UTC by subtracting 2 hours
+    const utcMs = Date.UTC(Y, Mo, D, H - KIGALI_UTC_OFFSET_HOURS, Mi, S);
+    return new Date(utcMs);
+  }
 
-  return s;
-}
+  // "YYYY-MM-DDTHH:mm(:ss(.sss)?)?" naive ISO (no timezone)
+  m = s.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?$/
+  );
+  if (m) {
+    const Y = Number(m[1]);
+    const Mo = Number(m[2]) - 1;
+    const D = Number(m[3]);
+    const H = Number(m[4]);
+    const Mi = Number(m[5]);
+    const S = Number(m[6] || 0);
+    const msRaw = m[7] || "0";
+    const ms = Number(String(msRaw).padEnd(3, "0").slice(0, 3)) || 0;
 
-function parseDateSmart(isoString) {
-  const s = normalizeIsoForParsing(isoString);
-  if (!s) return null;
+    const utcMs = Date.UTC(Y, Mo, D, H - KIGALI_UTC_OFFSET_HOURS, Mi, S, ms);
+    return new Date(utcMs);
+  }
+
+  // ISO date only "YYYY-MM-DD"
+  m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) {
+    const Y = Number(m[1]);
+    const Mo = Number(m[2]) - 1;
+    const D = Number(m[3]);
+
+    // Midnight Kigali -> UTC midnight minus 2h
+    const utcMs = Date.UTC(Y, Mo, D, -KIGALI_UTC_OFFSET_HOURS, 0, 0);
+    return new Date(utcMs);
+  }
+
+  // Last resort: try browser parse (may work for already-good formats)
   const d = new Date(s);
-  if (Number.isNaN(d.getTime())) return null;
-  return d;
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
-export function formatTimeHM(isoString) {
-  if (!isoString) return "";
-  const d = parseDateSmart(isoString);
+export function formatTimeHM(dateTimeString) {
+  if (!dateTimeString) return "";
+  const d = parseBackendDateTime(dateTimeString);
   if (!d) return "";
-  return d.toLocaleTimeString("en-RW", {
+  return new Intl.DateTimeFormat("en-RW", {
+    timeZone: DEFAULT_TIME_ZONE,
     hour: "2-digit",
     minute: "2-digit",
-    timeZone: DEFAULT_TIME_ZONE,
-  });
+    hour12: false,
+  }).format(d);
 }
 
+/**
+ * Today's date in Kigali (not device timezone).
+ * Prevents “yesterday/tomorrow” bugs when device timezone differs.
+ */
 export function todayDateString() {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: DEFAULT_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+
+  const y = parts.find((p) => p.type === "year")?.value;
+  const m = parts.find((p) => p.type === "month")?.value;
+  const d = parts.find((p) => p.type === "day")?.value;
+
+  if (!y || !m || !d) {
+    // fallback (should be rare)
+    const dt = new Date();
+    const yy = dt.getFullYear();
+    const mm = String(dt.getMonth() + 1).padStart(2, "0");
+    const dd = String(dt.getDate()).padStart(2, "0");
+    return `${yy}-${mm}-${dd}`;
+  }
+
+  return `${y}-${m}-${d}`;
 }
 
 // =========================
