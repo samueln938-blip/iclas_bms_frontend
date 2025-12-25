@@ -23,46 +23,61 @@ function isValidYMD(s) {
 
 /**
  * ============================================================
- * ✅ FIX: Sale time formatting (Kigali)
- * Problem:
- * - Backend can return:
- *   - "YYYY-MM-DD HH:mm:ss" (no TZ)
- *   - ISO with TZ "YYYY-MM-DDTHH:mm:ss+02:00"
- *   - ISO with microseconds "....ss.884463+02:00" (some browsers parse poorly)
+ * ✅ FIX: Sale time formatting (Kigali) — robust & consistent
  *
- * Solution:
- * - Normalize to ISO
- * - If TZ missing, assume Kigali (+02:00)
- * - Trim fractional seconds to milliseconds for safe JS parsing
- * - Format with Intl in Africa/Kigali
+ * Handles backend variants:
+ * - "YYYY-MM-DD HH:mm:ss" (no TZ)
+ * - "YYYY-MM-DDTHH:mm:ss" (no TZ)
+ * - ISO with TZ: "...Z" or "...+02:00" or "...+0200"
+ * - ISO with microseconds: "...ss.884463+02:00"
+ *
+ * Business rule:
+ * - If NO timezone is included -> treat as Kigali local time.
  * ============================================================
  */
 const KIGALI_TZ = "Africa/Kigali";
+const KIGALI_UTC_OFFSET_HOURS = 2;
 
-function _trimIsoFractionToMillis(s) {
-  // JS Date is most reliable with milliseconds (3 digits).
-  // Convert: .123456+02:00 -> .123+02:00
-  // Convert: .123456Z      -> .123Z
-  // Convert: .123456       -> .123
+function _trimFractionToMillis(s) {
+  // Reduce fractional seconds to max 3 digits to avoid browser parsing issues.
+  // Example: .123456+02:00 -> .123+02:00
+  //          .123456Z      -> .123Z
+  //          .123456       -> .123
   try {
-    return String(s).replace(
-      /(\.\d{3})\d+([Z]|[+-]\d{2}:\d{2})$/,
-      "$1$2"
-    ).replace(/(\.\d{3})\d+$/, "$1");
+    const str = String(s);
+
+    // If has TZ at end
+    if (/[zZ]$/.test(str) || /[+-]\d{2}:\d{2}$/.test(str) || /[+-]\d{4}$/.test(str)) {
+      return str.replace(/(\.\d{3})\d+([zZ]|[+-]\d{2}:\d{2}|[+-]\d{4})$/, "$1$2");
+    }
+
+    // No TZ
+    return str.replace(/(\.\d{3})\d+$/, "$1");
   } catch {
     return s;
   }
 }
 
-function toDateAssumingKigali(raw) {
+function _normalizeOffsetNoColon(s) {
+  // Convert "+0200" -> "+02:00" (JS Date parses "+02:00" more reliably)
+  try {
+    return String(s).replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+  } catch {
+    return s;
+  }
+}
+
+function _hasTimezone(s) {
+  return /[zZ]$/.test(s) || /[+-]\d{2}:\d{2}$/.test(s) || /[+-]\d{4}$/.test(s);
+}
+
+function parseSaleDateTime(raw) {
   if (!raw) return null;
 
   // Already a Date
-  if (raw instanceof Date) {
-    return Number.isNaN(raw.getTime()) ? null : raw;
-  }
+  if (raw instanceof Date) return Number.isNaN(raw.getTime()) ? null : raw;
 
-  // If number (timestamp)
+  // If number timestamp
   if (typeof raw === "number") {
     const dNum = new Date(raw);
     return Number.isNaN(dNum.getTime()) ? null : dNum;
@@ -71,30 +86,57 @@ function toDateAssumingKigali(raw) {
   const s0 = String(raw).trim();
   if (!s0) return null;
 
-  // If backend sends only date, treat as midnight Kigali
+  // Date-only -> midnight Kigali
   if (/^\d{4}-\d{2}-\d{2}$/.test(s0)) {
-    const dOnly = new Date(`${s0}T00:00:00+02:00`);
-    return Number.isNaN(dOnly.getTime()) ? null : dOnly;
+    // midnight Kigali -> UTC midnight minus 2h
+    const m = s0.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    const Y = Number(m[1]);
+    const Mo = Number(m[2]) - 1;
+    const D = Number(m[3]);
+    return new Date(Date.UTC(Y, Mo, D, -KIGALI_UTC_OFFSET_HOURS, 0, 0));
   }
 
   // Normalize "YYYY-MM-DD HH:mm:ss" -> "YYYY-MM-DDTHH:mm:ss"
   let s = s0.includes(" ") && !s0.includes("T") ? s0.replace(" ", "T") : s0;
 
-  // Trim fractional seconds (microseconds -> milliseconds)
-  s = _trimIsoFractionToMillis(s);
+  // Trim microseconds -> milliseconds
+  s = _trimFractionToMillis(s);
 
-  // If it already includes a timezone (Z or +hh:mm), Date() is fine
-  const hasTZ = /Z$|[+-]\d{2}:\d{2}$/.test(s);
+  // Normalize "+0200" -> "+02:00" (if present)
+  if (/[+-]\d{4}$/.test(s)) s = _normalizeOffsetNoColon(s);
 
-  // If no timezone, assume Kigali offset (+02:00)
-  if (!hasTZ) s = `${s}+02:00`;
+  const tzPresent = _hasTimezone(s);
 
-  const d = new Date(s);
-  return Number.isNaN(d.getTime()) ? null : d;
+  // If timezone IS present: parse directly (safe after trimming)
+  if (tzPresent) {
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  // If NO timezone: treat as Kigali local time and convert to UTC
+  const m = s.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.(\d{1,3}))?$/
+  );
+  if (!m) {
+    // last resort
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  const Y = Number(m[1]);
+  const Mo = Number(m[2]) - 1;
+  const D = Number(m[3]);
+  const H = Number(m[4]);
+  const Mi = Number(m[5]);
+  const S = Number(m[6] || 0);
+  const ms = Number(String(m[7] || "0").padEnd(3, "0").slice(0, 3)) || 0;
+
+  // Kigali local -> UTC by subtracting 2 hours
+  return new Date(Date.UTC(Y, Mo, D, H - KIGALI_UTC_OFFSET_HOURS, Mi, S, ms));
 }
 
 function formatSaleTimeHM(raw) {
-  const d = toDateAssumingKigali(raw);
+  const d = parseSaleDateTime(raw);
   if (!d) return "--";
   return new Intl.DateTimeFormat("en-GB", {
     timeZone: KIGALI_TZ,
@@ -106,7 +148,7 @@ function formatSaleTimeHM(raw) {
 
 // ✅ Safe time sorting helper (handles null/invalid dates)
 function timeMs(t) {
-  const d = toDateAssumingKigali(t);
+  const d = parseSaleDateTime(t);
   const ms = d ? d.getTime() : 0;
   return Number.isFinite(ms) ? ms : 0;
 }
