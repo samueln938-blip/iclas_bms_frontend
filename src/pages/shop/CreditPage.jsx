@@ -70,13 +70,15 @@ function moneyToInt(v) {
 }
 
 /**
- * ✅ Balance helper: treat any sub-1RWF residual as ZERO.
- * This prevents 0.5 from rounding to 1 and keeping credits "open".
+ * ✅ API money normalizer: whole RWF integer
+ * - Treat any sub-1RWF residual as ZERO (float noise)
+ * - Otherwise ROUND (not floor) so 260499.9999 => 260500 (fixes your mismatch)
  */
-function balanceToInt(v) {
+function apiMoneyToInt(v) {
   if (v === null || v === undefined) return 0;
   const s = String(v).trim();
   if (!s) return 0;
+
   const cleaned = s.replace(/,/g, "").replace(/\s+/g, "").replace(/[^\d.-]/g, "");
   if (!cleaned) return 0;
 
@@ -86,8 +88,17 @@ function balanceToInt(v) {
   // Handle tiny negative/positive float noise
   if (Math.abs(n) < 0.999) return 0;
 
-  // Floor so 0.5 becomes 0 (not 1)
-  return Math.max(0, Math.floor(n + 1e-6));
+  // ✅ Round to nearest whole RWF (fixes 1 RWF drift)
+  return Math.max(0, Math.round(n));
+}
+
+/**
+ * ✅ Balance helper:
+ * Previously used FLOOR which caused 260499.9999 -> 260499.
+ * Now uses apiMoneyToInt() rules: threshold + ROUND.
+ */
+function balanceToInt(v) {
+  return apiMoneyToInt(v);
 }
 
 function getBalanceNumber(c) {
@@ -113,7 +124,6 @@ function normalizeKey(name, phone, saleId) {
 }
 
 function isOpenCredit(c) {
-  // ✅ FIX: use balanceToInt (floors) to prevent 0.5 => 1 "open"
   return getBalanceInt(c) > 0;
 }
 
@@ -287,7 +297,7 @@ export default function CreditPage() {
   const [loadingSelected, setLoadingSelected] = useState(false);
 
   const [paymentAmount, setPaymentAmount] = useState("");
-  const [paymentMethod, setPaymentMethod] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState("cash");
   const [paymentNote, setPaymentNote] = useState("");
   const [savingPayment, setSavingPayment] = useState(false);
 
@@ -362,7 +372,6 @@ export default function CreditPage() {
       const safeCredits0 = Array.isArray(credits) ? credits : [];
 
       // ✅ FIX: when status=open, force-remove any credits whose balance is effectively 0.
-      // This prevents "0 but still open" even if backend returns float noise like 0.5.
       const safeCredits =
         String(status || "").toLowerCase() === "open"
           ? safeCredits0.filter((c) => getBalanceInt(c) > 0)
@@ -375,8 +384,8 @@ export default function CreditPage() {
         const totals = safeCredits.reduce(
           (acc, c) => {
             acc.credits_count += 1;
-            acc.original_amount += safeNumber(c.original_amount || 0);
-            acc.paid_amount += safeNumber(c.paid_amount || 0);
+            acc.original_amount += apiMoneyToInt(c.original_amount || 0);
+            acc.paid_amount += apiMoneyToInt(c.paid_amount || 0);
             acc.open_balance += getBalanceNumber(c);
             return acc;
           },
@@ -387,23 +396,23 @@ export default function CreditPage() {
           credits_count: totals.credits_count,
           original_amount: totals.original_amount,
           paid_amount: totals.paid_amount,
-          profit: safeNumber(apiSummary.profit ?? prev.profit ?? 0),
+          profit: apiMoneyToInt(apiSummary.profit ?? prev.profit ?? 0),
           open_balance: totals.open_balance,
         }));
       } else if (apiSummary && Object.keys(apiSummary).length > 0) {
         setSummary({
-          credits_count: safeNumber(apiSummary.credits_count || 0),
-          original_amount: safeNumber(apiSummary.original_amount || 0),
-          paid_amount: safeNumber(apiSummary.paid_amount || 0),
-          profit: safeNumber(apiSummary.profit || 0),
-          open_balance: safeNumber(apiSummary.open_balance || 0),
+          credits_count: apiMoneyToInt(apiSummary.credits_count || 0),
+          original_amount: apiMoneyToInt(apiSummary.original_amount || 0),
+          paid_amount: apiMoneyToInt(apiSummary.paid_amount || 0),
+          profit: apiMoneyToInt(apiSummary.profit || 0),
+          open_balance: apiMoneyToInt(apiSummary.open_balance || 0),
         });
       } else {
         const totals = safeCredits.reduce(
           (acc, c) => {
             acc.credits_count += 1;
-            acc.original_amount += safeNumber(c.original_amount || 0);
-            acc.paid_amount += safeNumber(c.paid_amount || 0);
+            acc.original_amount += apiMoneyToInt(c.original_amount || 0);
+            acc.paid_amount += apiMoneyToInt(c.paid_amount || 0);
             acc.open_balance += getBalanceNumber(c);
             return acc;
           },
@@ -414,7 +423,7 @@ export default function CreditPage() {
           credits_count: totals.credits_count,
           original_amount: totals.original_amount,
           paid_amount: totals.paid_amount,
-          profit: prev.profit || 0,
+          profit: apiMoneyToInt(prev.profit || 0),
           open_balance: totals.open_balance,
         }));
       }
@@ -478,8 +487,8 @@ export default function CreditPage() {
 
       groups[key].credits.push(c);
       groups[key].totals.credits_count += 1;
-      groups[key].totals.original_amount += safeNumber(c.original_amount || 0);
-      groups[key].totals.paid_amount += safeNumber(c.paid_amount || 0);
+      groups[key].totals.original_amount += apiMoneyToInt(c.original_amount || 0);
+      groups[key].totals.paid_amount += apiMoneyToInt(c.paid_amount || 0);
       groups[key].totals.open_balance += getBalanceNumber(c);
 
       if (isOpenCredit(c)) groups[key].open_count += 1;
@@ -570,12 +579,12 @@ export default function CreditPage() {
           const sale_date = cd.sale_date ?? cd.saleDate;
           const due_date = cd.due_date ?? cd.dueDate ?? null;
 
-          const original_amount = safeNumber(
+          const original_amount = apiMoneyToInt(
             cd.original_amount ?? cd.originalAmount ?? cd.total_sale_amount ?? cd.totalSaleAmount ?? 0
           );
-          const paid_amount = safeNumber(cd.paid_amount ?? cd.paidAmount ?? 0);
-          const balance = safeNumber(cd.balance ?? cd.credit_balance ?? cd.creditBalance ?? 0);
-          const profit = safeNumber(cd.total_profit ?? cd.profit ?? 0);
+          const paid_amount = apiMoneyToInt(cd.paid_amount ?? cd.paidAmount ?? 0);
+          const balance = apiMoneyToInt(cd.balance ?? cd.credit_balance ?? cd.creditBalance ?? 0);
+          const profit = apiMoneyToInt(cd.total_profit ?? cd.profit ?? 0);
 
           const rawPayments = cd.payments ?? cd.payment_history ?? cd.paymentHistory ?? [];
           const payments = Array.isArray(rawPayments) ? rawPayments : [];
@@ -587,10 +596,10 @@ export default function CreditPage() {
       const groupTotalsAll = creditsByDate.reduce(
         (acc, cd) => {
           acc.credits_count += 1;
-          acc.original_amount += safeNumber(cd.original_amount || 0);
-          acc.paid_amount += safeNumber(cd.paid_amount || 0);
+          acc.original_amount += apiMoneyToInt(cd.original_amount || 0);
+          acc.paid_amount += apiMoneyToInt(cd.paid_amount || 0);
           acc.open_balance += balanceToInt(cd.balance || 0);
-          acc.profit += safeNumber(cd.profit || 0);
+          acc.profit += apiMoneyToInt(cd.profit || 0);
           return acc;
         },
         { credits_count: 0, original_amount: 0, paid_amount: 0, profit: 0, open_balance: 0 }
@@ -609,11 +618,11 @@ export default function CreditPage() {
         return ta - tb;
       });
 
-      const baseOpen = groupTotalsAll.original_amount;
+      const baseOpen = apiMoneyToInt(groupTotalsAll.original_amount);
       let runningPaid = 0;
 
       const paymentsWithRunning = paymentsAll.map((p) => {
-        const amt = safeNumber(p.amount ?? p.paid_amount ?? p.paidAmount ?? 0);
+        const amt = apiMoneyToInt(p.amount ?? p.paid_amount ?? p.paidAmount ?? 0);
         runningPaid += amt;
 
         return {
@@ -786,8 +795,8 @@ export default function CreditPage() {
       (acc, cd) => {
         const balInt = balanceToInt(cd.balance || 0);
         if (balInt > 0) {
-          acc.original += safeNumber(cd.original_amount || 0);
-          acc.paid += safeNumber(cd.paid_amount || 0);
+          acc.original += apiMoneyToInt(cd.original_amount || 0);
+          acc.paid += apiMoneyToInt(cd.paid_amount || 0);
           acc.balance += balInt;
           acc.open_sales += 1;
         }
