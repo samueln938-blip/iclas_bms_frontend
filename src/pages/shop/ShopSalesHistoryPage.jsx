@@ -100,14 +100,39 @@ function todayDateString() {
   );
 }
 
-function formatTimeHM(iso) {
-  const d = parseDateAssumeKigali(iso);
-  if (!d) return "";
+/**
+ * ✅ FIX (PRODUCTION SAFE):
+ * If backend gives "naive" Kigali local datetime like:
+ * - "YYYY-MM-DD HH:mm:ss"
+ * - "YYYY-MM-DDTHH:mm:ss"
+ * ...we display HH:mm DIRECTLY (no browser timezone conversion).
+ * If it includes timezone (Z / +02:00), we format normally.
+ */
+function formatTimeHM(raw) {
+  if (!raw) return "";
+
   try {
+    // If it's a string datetime WITHOUT timezone -> return HH:mm directly
+    if (typeof raw === "string") {
+      const s0 = raw.trim();
+      if (s0) {
+        const s = s0.includes("T") ? s0 : s0.replace(" ", "T");
+
+        if (!_hasTZInfo(s)) {
+          const m = /^\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2})/.exec(s);
+          if (m) return `${m[1]}:${m[2]}`;
+        }
+      }
+    }
+
+    // Otherwise fall back to Date-based formatting (handles Z / +02:00 safely)
+    const d = parseDateAssumeKigali(raw);
+    if (!d) return "";
     return new Intl.DateTimeFormat("en-RW", {
       timeZone: KIGALI_TZ,
       hour: "2-digit",
       minute: "2-digit",
+      hour12: false,
     }).format(d);
   } catch {
     return "";
