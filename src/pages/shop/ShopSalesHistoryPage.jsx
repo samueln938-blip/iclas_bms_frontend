@@ -35,53 +35,58 @@ function _hasTZInfo(s) {
   return /([zZ]|[+-]\d{2}:\d{2})$/.test(String(s || "").trim());
 }
 
+/** Trim microseconds -> milliseconds for safer JS parsing */
+function _trimIsoFractionToMillis(s) {
+  try {
+    return String(s)
+      .replace(/(\.\d{3})\d+([Zz]|[+-]\d{2}:\d{2})$/, "$1$2")
+      .replace(/(\.\d{3})\d+$/, "$1");
+  } catch {
+    return s;
+  }
+}
+
 /**
- * Parse backend timestamps safely:
- * - If it has timezone (Z or +02:00), normal Date parsing is fine.
- * - If it's "naive" (no timezone), assume Kigali local time (UTC+2).
+ * Parse backend timestamps safely (same spirit as MySalesTodayTab):
+ * - Accepts:
+ *   - "YYYY-MM-DD"
+ *   - "YYYY-MM-DD HH:mm:ss"
+ *   - "YYYY-MM-DDTHH:mm:ss"
+ *   - with/without microseconds
+ *   - with/without TZ
+ * - If no TZ -> assume Kigali (+02:00)
  */
-function parseDateAssumeKigali(raw) {
+function toDateAssumingKigali(raw) {
   if (!raw) return null;
-  if (raw instanceof Date) return raw;
+
+  // Already a Date
+  if (raw instanceof Date) {
+    return Number.isNaN(raw.getTime()) ? null : raw;
+  }
+
+  // Timestamp
+  if (typeof raw === "number") {
+    const dNum = new Date(raw);
+    return Number.isNaN(dNum.getTime()) ? null : dNum;
+  }
 
   const s0 = String(raw).trim();
   if (!s0) return null;
 
-  const s = s0.includes("T") ? s0 : s0.replace(" ", "T");
-
-  if (_hasTZInfo(s)) {
-    const d = new Date(s);
-    return Number.isNaN(d.getTime()) ? null : d;
+  // Date-only -> midnight Kigali
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s0)) {
+    const dOnly = new Date(`${s0}T00:00:00+02:00`);
+    return Number.isNaN(dOnly.getTime()) ? null : dOnly;
   }
 
-  const mDate = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
-  if (mDate) {
-    const y = Number(mDate[1]);
-    const mo = Number(mDate[2]);
-    const da = Number(mDate[3]);
-    if (!y || !mo || !da) return null;
-    // Kigali midnight -> UTC is minus 2 hours
-    return new Date(Date.UTC(y, mo - 1, da, -2, 0, 0, 0));
-  }
+  // "YYYY-MM-DD HH:mm:ss" -> "YYYY-MM-DDTHH:mm:ss"
+  let s = s0.includes(" ") && !s0.includes("T") ? s0.replace(" ", "T") : s0;
 
-  const mDT =
-    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/.exec(
-      s
-    );
+  // Trim microseconds
+  s = _trimIsoFractionToMillis(s);
 
-  if (mDT) {
-    const y = Number(mDT[1]);
-    const mo = Number(mDT[2]);
-    const da = Number(mDT[3]);
-    const hh = Number(mDT[4]);
-    const mi = Number(mDT[5]);
-    const ss = Number(mDT[6] || 0);
-    const ms = Number(mDT[7] || 0);
-    if (!y || !mo || !da) return null;
-
-    // Assume input is Kigali local time (UTC+2) => UTC = local - 2h
-    return new Date(Date.UTC(y, mo - 1, da, hh - 2, mi, ss, ms));
-  }
+  // If no TZ, assume Kigali (+02:00)
+  if (!_hasTZInfo(s)) s = `${s}+02:00`;
 
   const d = new Date(s);
   return Number.isNaN(d.getTime()) ? null : d;
@@ -100,34 +105,20 @@ function todayDateString() {
   );
 }
 
+function timeMs(raw) {
+  const d = toDateAssumingKigali(raw);
+  const ms = d ? d.getTime() : 0;
+  return Number.isFinite(ms) ? ms : 0;
+}
+
 /**
- * ✅ FIX (PRODUCTION SAFE):
- * If backend gives "naive" Kigali local datetime like:
- * - "YYYY-MM-DD HH:mm:ss"
- * - "YYYY-MM-DDTHH:mm:ss"
- * ...we display HH:mm DIRECTLY (no browser timezone conversion).
- * If it includes timezone (Z / +02:00), we format normally.
+ * Format HH:mm in Kigali
+ * (robust for naive backend strings)
  */
 function formatTimeHM(raw) {
-  if (!raw) return "";
-
+  const d = toDateAssumingKigali(raw);
+  if (!d) return "";
   try {
-    // If it's a string datetime WITHOUT timezone -> return HH:mm directly
-    if (typeof raw === "string") {
-      const s0 = raw.trim();
-      if (s0) {
-        const s = s0.includes("T") ? s0 : s0.replace(" ", "T");
-
-        if (!_hasTZInfo(s)) {
-          const m = /^\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2})/.exec(s);
-          if (m) return `${m[1]}:${m[2]}`;
-        }
-      }
-    }
-
-    // Otherwise fall back to Date-based formatting (handles Z / +02:00 safely)
-    const d = parseDateAssumeKigali(raw);
-    if (!d) return "";
     return new Intl.DateTimeFormat("en-RW", {
       timeZone: KIGALI_TZ,
       hour: "2-digit",
@@ -140,7 +131,7 @@ function formatTimeHM(raw) {
 }
 
 function formatDateLabel(ymd) {
-  const d = parseDateAssumeKigali(ymd);
+  const d = toDateAssumingKigali(ymd);
   if (!d) return String(ymd || "");
   try {
     return new Intl.DateTimeFormat("en-RW", {
@@ -250,7 +241,7 @@ function getRecentDatesList(daysBack = 31) {
 }
 
 function saleToYMD(saleDateRaw) {
-  const d = parseDateAssumeKigali(saleDateRaw);
+  const d = toDateAssumingKigali(saleDateRaw);
   if (!d) return "";
   return _fmtPartsYMD(d) || "";
 }
@@ -319,30 +310,22 @@ export default function SalesHistoryPage() {
 
   // -------------------------
   // ✅ Choose correct time source for display
-  // - Today: use created_at (true sold/post time)
-  // - Past dates: use sale_date (work date/time)
+  // ✅ FIX: always prioritize created_at (true posted/sold time)
   // -------------------------
-  const pickSaleTimeForDisplay = useCallback(
-    (saleObj) => {
-      const saleDate =
-        saleObj?.sale_date ??
-        saleObj?.date ??
-        saleObj?.saleDate ??
-        saleObj?.timestamp ??
-        null;
-
-      const createdAt =
-        saleObj?.created_at ??
-        saleObj?.createdAt ??
-        saleObj?.created ??
-        null;
-
-      const isViewingToday = String(selectedDate) === String(todayStr);
-
-      return isViewingToday ? (createdAt || saleDate) : (saleDate || createdAt);
-    },
-    [selectedDate, todayStr]
-  );
+  const pickSaleTimeForDisplay = useCallback((saleObj) => {
+    return (
+      saleObj?.created_at ||
+      saleObj?.createdAt ||
+      saleObj?.created ||
+      saleObj?.sale_date ||
+      saleObj?.date ||
+      saleObj?.saleDate ||
+      saleObj?.timestamp ||
+      saleObj?.updated_at ||
+      saleObj?.updatedAt ||
+      null
+    );
+  }, []);
 
   // -------------------------
   // Safe JSON fetch helper
@@ -545,7 +528,16 @@ export default function SalesHistoryPage() {
     } finally {
       if (reqId === rangeReqIdRef.current) setLoadingRangeSales(false);
     }
-  }, [shopId, headersReady, canEditHistory, pageMode, oldestDate, todayStr, fetchJson, authHeadersNoJson]);
+  }, [
+    shopId,
+    headersReady,
+    canEditHistory,
+    pageMode,
+    oldestDate,
+    todayStr,
+    fetchJson,
+    authHeadersNoJson,
+  ]);
 
   useEffect(() => {
     loadRangeSales();
@@ -691,9 +683,7 @@ export default function SalesHistoryPage() {
         sale?.dueDate ||
         null;
 
-      // ✅ IMPORTANT FIX:
-      // - Today: show created_at (true sold/post time)
-      // - Past: show sale_date (work date/time)
+      // ✅ FIX: always show true sold/post time first
       const timeForDisplay = pickSaleTimeForDisplay(sale);
 
       return {
@@ -747,9 +737,8 @@ export default function SalesHistoryPage() {
     }
 
     rows.sort((a, b) => {
-      const ta = parseDateAssumeKigali(a.time)?.getTime?.() || 0;
-      const tb = parseDateAssumeKigali(b.time)?.getTime?.() || 0;
-      if (tb !== ta) return tb - ta;
+      const t = timeMs(b.time) - timeMs(a.time);
+      if (t !== 0) return t;
       return Number(b.saleId || 0) - Number(a.saleId || 0);
     });
 
