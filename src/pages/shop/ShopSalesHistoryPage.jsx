@@ -246,6 +246,27 @@ function saleToYMD(saleDateRaw) {
   return _fmtPartsYMD(d) || "";
 }
 
+// ✅ NEW: detect time-only strings like "14:05" or "14:05:10"
+function _isTimeOnly(s) {
+  const t = String(s || "").trim();
+  return /^\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(t);
+}
+
+// ✅ NEW: combine date + time into a datetime string
+function _combineDateAndTime(dateRaw, timeRaw) {
+  const t0 = String(timeRaw || "").trim();
+  if (!t0 || !_isTimeOnly(t0)) return null;
+
+  const ymd = saleToYMD(dateRaw) || (typeof dateRaw === "string" ? dateRaw.trim() : "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(ymd || ""))) return null;
+
+  let t = t0;
+  if (/^\d{2}:\d{2}$/.test(t)) t = `${t}:00`;
+
+  // no TZ here; toDateAssumingKigali() will append +02:00
+  return `${ymd}T${t}`;
+}
+
 export default function SalesHistoryPage() {
   const { shopId } = useParams();
   const navigate = useNavigate();
@@ -311,21 +332,45 @@ export default function SalesHistoryPage() {
   // -------------------------
   // ✅ Choose correct time source for display
   // ✅ FIX: always prioritize created_at (true posted/sold time)
+  // ✅ EXTRA FIX: handle time-only fields by combining with date
   // -------------------------
-  const pickSaleTimeForDisplay = useCallback((saleObj) => {
-    return (
-      saleObj?.created_at ||
-      saleObj?.createdAt ||
-      saleObj?.created ||
-      saleObj?.sale_date ||
-      saleObj?.date ||
-      saleObj?.saleDate ||
-      saleObj?.timestamp ||
-      saleObj?.updated_at ||
-      saleObj?.updatedAt ||
-      null
-    );
-  }, []);
+  const pickSaleTimeForDisplay = useCallback(
+    (saleObj) => {
+      // 1) If backend sends time-only field, combine with sale date (or selected date)
+      const timeOnlyCandidate =
+        saleObj?.sale_time ||
+        saleObj?.saleTime ||
+        saleObj?.time ||
+        saleObj?.sold_time ||
+        saleObj?.soldTime ||
+        saleObj?.created_time ||
+        saleObj?.createdTime ||
+        null;
+
+      const dateCandidate =
+        saleObj?.sale_date || saleObj?.date || saleObj?.work_date || saleObj?.workDate || selectedDate;
+
+      const combined = _combineDateAndTime(dateCandidate, timeOnlyCandidate);
+      if (combined) return combined;
+
+      // 2) Otherwise prefer full timestamps
+      return (
+        saleObj?.sold_at ||
+        saleObj?.soldAt ||
+        saleObj?.created_at ||
+        saleObj?.createdAt ||
+        saleObj?.created ||
+        saleObj?.sale_date ||
+        saleObj?.date ||
+        saleObj?.saleDate ||
+        saleObj?.timestamp ||
+        saleObj?.updated_at ||
+        saleObj?.updatedAt ||
+        null
+      );
+    },
+    [selectedDate]
+  );
 
   // -------------------------
   // Safe JSON fetch helper
@@ -683,7 +728,7 @@ export default function SalesHistoryPage() {
         sale?.dueDate ||
         null;
 
-      // ✅ FIX: always show true sold/post time first
+      // ✅ FIX: use improved time resolver
       const timeForDisplay = pickSaleTimeForDisplay(sale);
 
       return {
