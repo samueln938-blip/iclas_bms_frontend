@@ -318,6 +318,33 @@ export default function SalesHistoryPage() {
   const shopName = shop?.name || `Shop ${shopId}`;
 
   // -------------------------
+  // ✅ Choose correct time source for display
+  // - Today: use created_at (true sold/post time)
+  // - Past dates: use sale_date (work date/time)
+  // -------------------------
+  const pickSaleTimeForDisplay = useCallback(
+    (saleObj) => {
+      const saleDate =
+        saleObj?.sale_date ??
+        saleObj?.date ??
+        saleObj?.saleDate ??
+        saleObj?.timestamp ??
+        null;
+
+      const createdAt =
+        saleObj?.created_at ??
+        saleObj?.createdAt ??
+        saleObj?.created ??
+        null;
+
+      const isViewingToday = String(selectedDate) === String(todayStr);
+
+      return isViewingToday ? (createdAt || saleDate) : (saleDate || createdAt);
+    },
+    [selectedDate, todayStr]
+  );
+
+  // -------------------------
   // Safe JSON fetch helper
   // -------------------------
   const fetchJson = useCallback(async (url, headers, signal) => {
@@ -527,13 +554,14 @@ export default function SalesHistoryPage() {
   const dateSummaries = useMemo(() => {
     const map = new Map(); // ymd -> { totalSales, totalProfit, receipts }
     for (const s of rangeSales || []) {
+      // ✅ For day grouping we prefer sale_date (work date), not created_at
       const ymd =
         saleToYMD(
           s?.sale_date ??
             s?.date ??
+            s?.timestamp ??
             s?.created_at ??
-            s?.createdAt ??
-            s?.timestamp
+            s?.createdAt
         ) || "";
       if (!ymd) continue;
 
@@ -663,9 +691,14 @@ export default function SalesHistoryPage() {
         sale?.dueDate ||
         null;
 
+      // ✅ IMPORTANT FIX:
+      // - Today: show created_at (true sold/post time)
+      // - Past: show sale_date (work date/time)
+      const timeForDisplay = pickSaleTimeForDisplay(sale);
+
       return {
         id: sale?.id,
-        time: sale?.sale_date,
+        time: timeForDisplay,
         customerName: sale?.customer_name || "",
         customerPhone: sale?.customer_phone || "",
         isCredit,
@@ -678,7 +711,7 @@ export default function SalesHistoryPage() {
         lines: pickLines(sale),
       };
     });
-  }, [sales]);
+  }, [sales, pickSaleTimeForDisplay]);
 
   const flattenedItems = useMemo(() => {
     const rows = [];
